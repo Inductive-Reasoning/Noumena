@@ -113,6 +113,20 @@ TEST_CASE("InputParser decodes the canonical schema", "[input_parser]") {
     REQUIRE(config.Scenarios[1].first == "First");
 }
 
+TEST_CASE("InputParser decodes every geometry_type", "[input_parser][geometry]") {
+    const std::pair<const char*, GeometryType> cases[] = {
+        {"axisymmetric", GeometryType::Axisymmetric},
+        {"planar",       GeometryType::Planar},
+        {"3d",           GeometryType::Cartesian3D},
+    };
+    for (const auto& [name, expected] : cases) {
+        json source = CanonicalConfig();
+        source["simulation"]["geometry_type"] = name;
+        REQUIRE(InputParser(source).GetProblemConfig().GeometryType == expected);
+        REQUIRE(std::string(ToString(expected)) == name);
+    }
+}
+
 TEST_CASE("InputParser decodes typed Dirichlet and Neumann boundaries",
           "[input_parser][boundaries]") {
     json source = CanonicalConfig();

@@ -188,9 +188,9 @@ int main(int argc, char *argv[]) {
             catch (const mfem::ErrorException& e) {
                 throw std::runtime_error(
                     "MFEM could not load mesh '" + config.MeshPath + "'. Check "
-                    "that the file format is supported and that 2D elements use "
-                    "counter-clockwise winding with boundary lines whose nodes "
-                    "lie on element edges.\nMFEM detail: " + std::string(e.what()));
+                    "that the file format is supported, that elements are "
+                    "consistently oriented (counter-clockwise winding in 2D), and "
+                    "that boundary elements lie on element faces with shared nodes.\nMFEM detail: " + std::string(e.what()));
             }
         }
 

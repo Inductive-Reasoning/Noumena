@@ -338,12 +338,9 @@ private:
 				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
 				T.SetIntPoint(&ip);
 
-				double measure = ip.weight * T.Weight();
-				if (geometry == GeometryType::Axisymmetric) {
-					mfem::Vector pos;
-					T.Transform(ip, pos);
-					measure *= Axisymmetric::Measure(pos(0));
-				}
+				mfem::Vector pos;
+				T.Transform(ip, pos);
+				const double measure = ip.weight * T.Weight() * Geometry().Measure(pos);
 				total += density.Eval(T, ip) * measure;
 			}
 		}
@@ -487,8 +484,7 @@ public:
         frequency = config.Scenarios.front().second.Frequency;
         omega = Constants::TWO_PI * frequency;
 
-        // Axisymmetric or Planar
-        geometry = config.GeometryType;
+        InitializeMagneticGeometry();
         for (const auto& [term_name, term] : config.Terminals) {
             MFEM_VERIFY(term.DriveQuantity == Quantity::Current,
                 "Magnetoquasistatic terminal '" + term_name +
@@ -615,12 +611,7 @@ public:
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
-		if (geometry == GeometryType::Axisymmetric) {
-            return new AxisymmetricMassIntegrator(*sigma_coeff);
-		}
-		else {
-            return new mfem::MassIntegrator(*sigma_coeff);
-		}
+		return Geometry().NewMassIntegrator(*sigma_coeff);
 	}
 
     void ActivateFrequency(const Scenario& sc) {
@@ -661,12 +652,7 @@ public:
 
         // Assemble the source term (J is assumed real) into the Re_Mesh block.
         mfem::LinearForm b_source(fespace.get());
-        if (geometry == GeometryType::Axisymmetric) {
-            b_source.AddDomainIntegrator(new AxisymmetricLFIntegrator(*j_coeff));
-        }
-        else {
-            b_source.AddDomainIntegrator(new mfem::DomainLFIntegrator(*j_coeff));
-        }
+        b_source.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
         b_source.Assemble();
         const mfem::real_t* b_source_data = b_source.GetData();   // bypass LinearForm::operator()
         for (int d = 0; d < port_operator->Layout().NDofs(); ++d) {
@@ -1039,17 +1025,11 @@ public:
             BuildTerminalCurrentDensity(terminal_name, 1.0);
         mfem::PWConstCoefficient unit_density_coeff(unit_density);
         mfem::LinearForm winding_functional(fespace.get());
-        if (geometry == GeometryType::Axisymmetric) {
-            winding_functional.AddDomainIntegrator(
-                new AxisymmetricLFIntegrator(unit_density_coeff));
-        }
-        else {
-            winding_functional.AddDomainIntegrator(
-                new mfem::DomainLFIntegrator(unit_density_coeff));
-        }
+        winding_functional.AddDomainIntegrator(
+            Geometry().NewDomainLFIntegrator(unit_density_coeff));
         winding_functional.Assemble();
 
-        // Both integrators carry the full geometric measure, so these are webers.
+        // The integrator carries the full geometric measure, so these are webers.
         return {
             winding_functional * A->real(),
             winding_functional * A->imag()

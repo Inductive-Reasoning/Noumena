@@ -19,7 +19,7 @@ rather than a presentation choice. See
 
 ## Integration Measure and Output Units
 
-The two geometry modes differ only in the measure applied during assembly, and
+The geometry modes differ only in the measure applied during assembly, and
 that difference propagates directly into the units of every extracted quantity.
 The full convention, including which `2*pi` factors are *not* part of the
 measure, is given under "Integration Measure Convention" below.
@@ -40,9 +40,18 @@ measure, is given under "Integration Measure Convention" below.
   effects are negligible, which is the assumption the planar model already
   makes).
 
+- **3D (`geometry_type: 3d`).** Assembly integrates over the true volume of a
+  3D mesh, so extracted quantities are absolute (F, H, Ohm). Currently
+  electrostatics only; the magnetic formulations above are scalar-potential 2D
+  reductions and a 3D magnetic model needs a vector (H(curl)) potential.
+
+The measure, the matching scalar integrators, the required mesh dimension and
+the output units are all defined in one place, `GeometryModel`
+(`src/solvers/geometry_model.hpp`).
+
 No extrusion length is configurable, so planar results are always reported per
 unit length. Output labels reflect this: `PhysicsSolver::CouplingUnitLabel`
-appends `/m` in planar mode, so a written matrix is never ambiguous about which
+appends `/m` in planar mode only, so a written matrix is never ambiguous about which
 convention produced it.
 
 ## 1. Electrostatics

@@ -18,8 +18,7 @@ public:
 		: file_(Open(path)), mesh_(mesh), order_(config.Order) {
 		file_.createAttribute("schema_version", 2);
 		file_.createAttribute("physics_type", std::string(ToString(config.PhysicsType)));
-		file_.createAttribute("geometry_type", std::string(
-			config.GeometryType == GeometryType::Axisymmetric ? "axisymmetric" : "planar"));
+		file_.createAttribute("geometry_type", std::string(ToString(config.GeometryType)));
 		file_.createAttribute("analysis_type", std::string(
 			config.AnalysisType == AnalysisType::CouplingMatrix ? "coupling_matrix" : "field"));
 		auto mesh_group = file_.createGroup("mesh");

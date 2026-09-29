@@ -69,7 +69,7 @@ Object. **Required** -- the only required section.
 |-----|------|---------|----------------|
 | `physics_type` | string | **required** | `electrostatics`, `magnetostatics`, `magnetoquasistatics` |
 | `mesh` | string | **required** | Path; relative resolves against the config file's directory. Coordinates must be in **metres** |
-| `geometry_type` | string | `planar` | `planar`, `axisymmetric` |
+| `geometry_type` | string | `planar` | `planar`, `axisymmetric`, `3d` |
 | `analysis_type` | string | `field` | `field`, `coupling_matrix` |
 | `order` | integer | `1` | 1-10 |
 | `linear_solver` | string | `direct` | `direct`, `iterative` |
@@ -77,6 +77,12 @@ Object. **Required** -- the only required section.
 | `solver_max_iter` | integer | `1000` | >= 1 |
 | `solver_print_level` | integer | `1` | -- |
 | `amr` | object | absent = disabled | See below |
+
+`geometry_type` must match the mesh: `planar` and `axisymmetric` require a 2D
+mesh, `3d` a 3D mesh. A mismatch is rejected, including the `planar` default on
+a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
+`axisymmetric` and `3d` ones are absolute (F, H). `3d` is currently supported
+for `electrostatics` only, with `paraview` and `hdf5` output (not `gmsh`).
 
 `direct` is the default linear solver because a coupling-matrix run amortizes
 one factorization over every terminal's right-hand side, and its accuracy does

@@ -48,6 +48,23 @@ protected:
 
 	MagneticSolver(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
 
+	// Adopt the configured coordinate model, restricted to the 2D reductions.
+	//
+	// Everything below is a scalar-potential formulation: the unknown is the
+	// single out-of-plane (A_z) or azimuthal (A_phi) component. A 3D model has
+	// a full vector potential, which needs an H(curl) (Nedelec) discretization,
+	// a divergence-free source and a gauge -- a different formulation rather
+	// than another geometry branch here. Running this class on a 3D mesh would
+	// assemble a scalar Laplacian and report it as a magnetic field, so it is
+	// rejected outright.
+	void InitializeMagneticGeometry() {
+		MFEM_VERIFY(config.GeometryType != GeometryType::Cartesian3D,
+			"geometry_type '3d' is not yet supported for " +
+			std::string(ToString(config.PhysicsType)) + ": a 3D magnetic model "
+			"needs a vector (H(curl)) potential, which is not implemented.");
+		InitializeGeometry();
+	}
+
 	// Validate the axisymmetric mesh as (r,z) input, keep the resulting radial
 	// extent, then add what only an A_phi formulation cares about: whether the
 	// domain reaches r = 0, and whether any near-axis element leaves the 1/r

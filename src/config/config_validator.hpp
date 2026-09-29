@@ -358,8 +358,8 @@ private:
         // Optional enumerated fields
         if (sim.contains("geometry_type")) {
             std::string g = sim["geometry_type"];
-            if (g != "axisymmetric" && g != "planar") {
-                AddError("simulation.geometry_type", "Invalid geometry_type '" + g + "'. Must be 'axisymmetric' or 'planar'");
+            if (g != "axisymmetric" && g != "planar" && g != "3d") {
+                AddError("simulation.geometry_type", "Invalid geometry_type '" + g + "'. Must be 'axisymmetric', 'planar', or '3d'");
             }
         }
 
@@ -1026,6 +1026,59 @@ private:
         }
     }
 
+    // Cross-checks between geometry_type and the rest of the run: the mesh
+    // dimension it requires, and the physics / output formats that do not yet
+    // support a 3D model. Runs after ValidateSimulation(), so an invalid
+    // geometry_type string has already been reported and is skipped here.
+    //
+    // The dimension check matters because nothing downstream would catch the
+    // mismatch: the planar default on a 3D mesh assembles and solves an
+    // ordinary 3D Laplacian, then labels an absolute capacitance in F/m.
+    void ValidateGeometryCompatibility(const json& config, const mfem::Mesh* mesh) {
+        if (!config.contains("simulation") || !config["simulation"].is_object()) return;
+        const auto& sim = config["simulation"];
+
+        std::string geometry = "planar";  // InputParser's default
+        if (sim.contains("geometry_type")) {
+            if (!sim["geometry_type"].is_string()) return;
+            geometry = sim["geometry_type"].get<std::string>();
+        }
+        if (geometry != "axisymmetric" && geometry != "planar" && geometry != "3d") return;
+        const bool three_d = (geometry == "3d");
+
+        if (mesh) {
+            const int required = three_d ? 3 : 2;
+            if (mesh->Dimension() != required) {
+                AddError("simulation.geometry_type",
+                    "geometry_type '" + geometry + "' requires a " +
+                    std::to_string(required) + "D mesh, but the mesh is " +
+                    std::to_string(mesh->Dimension()) + "D" +
+                    (mesh->Dimension() == 3
+                        ? ". Set geometry_type to '3d' for a 3D mesh"
+                        : (three_d ? ". Use 'planar' or 'axisymmetric' for a 2D mesh" : "")));
+            }
+        }
+
+        if (!three_d) return;
+
+        if (sim.contains("physics_type") && sim["physics_type"].is_string()) {
+            const std::string physics = sim["physics_type"];
+            if (physics == "magnetostatics" || physics == "magnetoquasistatics") {
+                AddError("simulation.geometry_type",
+                    "geometry_type '3d' is not yet supported for " + physics +
+                    ": a 3D magnetic model needs a vector (H(curl)) potential, "
+                    "which is not implemented. Only electrostatics supports '3d'");
+            }
+        }
+
+        if (config.contains("output") && config["output"].is_object() &&
+            config["output"].contains("gmsh")) {
+            AddError("output.gmsh",
+                "Gmsh result export does not yet support 3D meshes; use "
+                "'paraview' or 'hdf5' output with geometry_type '3d'");
+        }
+    }
+
 public:
     /**
      * @brief Validate a configuration against a mesh
@@ -1042,6 +1095,7 @@ public:
         }
 
         ValidateSimulation(config);
+        ValidateGeometryCompatibility(config, mesh);
         ValidateEntityGroups(config, mesh);
         ValidateMaterials(config, mesh);
         ValidateRegions(config, mesh);

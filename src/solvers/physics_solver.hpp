@@ -15,7 +15,7 @@
 #include "../io/status_reporter.hpp"
 #include "amr_support.hpp"
 #include "../axisym/axisymmetric_mesh_validation.hpp"
-#include "../axisym/axisymmetric_boundary_lf_integrator.hpp"
+#include "geometry_model.hpp"
 #include "../core/marked_boundary_condition.hpp"
 
 /**
@@ -122,6 +122,19 @@ protected:
 
     StatusReporter& Reporter() const {
         return StatusReporter::Global();
+    }
+
+    // The coordinate model of this run: measure, scalar integrators, required
+    // mesh dimension and output units. Built on demand from `geometry` so the
+    // enum stays the single piece of state.
+    [[nodiscard]] GeometryModel Geometry() const { return GeometryModel(geometry); }
+
+    // Adopt the configured coordinate model and reject a mesh of the wrong
+    // dimension. Every solver's Setup() starts here, before anything reads
+    // `geometry` or assembles on the mesh.
+    void InitializeGeometry() {
+        geometry = config.GeometryType;
+        Geometry().VerifyMeshDimension(mesh);
     }
 
     // Marker (1/0 over domain attributes) for a set of element attribute ids.
@@ -305,15 +318,9 @@ protected:
             coefficients.push_back(
                 std::make_unique<mfem::ConstantCoefficient>(bc.Condition.Value));
             markers.push_back(std::make_unique<mfem::Array<int>>(bc.Marker));
-            if (geometry == GeometryType::Axisymmetric) {
-                load.AddBoundaryIntegrator(
-                    new AxisymmetricBoundaryLFIntegrator(*coefficients.back()),
-                    *markers.back());
-            } else {
-                load.AddBoundaryIntegrator(
-                    new mfem::BoundaryLFIntegrator(*coefficients.back()),
-                    *markers.back());
-            }
+            load.AddBoundaryIntegrator(
+                Geometry().NewBoundaryLFIntegrator(*coefficients.back()),
+                *markers.back());
         }
 
         load.Assemble();
@@ -421,21 +428,15 @@ protected:
         result_writer->WriteScenario(scenario_name, scenario, CollectExportFields(), driven_terminal);
     }
 
-    // Unit label for an extracted coupling quantity.
-    //
-    // Axisymmetric assembly carries the full revolved measure 2*pi*r dr dz, so
-    // the extracted quantity is absolute. Planar assembly integrates over the
-    // (x, y) cross-section only, which is equivalent to a unit out-of-plane
-    // depth: the model is translationally invariant in z and describes an
-    // infinitely long structure, so the result is a per-unit-length quantity.
-    // No extrusion length is configurable, so the planar label always carries
-    // the "/m" suffix rather than depending on a depth setting.
+    // Unit label for an extracted coupling quantity: absolute for the
+    // axisymmetric and 3D models, per unit length for planar. See
+    // GeometryModel::IsPerUnitLength.
     [[nodiscard]] std::string CouplingUnitLabel(const std::string& si_unit) const {
         return "[" + CouplingUnits(si_unit) + "]";
     }
 
     [[nodiscard]] std::string CouplingUnits(const std::string& si_unit) const {
-        return geometry == GeometryType::Axisymmetric ? si_unit : si_unit + "/m";
+        return Geometry().CouplingUnits(si_unit);
     }
 
     std::optional<matrix_io::CouplingMatrixWriter> CreateCouplingWriter() const {

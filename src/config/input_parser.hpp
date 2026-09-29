@@ -227,11 +227,12 @@ private:
                           {"magnetoquasistatics", ::PhysicsType::Magnetoquasistatics}});
     }
 
-    // "simulation.geometry_type": axisymmetric | planar.
+    // "simulation.geometry_type": axisymmetric | planar | 3d.
     [[nodiscard]] ::GeometryType GetGeometryType() const {
         return ParseEnum(Sim(), "geometry_type", ::GeometryType::Planar,
                          {{"axisymmetric", ::GeometryType::Axisymmetric},
-                          {"planar",       ::GeometryType::Planar}});
+                          {"planar",       ::GeometryType::Planar},
+                          {"3d",           ::GeometryType::Cartesian3D}});
     }
 
     // "simulation.analysis_type": field | coupling_matrix.

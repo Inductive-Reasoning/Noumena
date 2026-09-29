@@ -59,7 +59,7 @@ public:
 		if (!hdf5_) return std::nullopt;
 		return matrix_io::CouplingMatrixWriter(hdf5_->File(), terminals,
 			ToString(config_.PhysicsType),
-			config_.GeometryType == GeometryType::Axisymmetric ? "axisymmetric" : "planar");
+			ToString(config_.GeometryType));
 	}
 
 private:

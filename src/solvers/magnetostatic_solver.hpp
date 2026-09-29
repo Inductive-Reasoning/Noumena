@@ -52,8 +52,7 @@ public:
 		int order = config.Order;
 		const int dim = mesh.Dimension();
 
-		// Axisymmetric or Planar
-		geometry = config.GeometryType;
+		InitializeMagneticGeometry();
 		for (const auto& [term_name, term] : config.Terminals) {
 			MFEM_VERIFY(term.DriveQuantity == Quantity::Current,
 				"Magnetostatic terminal '" + term_name +
@@ -206,15 +205,8 @@ public:
 		// RHS
 		b = std::make_unique<mfem::LinearForm>(fespace.get());
 
-		if (geometry == GeometryType::Axisymmetric)
-		{
-			// Integrates J * v * r  (global 2π omitted consistently)
-			b->AddDomainIntegrator(new AxisymmetricLFIntegrator(*j_coeff));
-		}
-		else
-		{
-			b->AddDomainIntegrator(new mfem::DomainLFIntegrator(*j_coeff));
-		}
+		// Integrates J * v under the geometry's measure (2*pi*r for axisymmetric).
+		b->AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
 		b->Assemble();
 		if (mode == ImprintMode::Field) {
 			*b += neumann_rhs;
@@ -354,17 +346,11 @@ private:
 		mfem::PWConstCoefficient unit_density_coeff(unit_density);
 
 		mfem::LinearForm winding_functional(fespace.get());
-		if (geometry == GeometryType::Axisymmetric) {
-			winding_functional.AddDomainIntegrator(
-				new AxisymmetricLFIntegrator(unit_density_coeff));
-		}
-		else {
-			winding_functional.AddDomainIntegrator(
-				new mfem::DomainLFIntegrator(unit_density_coeff));
-		}
+		winding_functional.AddDomainIntegrator(
+			Geometry().NewDomainLFIntegrator(unit_density_coeff));
 		winding_functional.Assemble();
 
-		// Both integrators carry the full geometric measure, so this is webers.
+		// The integrator carries the full geometric measure, so this is webers.
 		return winding_functional * *A;
 	}
 

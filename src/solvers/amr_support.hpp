@@ -113,8 +113,8 @@ namespace amr {
 			throw std::runtime_error(
 				"AMR: conforming refinement was requested but the mesh became "
 				"non-conforming (hanging nodes). Conforming AMR is only supported "
-				"for simplex (triangular) meshes. Re-mesh with triangles or "
-				"disable AMR.");
+				"for simplex (triangular or tetrahedral) meshes. Re-mesh with "
+				"simplices or disable AMR.");
 		}
 	}
 

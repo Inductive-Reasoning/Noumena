@@ -688,3 +688,75 @@ TEST_CASE("ConfigValidator enforces MQS scenario frequencies", "[config_validato
 		REQUIRE(validator.Validate(ValidConfig()));
 	}
 }
+
+TEST_CASE("ConfigValidator checks geometry_type against the mesh and physics",
+		  "[config_validator][geometry][3d]") {
+	mfem::Mesh square = mfem::Mesh::MakeCartesian2D(
+		1, 1, mfem::Element::QUADRILATERAL, true, 1.0, 1.0);
+	mfem::Mesh cube = mfem::Mesh::MakeCartesian3D(
+		1, 1, 1, mfem::Element::TETRAHEDRON, 1.0, 1.0, 1.0);
+
+	// ValidConfig() is written for a 2D mesh; lift its groups one dimension.
+	auto three_d_config = []() {
+		json config = ValidConfig();
+		config["simulation"]["geometry_type"] = "3d";
+		config["entity_groups"][0]["dim"] = 3;
+		config["entity_groups"][1]["dim"] = 2;
+		return config;
+	};
+
+	SECTION("accepts '3d' electrostatics on a 3D mesh") {
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(three_d_config(), &cube));
+	}
+
+	SECTION("rejects a 2D geometry_type on a 3D mesh") {
+		json config = three_d_config();
+		config["simulation"]["geometry_type"] = "planar";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("the planar default also rejects a 3D mesh") {
+		json config = three_d_config();
+		config["simulation"].erase("geometry_type");
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("rejects '3d' on a 2D mesh") {
+		json config = ValidConfig();
+		config["simulation"]["geometry_type"] = "3d";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &square));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("rejects '3d' magnetics") {
+		for (const char* physics : {"magnetostatics", "magnetoquasistatics"}) {
+			json config = three_d_config();
+			config["simulation"]["physics_type"] = physics;
+			ConfigValidator validator;
+			REQUIRE_FALSE(validator.Validate(config));
+			REQUIRE(HasError(validator, "simulation.geometry_type"));
+		}
+	}
+
+	SECTION("rejects Gmsh output for '3d'") {
+		json config = three_d_config();
+		config["output"] = {{"gmsh", {{"directory", "msh"}}}};
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "output.gmsh"));
+	}
+
+	SECTION("rejects an unknown geometry_type") {
+		json config = ValidConfig();
+		config["simulation"]["geometry_type"] = "spherical";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+}

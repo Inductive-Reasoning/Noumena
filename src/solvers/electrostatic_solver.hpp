@@ -9,7 +9,6 @@
 #include <vector>
 #include "mfem.hpp"
 #include "physics_solver.hpp"
-#include "../axisym/axisymmetric_diffusion_integrator.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../io/gmsh_results_writer.hpp"
 #include "amr_support.hpp"
@@ -53,8 +52,7 @@ public:
 		int order = config.Order;
 		const int dim = mesh.Dimension();
 
-		// Axisymmetric or Planar
-		geometry = config.GeometryType;
+		InitializeGeometry();
 		for (const auto& [term_name, term] : config.Terminals) {
 			MFEM_VERIFY(term.DriveQuantity == Quantity::Voltage,
 				"Electrostatic terminal '" + term_name +
@@ -174,14 +172,10 @@ public:
 	// Create the domain diffusion integrator matching the active geometry. Used
 	// both by the solve (owned by 'a') and the AMR error estimator (a separate,
 	// independently-owned instance), so the estimated error is consistent with
-	// the assembled operator - axisymmetric (2*pi*r, eps) or planar (eps).
+	// the assembled operator: Div(eps Grad V) = 0 under the geometry's measure
+	// (2*pi*r for axisymmetric, the plain Cartesian Laplacian in 2D and 3D).
 	mfem::BilinearFormIntegrator* MakeStiffnessIntegrator() const {
-		if (geometry == GeometryType::Axisymmetric) {
-			// Solves: Div( r * eps * Grad(V) ) = 0; integrator handles 'r' and 'eps'.
-			return new AxisymmetricDiffusionIntegrator(*epsilon_coeff);
-		}
-		// Solves: Div( eps * Grad(V) ) = 0; standard Cartesian Laplacian.
-		return new mfem::DiffusionIntegrator(*epsilon_coeff);
+		return Geometry().NewDiffusionIntegrator(*epsilon_coeff);
 	}
 
 	// Estimate per-element error on the CURRENT mesh. The scenario-wide fold (a

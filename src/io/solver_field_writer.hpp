@@ -39,8 +39,11 @@ public:
 					   const std::string& collection_name,
 					   const FieldExportSet& fields) const
 	{
+		// ParaViewDataCollection and the L2 projections below are dimension-
+		// generic, so 2D and 3D meshes are both supported.
 		const int dim = mesh.Dimension();
-		MFEM_ASSERT(dim == 2, "ParaView export assumes a 2D mesh.");
+		MFEM_VERIFY(dim == 2 || dim == 3,
+			"ParaView export supports 2D and 3D meshes, not " << dim << "D.");
 
 		mfem::ParaViewDataCollection pv(collection_name, &mesh);
 		pv.SetPrefixPath(directory.string());
@@ -97,7 +100,13 @@ public:
 				   const FieldExportSet& fields,
 				   gmsh_results::MshVersion gmsh_version) const
 	{
-		MFEM_ASSERT(mesh.Dimension() == 2, "Gmsh export assumes a 2D mesh.");
+		// The Gmsh node layouts and interpolation schemes are written for
+		// triangles and quadrilaterals only. MFEM_VERIFY rather than
+		// MFEM_ASSERT: the assert compiles out of Release builds, which would
+		// defer the failure to an obscure abort deep inside the layout code.
+		MFEM_VERIFY(mesh.Dimension() == 2,
+			"Gmsh result export does not yet support " << mesh.Dimension()
+			<< "D meshes; use ParaView or HDF5 output.");
 
 		const int order = std::max(1, solution_order);
 		std::vector<gmsh_results::View> views;

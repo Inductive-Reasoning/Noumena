@@ -30,8 +30,8 @@ public:
       // instead of whatever point happened to be set last.
       T.SetIntPoint(&ip);
 
-      mfem::Vector grad(2);
-      Phi->GetGradient(T, grad); // Returns (Er, Ez)
+      mfem::Vector grad;
+      Phi->GetGradient(T, grad); // Sized by GetGradient to the space dimension
 
       double mag_sq = grad * grad; // |E|^2
       double eps_val = Eps->Eval(T, ip);

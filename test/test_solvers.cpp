@@ -1824,6 +1824,159 @@ TEST_CASE("Coupling matrix units distinguish planar from axisymmetric",
         REQUIRE(probe.CouplingUnitLabel("H") == "[H]");
         REQUIRE(probe.CouplingUnitLabel("Ohm") == "[Ohm]");
     }
+
+    SECTION("3D results are absolute") {
+        probe.geometry = GeometryType::Cartesian3D;
+        REQUIRE(probe.CouplingUnitLabel("F") == "[F]");
+        REQUIRE(probe.CouplingUnitLabel("H") == "[H]");
+        REQUIRE(probe.CouplingUnitLabel("Ohm") == "[Ohm]");
+    }
+}
+
+namespace {
+// A 3D tetrahedral box [0,lx] x [0,ly] x [0,d] saved as an MFEM mesh. MFEM's
+// Cartesian generator labels the boundary faces 1 = bottom (z = 0) and
+// 6 = top (z = d); the four sides (2-5) are left natural.
+void CreateBoxTetMesh(const std::string& filename,
+                      double lx, double ly, double d, int nx, int ny, int nz) {
+    mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(
+        nx, ny, nz, mfem::Element::TETRAHEDRON, lx, ly, d);
+    std::ofstream out(filename);
+    out.precision(17);
+    mesh.Print(out);
+}
+
+json MakeBoxCapacitorConfig(const std::string& mesh_file, double epsilon_r) {
+    return json{
+        {"simulation", {
+            {"physics_type", "electrostatics"},
+            {"mesh", mesh_file},
+            {"order", 1},
+            {"geometry_type", "3d"},
+            {"analysis_type", "coupling_matrix"},
+            {"solver_tolerance", 1e-12},
+            {"solver_max_iter", 4000},
+            {"solver_print_level", 0}
+        }},
+        {"entity_groups", json::array({
+            {{"name", "Domain"}, {"dim", 3}, {"attribute_ids", {1}}},
+            {{"name", "Bottom"}, {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Top"},    {"dim", 2}, {"attribute_ids", {6}}}
+        })},
+        {"regions", json::array({
+            {{"name", "Domain"}, {"entity_group", "Domain"}, {"material", "Dielectric"}}
+        })},
+        {"materials", json::array({
+            {{"name", "Dielectric"}, {"properties", {{"epsilon_r", epsilon_r}}}}
+        })},
+        {"terminals", json::array({
+            {{"name", "Bottom"}, {"quantity", "voltage"}, {"entity_group", "Bottom"}},
+            {{"name", "Top"},    {"quantity", "voltage"}, {"entity_group", "Top"}}
+        })},
+        {"boundary_conditions", json::array()},
+        {"scenarios", json::array()}
+    };
+}
+} // namespace
+
+// First 3D end-to-end check. Between two parallel plates with natural (zero
+// normal flux) side walls the exact potential is linear in z, which P1
+// tetrahedra represent exactly, so the extracted capacitance must equal
+// eps*A/d to solver precision -- and be labeled in farads, not F/m.
+TEST_CASE("3D parallel-plate capacitance is exact and absolute",
+          "[solvers][analytic][electrostatic][coupling][3d]") {
+    const std::string mesh_file = "test_3d_box_capacitor.mesh";
+    const std::string matrix_file = "coupling_electrostatics_3d.h5";
+    constexpr double lx = 0.2, ly = 0.1, d = 0.05, eps_r = 3.0;
+    CreateBoxTetMesh(mesh_file, lx, ly, d, 2, 2, 2);
+
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+    REQUIRE(mesh->Dimension() == 3);
+    ElectrostaticSolver solver(*mesh, DecodeConfig(
+        MakeBoxCapacitorConfig(mesh_file, eps_r), matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+    REQUIRE(matrix.labels == std::vector<std::string>{"Bottom", "Top"});
+    const double analytic = Constants::EPSILON_0 * eps_r * lx * ly / d;
+    REQUIRE(matrix.values[0][0] == Catch::Approx(analytic).epsilon(1e-8));
+    REQUIRE(matrix.values[1][1] == Catch::Approx(analytic).epsilon(1e-8));
+    REQUIRE(matrix.values[0][1] == Catch::Approx(-analytic).epsilon(1e-8));
+    REQUIRE(matrix.values[1][0] == Catch::Approx(-analytic).epsilon(1e-8));
+
+    HighFive::File file(matrix_file, HighFive::File::ReadOnly);
+    std::string geometry, units;
+    file.getGroup("/coupling").getAttribute("geometry_type").read(geometry);
+    file.getDataSet("/coupling/Capacitance/values").getAttribute("units").read(units);
+    REQUIRE(geometry == "3d");
+    REQUIRE(units == "F");
+
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+TEST_CASE("Solvers reject a mesh whose dimension contradicts geometry_type",
+          "[solvers][geometry][3d]") {
+    const std::string box_file = "test_3d_dimension_box.mesh";
+    CreateBoxTetMesh(box_file, 1.0, 1.0, 1.0, 1, 1, 1);
+    const auto box = mesh_io::LoadMesh(box_file);
+
+    SECTION("a planar run on a 3D mesh") {
+        json config = MakeBoxCapacitorConfig(box_file, 1.0);
+        config["simulation"]["geometry_type"] = "planar";
+        ElectrostaticSolver solver(*box, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("requires a 2D mesh"));
+    }
+
+    SECTION("a 3D run on a 2D mesh") {
+        const std::string strip_file = "test_3d_dimension_strip.mesh";
+        CreatePlanarStripMesh(strip_file, 0.1, 0.02, 2, 1);
+        json config = MakePlanarStripConfig(
+            "electrostatics", strip_file, 1, {{"epsilon_r", 1.0}}, 0.0, 1.0);
+        config["simulation"]["geometry_type"] = "3d";
+        mfem::Mesh strip(strip_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(strip, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("requires a 3D mesh"));
+        fs::remove(strip_file);
+    }
+
+    SECTION("3D magnetics is not yet implemented") {
+        json config = MakeBoxCapacitorConfig(box_file, 1.0);
+        config["simulation"]["physics_type"] = "magnetostatics";
+        config["terminals"] = json::array();
+        MagnetostaticSolver solver(*box, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("H(curl)"));
+    }
+
+    fs::remove(box_file);
+}
+
+TEST_CASE("Mesh loader accepts a tetrahedral mesh and marks it for refinement",
+          "[mesh_loader][3d]") {
+    const std::string mesh_file = "test_3d_loader_box.mesh";
+    CreateBoxTetMesh(mesh_file, 1.0, 1.0, 1.0, 2, 2, 2);
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+
+    REQUIRE(mesh->Dimension() == 3);
+    REQUIRE(mesh->CheckElementOrientation(false) == 0);
+    REQUIRE(mesh->CheckBdrElementOrientation(false) == 0);
+
+    // Conforming bisection of tets needs the refinement marking applied by
+    // Finalize(refine=true); refining must leave the mesh conforming.
+    mfem::Array<int> marked;
+    marked.Append(0);
+    const int before = mesh->GetNE();
+    REQUIRE_NOTHROW(amr::RefineConforming(*mesh, marked));
+    REQUIRE(mesh->GetNE() > before);
+    REQUIRE_FALSE(mesh->Nonconforming());
+    REQUIRE(mesh->CheckElementOrientation(false) == 0);
+
+    fs::remove(mesh_file);
 }
 
 TEST_CASE("Electrostatic coupling ignores fixed Neumann background",
