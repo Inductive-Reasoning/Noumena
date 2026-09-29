@@ -118,6 +118,10 @@ u = ½ ε |E⃗|²
 - **Dirichlet:** `V = V₀` on `∂Ω_D` (e.g., electrode surfaces)
 - **Neumann:** `n̂ · (ε ∇V) = g` on `∂Ω_N`. The configured `value`
   is this outward natural flux and is added to the weak-form boundary RHS.
+- **Robin:** `n̂ · (ε ∇V) + α V = g` on `∂Ω_R`, with `α = robin_coefficient`
+  ≥ 0 and `g = value`. It adds `∫ α V v dS` to the operator (under the
+  geometry's measure) and `∫ g v dS` to the RHS. Charge extraction uses the
+  domain stiffness alone, so the Robin term never enters `Q = K₀ V`.
   A zero value is the implicit natural condition and requires no assembled term.
 - **Robin:** Reserved in the input schema but not yet implemented by the solvers.
 

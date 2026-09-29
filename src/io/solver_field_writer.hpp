@@ -100,13 +100,12 @@ public:
 				   const FieldExportSet& fields,
 				   gmsh_results::MshVersion gmsh_version) const
 	{
-		// The Gmsh node layouts and interpolation schemes are written for
-		// triangles and quadrilaterals only. MFEM_VERIFY rather than
-		// MFEM_ASSERT: the assert compiles out of Release builds, which would
-		// defer the failure to an obscure abort deep inside the layout code.
-		MFEM_VERIFY(mesh.Dimension() == 2,
-			"Gmsh result export does not yet support " << mesh.Dimension()
-			<< "D meshes; use ParaView or HDF5 output.");
+		// Node layouts exist for triangles and quadrilaterals (2D) and for
+		// tetrahedra and hexahedra (3D); an unsupported element type is
+		// reported by the layout code itself.
+		MFEM_VERIFY(mesh.Dimension() == 2 || mesh.Dimension() == 3,
+			"Gmsh export supports 2D and 3D meshes, not "
+			<< mesh.Dimension() << "D.");
 
 		const int order = std::max(1, solution_order);
 		std::vector<gmsh_results::View> views;

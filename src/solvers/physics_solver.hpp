@@ -294,19 +294,29 @@ protected:
         return info;
     }
 
+    // Whether this formulation assembles Robin conditions. A Robin term is part
+    // of the operator, so a solver that ignored one would silently apply the
+    // homogeneous Neumann condition instead; solvers without it reject Robin.
+    virtual bool SupportsRobin() const { return false; }
+
     BoundaryConditionSet BuildBoundaryConditions() const {
         BoundaryConditionSet bcs;
         for (const auto& bc : config.BoundaryConditions) {
-            MFEM_VERIFY(bc.Type != BoundaryConditionType::Robin,
-                "Robin boundary conditions are reserved but not implemented. "
-                "Use Dirichlet or Neumann for boundary group '" +
+            MFEM_VERIFY(bc.Type != BoundaryConditionType::Robin || SupportsRobin(),
+                "Robin boundary conditions are not implemented for " +
+                std::string(ToString(config.PhysicsType)) +
+                ". Use Dirichlet or Neumann for boundary group '" +
                 bc.EntityGroupName + "'.");
             bcs.Add(MarkerFromGroup(bc.EntityGroupName), bc);
         }
         return bcs;
     }
 
-    mfem::Vector AssembleNeumannBoundaryLoad() {
+    // The fixed natural boundary load: integral(g v) over every Neumann
+    // boundary (g = prescribed outward flux) and every Robin boundary (g = the
+    // Robin data value). This is boundary DATA, so coupling analyses omit it;
+    // the Robin operator term (RobinCoeff * u, v) is assembled by the solver.
+    mfem::Vector AssembleNaturalBoundaryLoad() {
         mfem::LinearForm load(fespace.get());
         std::vector<std::unique_ptr<mfem::ConstantCoefficient>> coefficients;
         // MFEM binds the marker by non-const reference and keeps the pointer, so
@@ -314,7 +324,7 @@ protected:
         std::vector<std::unique_ptr<mfem::Array<int>>> markers;
 
         for (const auto& bc : boundary_conditions) {
-            if (!bc.IsNeumann() || bc.Condition.Value == 0.0) continue;
+            if (!(bc.IsNeumann() || bc.IsRobin()) || bc.Condition.Value == 0.0) continue;
             coefficients.push_back(
                 std::make_unique<mfem::ConstantCoefficient>(bc.Condition.Value));
             markers.push_back(std::make_unique<mfem::Array<int>>(bc.Marker));

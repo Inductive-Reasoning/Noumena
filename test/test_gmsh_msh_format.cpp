@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <filesystem>
 #include <array>
@@ -303,4 +304,62 @@ TEST_CASE("MSH 4.1 output round-trips through the MFEM reader", "[gmsh][msh][out
 	REQUIRE(reloaded.GetNE() == original.GetNE());
 	REQUIRE(reloaded.GetNV() == original.GetNV());
 	REQUIRE(Attributes(reloaded) == Attributes(original));
+}
+
+namespace {
+
+// A unit-cube mesh of @p etype elements whose lower and upper halves (in x)
+// carry attributes 3 and 8.
+mfem::Mesh MakeTwoAttributeCube(mfem::Element::Type etype) {
+	mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(2, 1, 1, etype);
+	for (int e = 0; e < mesh.GetNE(); ++e) {
+		mfem::Vector c;
+		mesh.GetElementCenter(e, c);
+		mesh.SetAttribute(e, c(0) < 0.5 ? 3 : 8);
+	}
+	mesh.SetAttributes();
+	return mesh;
+}
+
+double TotalVolume(mfem::Mesh& mesh) {
+	double v = 0.0;
+	for (int e = 0; e < mesh.GetNE(); ++e) { v += mesh.GetElementVolume(e); }
+	return v;
+}
+
+} // namespace
+
+TEST_CASE("MSH 4.1 output of a 3D mesh uses volume entities", "[gmsh][msh][output][3d]") {
+	mfem::Mesh mesh = MakeTwoAttributeCube(mfem::Element::TETRAHEDRON);
+	const std::string out = WriteToString(mesh, 1, gmsh_results::MshVersion::V4_1);
+
+	// numPoints numCurves numSurfaces numVolumes: two volume entities.
+	REQUIRE(Contains(out, "$Entities\n0 0 0 2\n"));
+	REQUIRE(Contains(out, " 1 3 0\n"));
+	REQUIRE(Contains(out, " 1 8 0\n"));
+	// Element blocks: entityDim 3, entityTag = attribute, type 4 (4-node tet).
+	REQUIRE(Contains(out, "\n3 3 4 "));
+	REQUIRE(Contains(out, "\n3 8 4 "));
+	// The interpolation scheme carries three exponent columns.
+	REQUIRE(Contains(out, "\n4 3\n"));
+}
+
+TEST_CASE("3D MSH output round-trips through the MFEM reader", "[gmsh][msh][output][3d]") {
+	for (auto etype : { mfem::Element::TETRAHEDRON, mfem::Element::HEXAHEDRON }) {
+		for (auto version : { gmsh_results::MshVersion::V2_2,
+							  gmsh_results::MshVersion::V4_1 }) {
+			for (int order = 1; order <= 2; ++order) {
+				mfem::Mesh original = MakeTwoAttributeCube(etype);
+				const std::string out = WriteToString(original, order, version);
+
+				std::istringstream in(out);
+				mfem::Mesh reloaded(in, /*generate_edges=*/1, /*refine=*/0);
+
+				REQUIRE(reloaded.Dimension() == 3);
+				REQUIRE(reloaded.GetNE() == original.GetNE());
+				REQUIRE(Attributes(reloaded) == Attributes(original));
+				REQUIRE(TotalVolume(reloaded) == Catch::Approx(1.0).epsilon(1e-10));
+			}
+		}
+	}
 }

@@ -82,7 +82,8 @@ Object. **Required** -- the only required section.
 mesh, `3d` a 3D mesh. A mismatch is rejected, including the `planar` default on
 a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
 `axisymmetric` and `3d` ones are absolute (F, H). `3d` is currently supported
-for `electrostatics` only, with `paraview` and `hdf5` output (not `gmsh`).
+for `electrostatics` only, with every output format. Gmsh output supports
+tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.
 
 `direct` is the default linear solver because a coupling-matrix run amortizes
 one factorization over every terminal's right-hand side, and its accuracy does
@@ -227,13 +228,19 @@ Array of objects.
 | `type` | string | yes | `dirichlet`, `neumann`, `robin` |
 | `value` | number | yes | Prescribed value or flux |
 | `name` | string | no | Documentation only |
-| `robin_coefficient` | number | Robin only | Reserved; rejected on non-Robin entries |
+| `robin_coefficient` | number | Robin only | `alpha` below; rejected on non-Robin entries |
 
 - **dirichlet** prescribes the solution: potential `V` (electrostatics) or
   `A_phi` (magnetics).
 - **neumann** prescribes the outward natural flux. Value `0` is the implicit
   natural condition.
-- **robin** is parsed and reserved but **not implemented**; the solver rejects it.
+- **robin** prescribes `n . (material flux) + alpha u = value` (outward normal,
+  the same flux as Neumann). Implemented for **electrostatics** only, where
+  `alpha = robin_coefficient` must be non-negative; the magnetic solvers
+  reject it. As a far-field closure on a sphere of radius `R` around compact
+  sources, `alpha = eps/R` with `value = 0` is exact for the monopole term
+  (see [Open-boundary truncation](open_boundary.md)). Coupling-matrix runs keep
+  the `alpha` term in the operator but omit `value`, like all boundary data.
 
 Boundaries with no entry are homogeneous Neumann. Axis regularity on `r = 0` in
 axisymmetric magnetic runs is imposed automatically and must **not** be
@@ -355,7 +362,9 @@ than one at a time.
 **Physics-specific**
 - MQS requires a positive frequency on every scenario.
 - `simulation.frequency` is rejected for MQS; frequency belongs on scenarios.
-- Robin boundary conditions are rejected as unimplemented.
+- Robin boundary conditions are electrostatics-only and need a non-negative
+  `robin_coefficient`.
+- `geometry_type` `3d` is electrostatics-only.
 
 ---
 

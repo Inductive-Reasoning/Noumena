@@ -744,12 +744,12 @@ TEST_CASE("ConfigValidator checks geometry_type against the mesh and physics",
 		}
 	}
 
-	SECTION("rejects Gmsh output for '3d'") {
+	SECTION("accepts Gmsh and ParaView output for '3d'") {
 		json config = three_d_config();
-		config["output"] = {{"gmsh", {{"directory", "msh"}}}};
+		config["output"] = {{"gmsh", {{"directory", "msh"}}},
+							{"paraview", {{"directory", "vtk"}}}};
 		ConfigValidator validator;
-		REQUIRE_FALSE(validator.Validate(config, &cube));
-		REQUIRE(HasError(validator, "output.gmsh"));
+		REQUIRE(validator.Validate(config, &cube));
 	}
 
 	SECTION("rejects an unknown geometry_type") {

@@ -1027,8 +1027,8 @@ private:
     }
 
     // Cross-checks between geometry_type and the rest of the run: the mesh
-    // dimension it requires, and the physics / output formats that do not yet
-    // support a 3D model. Runs after ValidateSimulation(), so an invalid
+    // dimension it requires, and the physics that do not yet support a 3D
+    // model. Runs after ValidateSimulation(), so an invalid
     // geometry_type string has already been reported and is skipped here.
     //
     // The dimension check matters because nothing downstream would catch the
@@ -1069,13 +1069,6 @@ private:
                     ": a 3D magnetic model needs a vector (H(curl)) potential, "
                     "which is not implemented. Only electrostatics supports '3d'");
             }
-        }
-
-        if (config.contains("output") && config["output"].is_object() &&
-            config["output"].contains("gmsh")) {
-            AddError("output.gmsh",
-                "Gmsh result export does not yet support 3D meshes; use "
-                "'paraview' or 'hdf5' output with geometry_type '3d'");
         }
     }
 

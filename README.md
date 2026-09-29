@@ -1,13 +1,13 @@
 # MFEM-ElectroMag
 
-A finite element solver for electromagnetic problems using MFEM (Modular Finite Element Methods). This solver supports electrostatic, magnetostatic, and magnetoquasistatic problems in both axisymmetric and planar geometries.
+A finite element solver for electromagnetic problems using MFEM (Modular Finite Element Methods). This solver supports electrostatic, magnetostatic, and magnetoquasistatic problems in axisymmetric and planar 2D geometries, with 3D support for electrostatics.
 
 ## Features
 
 - **Electrostatics**: Solves for electric potential and field distributions
 - **Magnetostatics**: Solves for magnetic vector potential and field distributions
 - **Magnetoquasistatics**: Time-harmonic eddy current problems
-- **Axisymmetric and Planar**: Supports both 2D coordinate systems
+- **Axisymmetric, Planar and 3D**: Both 2D coordinate systems, plus full 3D for electrostatics
 - **JSON Configuration**: Easy problem setup via JSON files
 - **ParaView Output**: Direct visualization of results
 - **Comprehensive Testing**: Unit and integration tests with Catch2

@@ -8,6 +8,7 @@
 - [Why must every domain attribute be claimed by a region?](#why-must-every-domain-attribute-be-claimed-by-a-region)
 - [Do the reported losses include hysteresis?](#do-the-reported-losses-include-hysteresis)
 - [Why is a Robin boundary condition rejected?](#why-is-a-robin-boundary-condition-rejected)
+- [How do I choose a Robin far-field coefficient?](#how-do-i-choose-a-robin-far-field-coefficient)
 
 ---
 
@@ -133,9 +134,29 @@ or a superposition of several frequencies.
 
 ## Why is a Robin boundary condition rejected?
 
-`robin` is parsed and reserved in the schema but not implemented in any solver.
-Rather than silently ignoring it -- which would apply a homogeneous Neumann
-condition and quietly change the physics -- the validator rejects it outright.
+Robin is implemented for electrostatics only. The magnetostatic and MQS solvers
+reject it rather than silently ignoring it, which would apply a homogeneous
+Neumann condition and quietly change the physics. For magnetic open-boundary
+problems, truncate the domain further out with a Dirichlet condition and verify
+that the result is insensitive to the truncation radius.
 
-For open-boundary problems, truncate the domain further out with a Dirichlet
-condition and verify that the result is insensitive to the truncation radius.
+Electrostatics also rejects a negative `robin_coefficient`: it makes the
+operator indefinite.
+
+## How do I choose a Robin far-field coefficient?
+
+Place a spherical outer boundary of radius `R` around the conductors (a
+half-circle centred on the axis for an axisymmetric model) and use
+
+```json
+{"type": "robin", "entity_group": "FarField", "value": 0.0,
+ "robin_coefficient": <eps0 * eps_r / R>}
+```
+
+with `eps_r` of the material next to that boundary. The monopole part of the
+exterior potential, `V ~ Q/(4 pi eps r)`, satisfies `eps dV/dn + (eps/R) V = 0`
+exactly on that sphere, so the leading truncation error vanishes; what remains
+decays like the dipole term. For an isolated sphere the condition is exact, so
+the only error left is discretization (1e-4 in the `3D Robin far-field` test,
+with `R = 3a`), where grounding the same boundary over-reports the capacitance
+by `R/(R - a)`, i.e. 50%.

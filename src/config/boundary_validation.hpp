@@ -51,31 +51,36 @@ private:
         std::ostringstream oss;
         const int NV = mesh.GetNV();
         const int NE = mesh.GetNEdges();
-        if (dof < NV) {
-            const double* v = mesh.GetVertex(dof);
-            oss << "vertex " << dof << " at (" << v[0] << ", " << v[1];
-            if (mesh.SpaceDimension() > 2) oss << ", " << v[2];
+        const int sdim = mesh.SpaceDimension();
+        // "(x, y)" in 2D, "(x, y, z)" in 3D.
+        auto point = [&](const double* p) {
+            oss << "(" << p[0];
+            for (int c = 1; c < sdim; ++c) oss << ", " << p[c];
             oss << ")";
+        };
+        if (dof < NV) {
+            oss << "vertex " << dof << " at ";
+            point(mesh.GetVertex(dof));
         } else if (dof < NV + NE) {
             int edge_idx = dof - NV;
             mfem::Array<int> ev;
             mesh.GetEdgeVertices(edge_idx, ev);
             const double* v0 = mesh.GetVertex(ev[0]);
             const double* v1 = mesh.GetVertex(ev[1]);
-            oss << "edge-interior on mesh edge " << edge_idx
-                << " midpoint=(" << 0.5 * (v0[0] + v1[0]) << ", "
-                << 0.5 * (v0[1] + v1[1]) << ")";
+            double mid[3] = { 0.0, 0.0, 0.0 };
+            for (int c = 0; c < sdim; ++c) mid[c] = 0.5 * (v0[c] + v1[c]);
+            oss << "edge-interior on mesh edge " << edge_idx << " midpoint=";
+            point(mid);
         } else if (fallback_be >= 0) {
             mfem::Array<int> verts;
             mesh.GetBdrElementVertices(fallback_be, verts);
-            double cx = 0, cy = 0;
+            double centroid[3] = { 0.0, 0.0, 0.0 };
             for (int vi = 0; vi < verts.Size(); ++vi) {
                 const double* v = mesh.GetVertex(verts[vi]);
-                cx += v[0]; cy += v[1];
+                for (int c = 0; c < sdim; ++c) centroid[c] += v[c] / verts.Size();
             }
-            cx /= verts.Size(); cy /= verts.Size();
-            oss << "face/interior near bdr-element centroid ("
-                << cx << ", " << cy << ")";
+            oss << "face/interior near bdr-element centroid ";
+            point(centroid);
         } else {
             oss << "index " << dof;
         }

@@ -528,7 +528,7 @@ public:
 		Reporter().Status("Mesh has " + std::to_string(mesh.GetNE()) +
 			" elements; field space has " + std::to_string(fespace->GetTrueVSize()) +
 			" true DOFs.");
-		neumann_rhs = AssembleNeumannBoundaryLoad();
+		neumann_rhs = AssembleNaturalBoundaryLoad();
 
 		{
 			auto operation = Reporter().Start("complex bilinear form assembly");

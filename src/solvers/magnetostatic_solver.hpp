@@ -88,7 +88,7 @@ public:
 
 		A = std::make_unique<mfem::GridFunction>(fespace.get());
 		*A = 0.0;
-		neumann_rhs = AssembleNeumannBoundaryLoad();
+		neumann_rhs = AssembleNaturalBoundaryLoad();
 
 		a = std::make_unique<mfem::BilinearForm>(fespace.get());
 		a->AddDomainIntegrator(MakeStiffnessIntegrator()); // a takes ownership

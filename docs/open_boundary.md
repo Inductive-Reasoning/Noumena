@@ -58,11 +58,12 @@ Three conclusions:
 
 ## Current state of the code
 
-- Dirichlet-at-a-distance is the only supported far-field closure.
-- `BoundaryConditionType::Robin` exists in `src/core/problem_config.hpp` and is
-  accepted by the parser, but is **not assembled** — the solvers reject it
-  during setup. The struct carries a `RobinCoeff` field reserved for exactly
-  this purpose. See the "Reserved" comment on `BoundaryCondition`.
+- **Electrostatics** supports the Robin far-field closure of option 1 below
+  (`robin_coefficient = eps/R` on a sphere of radius `R`), in every geometry.
+  It is exact for the monopole term; see the FAQ entry "How do I choose a
+  Robin far-field coefficient?".
+- **Magnetics:** Dirichlet-at-a-distance is still the only supported far-field
+  closure; the magnetic solvers reject Robin during setup.
 - The inductance regression tests in `test/test_solvers.cpp`
   (`Magnetostatic loop inductance matches the analytic ring value` and its MQS
   counterpart) use `D/a = 40` and assert 0.5%. That tolerance is set by the

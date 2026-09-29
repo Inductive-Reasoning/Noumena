@@ -134,7 +134,20 @@ public:
 		return nullptr;
 	}
 
-	/// (g, v) over the boundary: prescribed Neumann flux.
+	/// (Q u, v) over the boundary: the Robin term. The axisymmetric volume
+	/// mass integrator doubles as the boundary one: it reads r from the SPACE
+	/// dimension, so on a meridional boundary segment it applies 2*pi*r ds.
+	[[nodiscard]] mfem::BilinearFormIntegrator* NewBoundaryMassIntegrator(
+		mfem::Coefficient& q) const {
+		switch (type_) {
+			case GeometryType::Axisymmetric: return new AxisymmetricMassIntegrator(q);
+			case GeometryType::Planar:       return new mfem::BoundaryMassIntegrator(q);
+			case GeometryType::Cartesian3D:  return new mfem::BoundaryMassIntegrator(q);
+		}
+		return nullptr;
+	}
+
+	/// (g, v) over the boundary: prescribed Neumann flux and Robin data.
 	[[nodiscard]] mfem::LinearFormIntegrator* NewBoundaryLFIntegrator(
 		mfem::Coefficient& g) const {
 		switch (type_) {

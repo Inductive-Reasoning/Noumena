@@ -25,6 +25,7 @@ struct MarkedBoundaryCondition {
 
 	bool IsDirichlet() const { return Condition.Type == BoundaryConditionType::Dirichlet; }
 	bool IsNeumann() const { return Condition.Type == BoundaryConditionType::Neumann; }
+	bool IsRobin() const { return Condition.Type == BoundaryConditionType::Robin; }
 
 	// Carries a fixed nonzero value that must be re-projected each scenario:
 	// FormLinearSystem lifts essential values into the RHS, and the solution

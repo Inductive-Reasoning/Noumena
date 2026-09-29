@@ -24,9 +24,17 @@ class ElectrostaticSolver : public PhysicsSolver {
 	std::unique_ptr<mfem::PWConstCoefficient> epsilon_coeff;
 
 	std::unique_ptr<mfem::LinearForm> b;
-	mfem::Vector neumann_rhs;
+	mfem::Vector natural_rhs; // Neumann flux + Robin data load (boundary data)
 	std::unique_ptr<mfem::BilinearForm> a;
 
+	// Robin coefficients and markers bound into `a`. MFEM keeps pointers to
+	// both, so they live as long as the form does.
+	std::vector<std::unique_ptr<mfem::ConstantCoefficient>> robin_coeffs;
+	std::vector<std::unique_ptr<mfem::Array<int>>> robin_markers;
+
+	// Domain stiffness alone, for the coupling charge extraction Q = K0*x.
+	// Assembled by its own form rather than snapshotted from `a`, because `a`
+	// also carries Robin boundary terms. See BuildOperators().
 	std::unique_ptr<mfem::SparseMatrix> K0;
 	std::unique_ptr<mfem::DenseMatrix> C; // Coupling Matrix for terminals
 
@@ -74,6 +82,13 @@ public:
 			return m.RelPermittivity * Constants::EPSILON_0; });
 
 		boundary_conditions = BuildBoundaryConditions();
+		for (const auto& bc : boundary_conditions) {
+			MFEM_VERIFY(!bc.IsRobin() || bc.Condition.RobinCoeff >= 0.0,
+				"Robin boundary group '" + bc.Condition.EntityGroupName +
+				"' has a negative robin_coefficient; electrostatics requires "
+				"a non-negative one (eps/R for a spherical far-field boundary "
+				"of radius R).");
+		}
 
 		// Voltage terminals are realized as essential constraints in this
 		// formulation. They are not boundary conditions: the value is
@@ -96,6 +111,12 @@ public:
 		validator.ValidateBoundaryConditions(boundary_conditions.Entries(),
 			terminal_markers, /*allow_overlap=*/false);
 	}
+
+	// Robin conditions ((eps dV/dn) + RobinCoeff * V = Value, outward normal)
+	// are assembled into the operator; see BuildOperators(). The coefficient
+	// must be non-negative: a negative one makes the operator indefinite, which
+	// both the Cholesky factorization and PCG require it not to be.
+	bool SupportsRobin() const override { return true; }
 
 	// Driven electrodes pin their DOFs exactly as a Dirichlet condition does, so
 	// every terminal marker joins the prescribed Dirichlet ones. Only the value
@@ -123,26 +144,46 @@ public:
 		x = std::make_unique<mfem::GridFunction>(fespace.get());
 		*x = 0.0;
 
-		// Assemble Stiffness Matrix
+		// System operator: domain stiffness plus the Robin boundary terms
+		// (RobinCoeff * V, v) over each Robin boundary, all under the
+		// geometry's measure.
 		a = std::make_unique<mfem::BilinearForm>(fespace.get());
 		a->AddDomainIntegrator(MakeStiffnessIntegrator()); // a takes ownership
+		robin_coeffs.clear();
+		robin_markers.clear();
+		for (const auto& bc : boundary_conditions) {
+			if (!bc.IsRobin() || bc.Condition.RobinCoeff == 0.0) continue;
+			robin_coeffs.push_back(
+				std::make_unique<mfem::ConstantCoefficient>(bc.Condition.RobinCoeff));
+			robin_markers.push_back(std::make_unique<mfem::Array<int>>(bc.Marker));
+			a->AddBoundaryIntegrator(
+				Geometry().NewBoundaryMassIntegrator(*robin_coeffs.back()),
+				*robin_markers.back());
+		}
 		a->Assemble();
 
-		// Snapshot the UNCONSTRAINED stiffness matrix (used for charge Q = K0*x)
-		// before FormSystemMatrix eliminates the essential DOFs from a's SpMat.
+		// UNCONSTRAINED domain stiffness for the charge extraction Q = K0*x.
 		//
 		// INVARIANT: K0 must contain the DOMAIN stiffness and nothing else. The
-		// charge extraction Q = K0*x is Gauss's law over the volume; a boundary
-		// term added to `a` is part of the operator but not part of that
-		// relation, so it would silently shift every extracted charge and
-		// capacitance with no error and no failing assertion. Any future
-		// boundary contribution (a Robin/impedance condition being the likely
-		// one) must therefore be added to `a` AFTER this snapshot, never before.
-		K0 = std::make_unique<mfem::SparseMatrix>(a->SpMat());
+		// charge extraction is Gauss's law over the volume; the Robin terms in
+		// `a` are part of the operator but not part of that relation, so
+		// including them would silently shift every extracted charge and
+		// capacitance with no error and no failing assertion. K0 is therefore
+		// assembled by its own domain-only form, which makes the invariant
+		// structural instead of an assembly-ordering rule. Only coupling runs
+		// extract charge, so only they pay for it.
+		K0.reset();
+		if (config.AnalysisType == AnalysisType::CouplingMatrix) {
+			mfem::BilinearForm domain(fespace.get());
+			domain.AddDomainIntegrator(MakeStiffnessIntegrator());
+			domain.Assemble();
+			domain.Finalize();
+			K0.reset(domain.LoseMat());
+		}
 
 		// Linear Form (RHS)
 		b = std::make_unique<mfem::LinearForm>(fespace.get());
-		neumann_rhs = AssembleNeumannBoundaryLoad();
+		natural_rhs = AssembleNaturalBoundaryLoad();
 
 		fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
 
@@ -248,7 +289,7 @@ public:
 		*b = 0.0;
 
 		if (mode == ImprintMode::Field) {
-			*b = neumann_rhs;
+			*b = natural_rhs;
 			ForEachNonzeroDirichlet([&](mfem::Array<int>& marker, double value) {
 				mfem::ConstantCoefficient c(value);
 				x->ProjectBdrCoefficient(c, marker);

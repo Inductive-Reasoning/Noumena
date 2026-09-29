@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <map>
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -104,6 +105,60 @@ TEST_CASE("Electrostatic solver applies natural-flux Neumann data",
         SampleDerivedVector(fields, "E", element, point);
     REQUIRE(electric_field(0) == Catch::Approx(-gradient).epsilon(1.0e-7));
     REQUIRE(electric_field(1) == Catch::Approx(0.0).margin(1.0e-6));
+
+    fs::remove(mesh_file);
+}
+
+// Robin condition eps dV/dn + alpha V = g on the right end of a strip grounded
+// on the left. The exact solution is linear, V = c x with
+// eps c + alpha c L = g, so P1 reproduces it exactly: this checks both the
+// Robin operator term and its data load, and the sign convention (outward
+// natural flux, the same as Neumann).
+TEST_CASE("Electrostatic solver applies Robin data and coefficient",
+          "[solvers][analytic][electrostatic][robin]") {
+    const std::string mesh_file = "test_electrostatic_robin.mesh";
+    constexpr double length = 0.2, height = 0.05, eps_r = 2.5, g = 4.0e-11;
+    constexpr int nx = 8, ny = 2;
+    CreatePlanarStripMesh(mesh_file, length, height, nx, ny);
+
+    const double eps = Constants::EPSILON_0 * eps_r;
+    const double alpha = 3.0 * eps / length;
+    json config = MakePlanarStripConfig(
+        "electrostatics", mesh_file, 1, {{"epsilon_r", eps_r}}, 0.0, 0.0);
+    config["boundary_conditions"][1]["type"] = "robin";
+    config["boundary_conditions"][1]["value"] = g;
+    config["boundary_conditions"][1]["robin_coefficient"] = alpha;
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config));
+    solver.Setup();
+    solver.Run();
+
+    const double slope = g / (eps + alpha * length);
+    const FieldExportSet fields = solver.CollectExportFields();
+    const mfem::IntegrationPoint point = TriangleCenter();
+    const int element = 2 * (nx - 1);  // next to the Robin end
+    const mfem::Vector physical =
+        PhysicalPoint(*FindField(fields, "V").primary, element, point);
+    REQUIRE(SamplePrimaryScalar(fields, "V", element, point) ==
+        Catch::Approx(slope * physical(0)).epsilon(1.0e-7));
+
+    SECTION("a negative coefficient is rejected") {
+        config["boundary_conditions"][1]["robin_coefficient"] = -alpha;
+        ElectrostaticSolver bad(mesh, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(bad.Setup(),
+            Catch::Matchers::ContainsSubstring("negative robin_coefficient"));
+    }
+
+    SECTION("magnetics still rejects Robin") {
+        json magnetic = MakePlanarStripConfig(
+            "magnetostatics", mesh_file, 1, {{"mu_r", 1.0}}, 0.0, 0.0);
+        magnetic["boundary_conditions"][1]["type"] = "robin";
+        magnetic["boundary_conditions"][1]["robin_coefficient"] = 1.0;
+        MagnetostaticSolver ms(mesh, DecodeConfig(magnetic));
+        REQUIRE_THROWS_WITH(ms.Setup(),
+            Catch::Matchers::ContainsSubstring("not implemented for magnetostatics"));
+    }
 
     fs::remove(mesh_file);
 }
@@ -291,7 +346,7 @@ TEST_CASE("Magnetoquasistatic Neumann data loads only the real field",
     fs::remove(mesh_file);
 }
 
-TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
+TEST_CASE("Only electrostatics accepts Robin boundary conditions",
           "[solvers][boundaries][robin]") {
     const std::string mesh_file = "test_robin_rejection.mesh";
     CreatePlanarStripMesh(mesh_file, 0.1, 0.02, 2, 1);
@@ -307,12 +362,11 @@ TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
         return config;
     };
 
-    SECTION("electrostatics") {
+    SECTION("electrostatics assembles Robin") {
         mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
         ElectrostaticSolver solver(mesh, DecodeConfig(
             robin_config("electrostatics", {{"epsilon_r", 1.0}})));
-        REQUIRE_THROWS_WITH(solver.Setup(),
-            Catch::Matchers::ContainsSubstring("reserved but not implemented"));
+        REQUIRE_NOTHROW(solver.Setup());
     }
 
     SECTION("magnetostatics") {
@@ -320,7 +374,7 @@ TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
         MagnetostaticSolver solver(mesh, DecodeConfig(
             robin_config("magnetostatics", {{"mu_r", 1.0}})));
         REQUIRE_THROWS_WITH(solver.Setup(),
-            Catch::Matchers::ContainsSubstring("reserved but not implemented"));
+            Catch::Matchers::ContainsSubstring("not implemented for"));
     }
 
     SECTION("magnetoquasistatics") {
@@ -329,7 +383,7 @@ TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
             robin_config("magnetoquasistatics",
                          {{"mu_r", 1.0}, {"sigma", 0.0}})));
         REQUIRE_THROWS_WITH(solver.Setup(),
-            Catch::Matchers::ContainsSubstring("reserved but not implemented"));
+            Catch::Matchers::ContainsSubstring("not implemented for"));
     }
 
     fs::remove(mesh_file);
@@ -1917,6 +1971,259 @@ TEST_CASE("3D parallel-plate capacitance is exact and absolute",
     fs::remove(mesh_file);
 }
 
+namespace {
+// Spherical shell a <= |x| <= b as a curved (order-2 geometry) hexahedral
+// "cubed sphere": six patches of n x n equiangular cells, nr radial layers.
+// Boundary attribute 1 is the inner sphere, 2 the outer one.
+//
+// The mesh is first built with straight edges, then given quadratic geometry
+// whose nodes are pushed radially onto their intended sphere. A node's
+// intended radius is recovered by snapping |x| to the nearest radial lattice
+// value (layer radii and layer midpoints): the chord sag is far smaller than
+// half a layer, so the snap is unambiguous.
+void CreateSphericalShellMesh(const std::string& filename, double a, double b,
+                              int n, int nr) {
+    std::map<std::array<long long, 3>, int> index;
+    std::vector<std::array<double, 3>> verts;
+    auto vertex = [&](const std::array<double, 3>& x) {
+        std::array<long long, 3> key;
+        for (int c = 0; c < 3; ++c) { key[c] = std::llround(x[c] * 1e9); }
+        const auto it = index.find(key);
+        if (it != index.end()) { return it->second; }
+        verts.push_back(x);
+        return index[key] = static_cast<int>(verts.size()) - 1;
+    };
+    auto point = [&](int axis, int sign, int i, int j, int k) {
+        const double pi4 = std::atan(1.0);
+        const double u = std::tan(pi4 * (-1.0 + 2.0 * i / n));
+        const double v = std::tan(pi4 * (-1.0 + 2.0 * j / n));
+        std::array<double, 3> d{};
+        d[axis] = sign;
+        d[(axis + 1) % 3] = u;
+        d[(axis + 2) % 3] = v;
+        const double len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        const double r = a + (b - a) * k / nr;
+        for (auto& c : d) { c *= r / len; }
+        return vertex(d);
+    };
+
+    struct Hex { int v[8]; };
+    struct Quad { int v[4]; int attr; };
+    std::vector<Hex> hexes;
+    std::vector<Quad> quads;
+    for (int axis = 0; axis < 3; ++axis) {
+        for (int sign : { -1, 1 }) {
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    for (int k = 0; k < nr; ++k) {
+                        hexes.push_back({ {
+                            point(axis, sign, i, j, k), point(axis, sign, i + 1, j, k),
+                            point(axis, sign, i + 1, j + 1, k), point(axis, sign, i, j + 1, k),
+                            point(axis, sign, i, j, k + 1), point(axis, sign, i + 1, j, k + 1),
+                            point(axis, sign, i + 1, j + 1, k + 1), point(axis, sign, i, j + 1, k + 1) } });
+                    }
+                    quads.push_back({ { point(axis, sign, i, j, 0), point(axis, sign, i + 1, j, 0),
+                                        point(axis, sign, i + 1, j + 1, 0), point(axis, sign, i, j + 1, 0) }, 1 });
+                    quads.push_back({ { point(axis, sign, i, j, nr), point(axis, sign, i + 1, j, nr),
+                                        point(axis, sign, i + 1, j + 1, nr), point(axis, sign, i, j + 1, nr) }, 2 });
+                }
+            }
+        }
+    }
+
+    // Half the patches come out left-handed; MFEM cannot reorient hexahedra,
+    // so mirror those here (swap the 1<->3 and 5<->7 corners).
+    for (auto& h : hexes) {
+        const auto& o = verts[h.v[0]];
+        std::array<double, 3> e[3];
+        const int corner[3] = { h.v[1], h.v[3], h.v[4] };
+        for (int d = 0; d < 3; ++d) {
+            for (int c = 0; c < 3; ++c) { e[d][c] = verts[corner[d]][c] - o[c]; }
+        }
+        const double det =
+            e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) -
+            e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0]) +
+            e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+        if (det < 0.0) {
+            std::swap(h.v[1], h.v[3]);
+            std::swap(h.v[5], h.v[7]);
+        }
+    }
+
+    mfem::Mesh mesh(3, static_cast<int>(verts.size()), static_cast<int>(hexes.size()),
+                    static_cast<int>(quads.size()), 3);
+    for (const auto& x : verts) { mesh.AddVertex(x[0], x[1], x[2]); }
+    for (const auto& h : hexes) { mesh.AddHex(h.v, 1); }
+    for (const auto& q : quads) { mesh.AddBdrQuad(q.v, q.attr); }
+    mesh.FinalizeHexMesh(/*generate_edges=*/1, /*refine=*/0, /*fix_orientation=*/true);
+
+    mesh.SetCurvature(2);
+    const double half_layer = 0.5 * (b - a) / nr;
+    mesh.Transform([&](const mfem::Vector& x, mfem::Vector& y) {
+        const double r = x.Norml2();
+        const double snapped = a + half_layer * std::round((r - a) / half_layer);
+        y = x;
+        y *= snapped / r;
+    });
+
+    std::ofstream out(filename);
+    out.precision(17);
+    mesh.Print(out);
+}
+
+json MakeSphereConfig(const std::string& mesh_file, const json& outer_bc,
+                      bool outer_terminal) {
+    json terminals = json::array({
+        {{"name", "Inner"}, {"quantity", "voltage"}, {"entity_group", "Inner"}}});
+    if (outer_terminal) {
+        terminals.push_back(
+            {{"name", "Outer"}, {"quantity", "voltage"}, {"entity_group", "Outer"}});
+    }
+    return json{
+        {"simulation", {
+            {"physics_type", "electrostatics"},
+            {"mesh", mesh_file},
+            {"order", 2},
+            {"geometry_type", "3d"},
+            {"analysis_type", "coupling_matrix"},
+            {"solver_tolerance", 1e-12},
+            {"solver_max_iter", 4000},
+            {"solver_print_level", 0}
+        }},
+        {"entity_groups", json::array({
+            {{"name", "Domain"}, {"dim", 3}, {"attribute_ids", {1}}},
+            {{"name", "Inner"},  {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Outer"},  {"dim", 2}, {"attribute_ids", {2}}}
+        })},
+        {"regions", json::array({
+            {{"name", "Domain"}, {"entity_group", "Domain"}, {"material", "Vacuum"}}
+        })},
+        {"materials", json::array({
+            {{"name", "Vacuum"}, {"properties", {{"epsilon_r", 1.0}}}}
+        })},
+        {"terminals", terminals},
+        {"boundary_conditions", outer_bc.is_null() ? json::array() : json::array({outer_bc})},
+        {"scenarios", json::array()}
+    };
+}
+
+double SolveSphereCapacitance(const std::string& mesh_file, const json& config,
+                              const std::string& matrix_file) {
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+    ElectrostaticSolver solver(*mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+    const double c = ReadHdf5Matrix(matrix_file, "Capacitance").values[0][0];
+    fs::remove(matrix_file);
+    return c;
+}
+} // namespace
+
+// Concentric spheres held at 1 V and 0 V: C = 4*pi*eps0 * a*b / (b - a). Exercises
+// curved 3D geometry, the 3D measure and absolute units on a non-trivial field.
+TEST_CASE("3D concentric-sphere capacitance matches the analytic value",
+          "[solvers][analytic][electrostatic][coupling][3d]") {
+    const std::string mesh_file = "test_3d_sphere_shell.mesh";
+    const std::string matrix_file = "coupling_sphere_shell.h5";
+    constexpr double a = 0.1, b = 0.3;
+    CreateSphericalShellMesh(mesh_file, a, b, 6, 6);
+
+    const json config = MakeSphereConfig(mesh_file, nullptr, /*outer_terminal=*/true);
+    const double analytic = 2.0 * Constants::TWO_PI * Constants::EPSILON_0 * a * b / (b - a);
+    REQUIRE(SolveSphereCapacitance(mesh_file, config, matrix_file) ==
+            Catch::Approx(analytic).epsilon(2e-3));
+
+    SECTION("the iterative PCG path agrees with the direct solve") {
+        json iterative = config;
+        iterative["simulation"]["linear_solver"] = "iterative";
+        REQUIRE(SolveSphereCapacitance(mesh_file, iterative, matrix_file) ==
+                Catch::Approx(SolveSphereCapacitance(mesh_file, config, matrix_file))
+                    .epsilon(1e-8));
+    }
+    fs::remove(mesh_file);
+}
+
+// An isolated sphere of radius a in free space has C = 4*pi*eps0*a. Its exact
+// potential V = a/r satisfies eps dV/dn + (eps/R) V = 0 on any sphere r = R,
+// so a Robin far-field boundary with coefficient eps0/R truncates the domain
+// with no modeling error, while grounding the same boundary (Dirichlet) gives
+// the concentric-sphere value 4*pi*eps0 * a*R/(R - a) -- 50% high for R = 3a.
+TEST_CASE("3D Robin far-field boundary recovers the isolated-sphere capacitance",
+          "[solvers][analytic][electrostatic][robin][3d]") {
+    const std::string mesh_file = "test_3d_sphere_farfield.mesh";
+    const std::string matrix_file = "coupling_sphere_farfield.h5";
+    constexpr double a = 0.1, R = 0.3;
+    CreateSphericalShellMesh(mesh_file, a, R, 6, 6);
+    const double isolated = 2.0 * Constants::TWO_PI * Constants::EPSILON_0 * a;
+
+    const json robin = {{"name", "FarField"}, {"type", "robin"},
+                        {"entity_group", "Outer"}, {"value", 0.0},
+                        {"robin_coefficient", Constants::EPSILON_0 / R}};
+    const double c_robin = SolveSphereCapacitance(
+        mesh_file, MakeSphereConfig(mesh_file, robin, false), matrix_file);
+    REQUIRE(c_robin == Catch::Approx(isolated).epsilon(2e-3));
+
+    const json grounded = {{"name", "Ground"}, {"type", "dirichlet"},
+                           {"entity_group", "Outer"}, {"value", 0.0}};
+    const double c_dirichlet = SolveSphereCapacitance(
+        mesh_file, MakeSphereConfig(mesh_file, grounded, false), matrix_file);
+    REQUIRE(c_dirichlet == Catch::Approx(isolated * R / (R - a)).epsilon(2e-3));
+
+    fs::remove(mesh_file);
+}
+
+// Every output format end to end on a 3D run: the ParaView collection, the
+// Gmsh results file (second-order tetrahedra, read back by MFEM's own Gmsh
+// reader), and the HDF5 mesh description.
+TEST_CASE("3D field run writes ParaView, Gmsh and HDF5 output",
+          "[solvers][output][3d]") {
+    const fs::path root = fs::temp_directory_path() / "mfem_output_3d";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const std::string mesh_file = (root / "box.mesh").string();
+    CreateBoxTetMesh(mesh_file, 0.2, 0.1, 0.05, 2, 2, 2);
+
+    json config = MakeBoxCapacitorConfig(mesh_file, 2.0);
+    config["simulation"]["analysis_type"] = "field";
+    config["simulation"]["order"] = 2;
+    config["scenarios"] = json::array({
+        {{"name", "Drive"}, {"excitations", json::array({{{"terminal", "Top"}, {"value", 1.0}}})}}});
+    config["output"] = {{"directory", (root / "out").string()},
+        {"paraview", {{"directory", "vtk"}}}, {"gmsh", {{"directory", "msh"}}},
+        {"hdf5", {{"file", "run.h5"}}}};
+
+    int elements = 0;
+    {
+        const auto mesh = mesh_io::LoadMesh(mesh_file);
+        elements = mesh->GetNE();
+        auto solver = SolverFactory::Instance().Create(*mesh, DecodeConfig(config));
+        solver->Setup();
+        solver->Run();
+        solver->SaveAnalysis();
+    }
+
+    const std::string artifact = "scenario_000000_Drive";
+    REQUIRE(fs::exists(root / "out/vtk" / artifact / "Cycle000000/proc000000.vtu"));
+
+    const fs::path msh = root / "out/msh" / (artifact + ".msh");
+    REQUIRE(fs::exists(msh));
+    std::ifstream in(msh);
+    mfem::Mesh reloaded(in, 1, 0);
+    REQUIRE(reloaded.Dimension() == 3);
+    REQUIRE(reloaded.GetNE() == elements);
+
+    HighFive::File archive((root / "out/run.h5").string(), HighFive::File::ReadOnly);
+    int dimension = 0;
+    std::string geometry;
+    archive.getGroup("mesh").getAttribute("dimension").read(dimension);
+    archive.getAttribute("geometry_type").read(geometry);
+    REQUIRE(dimension == 3);
+    REQUIRE(geometry == "3d");
+
+    fs::remove_all(root);
+}
+
 TEST_CASE("Solvers reject a mesh whose dimension contradicts geometry_type",
           "[solvers][geometry][3d]") {
     const std::string box_file = "test_3d_dimension_box.mesh";
@@ -2060,6 +2367,45 @@ TEST_CASE("Axisymmetric capacitance matches the analytic coaxial value",
 // particular discretization. That cannot distinguish "correct and converging"
 // from "wrong but inside the tolerance at nr = 64". This sweep refines the
 // radial direction and measures the order of accuracy instead.
+// Axisymmetric Robin: a coaxial annulus r_i <= r <= r_o, inner conductor at
+// 1 V, Robin condition eps dV/dr + alpha V = 0 at r_o. With V = 1 + A ln(r/r_i),
+// A = -alpha / (eps/r_o + alpha ln(r_o/r_i)), and the inner charge per the
+// full revolved measure is Q = -2*pi*h*eps*A. The alpha -> infinity limit is
+// the grounded coax. Exercises the 2*pi*r boundary mass term.
+TEST_CASE("Axisymmetric Robin boundary matches the analytic coaxial charge",
+          "[solvers][analytic][electrostatic][robin][axisymmetric]") {
+    const std::string mesh_file = "test_coax_robin.mesh";
+    const std::string matrix_file = "coupling_coax_robin.h5";
+    constexpr double r_inner = 0.01, r_outer = 0.03, height = 0.05;
+    CreateCoaxMesh(mesh_file, r_inner, r_outer, height, 64, 1);
+
+    const double eps = Constants::EPSILON_0;
+    const double alpha = 2.0 * eps / r_outer;
+    json config = MakeCoaxAmrConfig(mesh_file, 1);
+    config["simulation"]["amr"]["enabled"] = false;
+    config["simulation"]["order"] = 2;
+    config["simulation"]["analysis_type"] = "coupling_matrix";
+    config["terminals"] = json::array({
+        {{"name", "Inner"}, {"quantity", "voltage"}, {"entity_group", "Inner"}}});
+    config["boundary_conditions"] = json::array({
+        {{"name", "FarField"}, {"type", "robin"}, {"entity_group", "Outer"},
+         {"value", 0.0}, {"robin_coefficient", alpha}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    const double A = -alpha / (eps / r_outer + alpha * std::log(r_outer / r_inner));
+    const double analytic = -Constants::TWO_PI * height * eps * A;
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+    REQUIRE(matrix.values[0][0] == Catch::Approx(analytic).epsilon(1e-4));
+
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
 TEST_CASE("Axisymmetric coaxial capacitance converges at the expected order",
           "[solvers][analytic][electrostatic][coupling][axisymmetric][convergence]") {
     constexpr double r_inner = 0.01;
