@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <cmath>
 #include <initializer_list>
+#include <iomanip>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -66,6 +68,13 @@ class VectorPotentialSolver3D : public MagneticSolverBase {
 public:
 	/// Relative size of the regularizing mass term; see the class comment.
 	static constexpr double kRegularization = 1e-6;
+
+	/// Largest current, as a fraction of the terminal's, allowed to cross its
+	/// conductor's surface in and out (ConductorSurfaceLeakage). A correct
+	/// direction leaks only discretization noise, far below this; a wrong
+	/// one -- an azimuthal direction about the wrong axis, or on a conductor
+	/// that is not a body of revolution about it -- leaks a sizable part.
+	static constexpr double kMaxSurfaceLeakage = 0.01;
 
 	const DivergenceFreeProjector& Projector() const { return *projector; }
 
@@ -223,7 +232,39 @@ private:
 											   config.Order);
 		MFEM_VERIFY(c.PathIntegral > 0.0, "Terminal '" + name + "' has zero " +
 			(c.Type == ConductorType::Massive ? "conductance." : "cross-section."));
+		ValidateCurrentConfinement(c, *term.Direction);
 		return c;
+	}
+
+	// The current imposed in a conductor must stay in it: J . n = 0 on its
+	// surface except at its electrodes. A direction from a conduction solve
+	// (electrodes, cut) satisfies that by construction; an azimuthal one
+	// only if the conductor is a body of revolution about the given axis.
+	// Anything else would be quietly rerouted through the surroundings by the
+	// divergence-free projection, which is meant for discretization-level
+	// imbalance, not a misplaced current.
+	void ValidateCurrentConfinement(const TerminalConductor& c, const CurrentDirection& d) {
+		const int n_bdr = mesh.bdr_attributes.Size() ? mesh.bdr_attributes.Max() : 0;
+		mfem::Array<int> openings(n_bdr);
+		openings = 0;
+		if (d.Type == CurrentDirection::Kind::Electrodes) {
+			openings = MarkerFromGroup(d.Input);
+			const mfem::Array<int> output = MarkerFromGroup(d.Output);
+			for (int a = 0; a < n_bdr; ++a) { openings[a] |= output[a]; }
+		}
+		ConductorCurrentCoefficient unit_current(*c.Path, ConductivityOf(c), 1.0 / c.PathIntegral);
+		const double leakage =
+			ConductorSurfaceLeakage(mesh, c.Marker, openings, unit_current, config.Order);
+		std::ostringstream msg;
+		msg << "Terminal '" << c.Name << "': current crossing its conductor's surface, "
+			"in and out, is " << std::setprecision(3) << 100.0 * leakage << "% of the "
+			"terminal current";
+		MFEM_VERIFY(leakage <= kMaxSurfaceLeakage, msg.str() + ", which must be at most " +
+			std::to_string(static_cast<int>(100 * kMaxSurfaceLeakage)) + "%. The current "
+			"direction does not follow the conductor: for an 'azimuthal' direction check "
+			"'origin' and 'axis' (the conductor must be a body of revolution about them); "
+			"otherwise describe the path with a 'cut' or 'electrodes'.");
+		Reporter().Diagnostic(msg.str() + ".");
 	}
 
 	std::unique_ptr<ConductorPath> MakeConductorPath(

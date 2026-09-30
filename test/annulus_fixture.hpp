@@ -71,8 +71,9 @@ inline mfem::Mesh MakeAnnulus2D(const AnnulusSpec& spec, int refine) {
 
 // The same lattice revolved about z with n_theta cells around, as curved
 // (order-2 geometry) hexahedra whose nodes are snapped radially onto their
-// lattice circle. Boundary attribute 1 on every wall.
-inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta) {
+// lattice circle, or with @p curved false as straight-sided hexahedra (a
+// faceted cylinder). Boundary attribute 1 on every wall.
+inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curved = true) {
 	const int nr = spec.nr, nz = spec.nz;
 	const double dr = (spec.r_out - spec.r_in) / nr, dz = spec.height / nz;
 	auto id = [&](int i, int j, int k) { return (k * (nr + 1) + i) * n_theta + (j % n_theta); };
@@ -128,6 +129,7 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta) {
 		}
 	}
 	mesh.FinalizeHexMesh(1, 0, true);
+	if (!curved) { return mesh; }
 
 	// The radial snap below is unambiguous only while the chord sag of an
 	// angular edge stays under a quarter of the radial spacing; beyond that a

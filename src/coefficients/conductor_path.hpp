@@ -397,3 +397,63 @@ inline double ConductorPathIntegral(mfem::Mesh& mesh, const mfem::Array<int>& co
 	}
 	return total;
 }
+
+/**
+ * @brief Current that crosses a conductor's surface, in and out: the sum
+ *        over its outer faces of |integral J . n dA|.
+ *
+ * An imposed current density has to stay inside its conductor, J . n = 0 on
+ * every face between the conductor and anything else, except where it is
+ * meant to enter or leave (@p openings: the electrodes). A cut lies inside
+ * the conductor, so it is never an outer face. Current that does leave has
+ * nowhere to go, and the divergence-free projection would silently supply
+ * it through the surrounding material instead.
+ *
+ * The net flux of each face is taken, not its pointwise value: on a faceted
+ * surface a correct direction (an azimuthal one on a flat face approximating
+ * a cylinder) crosses each face symmetrically in and out, with no net flux.
+ *
+ * @param conductor  Domain-attribute marker of the conductor.
+ * @param openings   Boundary-attribute marker of faces current may cross.
+ * @param J          The conductor's current density (e.g. for 1 A).
+ */
+inline double ConductorSurfaceLeakage(mfem::Mesh& mesh, const mfem::Array<int>& conductor,
+									  const mfem::Array<int>& openings,
+									  mfem::VectorCoefficient& J, int order) {
+	auto inside = [&](int e) {
+		if (e < 0) return false;
+		const int a = mesh.GetAttribute(e);
+		return a >= 1 && a <= conductor.Size() && conductor[a - 1] != 0;
+	};
+	std::set<int> open_faces;
+	for (int be = 0; be < mesh.GetNBE(); ++be) {
+		const int a = mesh.GetBdrAttribute(be);
+		if (a >= 1 && a <= openings.Size() && openings[a - 1]) {
+			open_faces.insert(mesh.GetBdrElementFaceIndex(be));
+		}
+	}
+
+	double leakage = 0.0;
+	mfem::Vector j, n(3);
+	for (int f = 0; f < mesh.GetNumFaces(); ++f) {
+		int e1, e2;
+		mesh.GetFaceElements(f, &e1, &e2);
+		const bool in1 = inside(e1), in2 = inside(e2);
+		if (in1 == in2 || open_faces.count(f)) continue;
+
+		mfem::FaceElementTransformations* T = mesh.GetFaceElementTransformations(f);
+		mfem::ElementTransformation& Te = in1 ? *T->Elem1 : *T->Elem2;
+		const mfem::IntegrationRule& ir = mfem::IntRules.Get(
+			T->GetGeometryType(), 2 * order + T->OrderW() + 2);
+		double flux = 0.0;
+		for (int q = 0; q < ir.GetNPoints(); ++q) {
+			const mfem::IntegrationPoint& ip = ir.IntPoint(q);
+			T->SetAllIntPoints(&ip);
+			J.Eval(j, Te, Te.GetIntPoint());
+			mfem::CalcOrtho(T->Jacobian(), n);  // scaled by the area element
+			flux += ip.weight * (j * n);
+		}
+		leakage += std::abs(flux);
+	}
+	return leakage;
+}

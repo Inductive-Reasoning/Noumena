@@ -22,6 +22,7 @@
 #include <highfive/H5File.hpp>
 
 #include "annulus_fixture.hpp"
+#include "coefficients/conductor_path.hpp"
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
 #include "solvers/magnetostatic_solver_3d.hpp"
@@ -425,6 +426,39 @@ TEST_CASE("The cut normal must cross the cut", "[solvers][magnetostatic][3d][con
 	REQUIRE_THROWS_WITH(solve({ 1.0, 0.5, 0.0 }), ContainsSubstring("must cross the cut"));
 }
 
+// An imposed current must stay in its conductor. A correct azimuthal
+// direction crosses no face net -- on a faceted cylinder as well as a curved
+// one, since each flat face is crossed symmetrically in and out -- while the
+// same direction about an axis 1 mm off the coil's (2.5% of its radius)
+// sends a large fraction of the current through the surface.
+TEST_CASE("Azimuthal current stays in a body of revolution", "[solvers][magnetostatic][3d][conductor]") {
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	for (bool curved : { false, true }) {
+		for (bool massive : { false, true }) {
+			INFO((curved ? "curved" : "faceted") << ", " << (massive ? "massive" : "stranded"));
+			mfem::Mesh mesh = MakeAnnulus3D(spec, 16, curved);
+			mfem::Array<int> coil(mesh.attributes.Max()), none(mesh.bdr_attributes.Max());
+			coil = 0;
+			coil[1] = 1;
+			none = 0;
+			mfem::ConstantCoefficient sigma(5.8e7);
+			mfem::Coefficient* conductivity = massive ? &sigma : nullptr;
+			auto leakage = [&](double origin_x) {
+				CurrentDirection d;
+				d.Origin = { origin_x, 0.0, 0.0 };
+				AzimuthalPath path(d);
+				const double scale =
+					1.0 / ConductorPathIntegral(mesh, coil, path, conductivity, 2);
+				ConductorCurrentCoefficient J(path, conductivity, scale);
+				return ConductorSurfaceLeakage(mesh, coil, none, J, 2);
+			};
+			REQUIRE(leakage(0.0) < 1e-12);
+			REQUIRE(leakage(1e-3) > 0.3);
+		}
+	}
+}
+
 namespace {
 // Unit cube; a square copper bar (attribute 2, 0.25 < x, y < 0.75) runs from
 // the bottom wall (z = 0, attribute 1) to the top wall (z = 1, attribute 6).
@@ -508,6 +542,26 @@ TEST_CASE("3D current terminals are validated", "[solvers][magnetostatic][3d]") 
 							{"axis", {0.0, 0.0, 1.0}}}}}});
 		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
 		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("reaches its own axis"));
+	}
+
+	SECTION("an azimuthal direction about the wrong axis is rejected") {
+		AnnulusSpec spec;
+		spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+		mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+		json config = MakeAnnulusConfig(spec, true, 1, "magnetostatics", "field");
+		config["terminals"][0]["direction"]["origin"] = { 0.001, 0.0, 0.0 };
+		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("crossing its conductor's surface"));
+	}
+
+	SECTION("an azimuthal direction on a conductor not revolved about it is rejected") {
+		// The square bar, off the z axis: phi-hat crosses its side walls.
+		mfem::Mesh mesh = MakeBarMesh();
+		json config = MakeBarConfig();
+		config["terminals"][0]["direction"] = {{"type", "azimuthal"},
+			{"origin", {0.0, 0.0, 0.0}}, {"axis", {0.0, 0.0, 1.0}}};
+		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("crossing its conductor's surface"));
 	}
 
 	SECTION("electrodes off an n x A = 0 wall are rejected") {

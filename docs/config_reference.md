@@ -315,7 +315,10 @@ geometry). It says where the conductor's current flows:
 - `azimuthal`: around the axis through `origin` (default `[0, 0, 0]`) along
   `axis` (right-hand rule: positive current makes flux along `+axis` inside
   the loop). For conductors of revolution; needs no extra mesh features. The
-  conductor must not reach its own axis.
+  conductor must not reach its own axis, and must be a body of revolution
+  about it: a direction whose current would cross the conductor's surface
+  (a misplaced `origin` or `axis`, or a shape that is not revolved) is
+  rejected.
 - `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
   internal faces that crosses the conductor once, and the current crosses it
   along `normal`. `normal` must cross every face of the cut within 60° of
@@ -325,6 +328,10 @@ geometry). It says where the conductor's current flows:
   the `input` boundary group and leaves through `output`. Both must lie on a
   `dirichlet` (`n × A = 0`) boundary, the only place current can enter or
   leave the model consistently.
+
+Whatever the type, a terminal's current may leave its conductor only through
+its electrodes: setup rejects a direction for which more than 1% of the
+current would cross the conductor's surface.
 
 For `cut` and `electrodes` the direction comes from a unit conduction
 potential solved on the conductor, weighted by its `sigma` if it is
