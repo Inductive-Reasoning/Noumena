@@ -1075,8 +1075,9 @@ private:
             if (physics == "magnetostatics" || physics == "magnetoquasistatics") {
                 AddError("simulation.geometry_type",
                     "geometry_type '3d' is not yet supported for " + physics +
-                    ": a 3D magnetic model needs a vector (H(curl)) potential, "
-                    "which is not implemented. Only electrostatics supports '3d'");
+                    ": the 3D vector-potential (H(curl)) formulation is in "
+                    "development and has no coil sources yet. Only "
+                    "electrostatics supports '3d'");
             }
         }
     }

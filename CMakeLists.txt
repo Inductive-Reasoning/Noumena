@@ -262,6 +262,7 @@ if(BUILD_TESTING)
         test/test_gmsh_msh_format.cpp
         test/test_hdf5.cpp
         test/test_input_parser.cpp
+        test/test_magnetostatic_3d.cpp
         test/test_mqs_port_operator.cpp
         test/test_solvers.cpp
         test/test_status_reporter.cpp

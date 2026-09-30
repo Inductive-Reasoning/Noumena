@@ -1120,6 +1120,29 @@ inline View MakeScalarNodeView(const std::string& name,
     return v;
 }
 
+/// Convenience: ElementNodeData view of a vector-valued GridFunction (e.g. a
+/// Nedelec vector potential). Per-element because such fields are continuous
+/// only in their tangential component; values are the element's own, padded
+/// to 3 components.
+inline View MakeVectorGridFunctionView(const std::string& name,
+                                       mfem::GridFunction& gf) {
+    View v;
+    v.name = name;
+    v.kind = View::Kind::ElementNodeData;
+    v.num_components = 3;
+    v.elem_node_eval = [&gf](int /*elem_id*/,
+                             const mfem::IntegrationPoint& ip,
+                             mfem::ElementTransformation& T,
+                             double* out) {
+        mfem::Vector val;
+        gf.GetVectorValue(T, ip, val);
+        out[0] = val.Size() > 0 ? val(0) : 0.0;
+        out[1] = val.Size() > 1 ? val(1) : 0.0;
+        out[2] = val.Size() > 2 ? val(2) : 0.0;
+    };
+    return v;
+}
+
 /// Convenience: ElementNodeData view of a vector Coefficient. Output is always
 /// padded to 3 components.
 ///

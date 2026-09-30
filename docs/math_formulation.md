@@ -246,6 +246,27 @@ For an axisymmetric magnetic problem that reaches `r = 0`, regularity requires
 `A_φ = 0` on the axis. The solver detects that boundary and applies this
 essential constraint automatically; it is not a natural Neumann condition.
 
+### 3D Form (in development)
+
+`geometry_type: 3d` uses a separate formulation (`MagnetostaticSolver3D`),
+because in 3D the potential is a full vector field:
+
+```
+∇ × (ν ∇ × A) = J,   A ∈ H(curl),   B = ∇ × A
+```
+
+`A` is discretized with Nédélec (edge) elements, so the tangential component of
+`A`, and therefore the normal component of `B`, is continuous across every face.
+Boundary conditions are homogeneous only: `dirichlet` 0 means `n × A = 0` (flux
+tangent: `B·n = 0`), and `neumann` 0 or no entry means the natural `n × H = 0`
+(flux normal).
+
+The curl-curl operator is singular: it annihilates every gradient. The direct
+solve adds `β (A, w)` with `β = 10⁻⁶ ν_min / L²` (`L` the bounding-box
+diagonal). With a divergence-free source this selects the Coulomb gauge and
+perturbs `B` by about 10⁻⁶ relative. The configuration validator still rejects
+3D magnetics because coil sources are not implemented yet.
+
 ## 3. Magnetoquasistatics (Eddy Currents)
 
 ### Strong Form

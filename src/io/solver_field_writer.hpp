@@ -113,14 +113,16 @@ public:
 		for (const auto& f : fields.Fields()) {
 			switch (f.kind) {
 				case FieldExport::Kind::Primary: {
-					// Sampled through a scalar path, so only scalar primaries
-					// are handled. A vector-valued primary needs a vector view;
-					// fail loudly rather than silently exporting component 0.
-					MFEM_VERIFY(f.primary->VectorDim() == 1,
-						"Gmsh export of vector-valued primary field '" + f.name +
-						"' is not implemented.");
-					views.push_back(
-						gmsh_results::MakeScalarNodeView(f.name, *f.primary));
+					// A scalar primary (H1) is continuous and goes out as nodal
+					// data. A vector primary (the 3D Nedelec A) is only
+					// tangentially continuous, so it goes out per element.
+					if (f.primary->VectorDim() == 1) {
+						views.push_back(
+							gmsh_results::MakeScalarNodeView(f.name, *f.primary));
+					} else {
+						views.push_back(
+							gmsh_results::MakeVectorGridFunctionView(f.name, *f.primary));
+					}
 					break;
 				}
 				case FieldExport::Kind::DerivedScalar:

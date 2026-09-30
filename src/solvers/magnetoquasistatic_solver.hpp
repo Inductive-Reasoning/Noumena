@@ -117,9 +117,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 
     // Material property pickers for MaterialCoefficient, named instead of inlined
     // as lambdas so the Setup() coefficient construction reads at a glance.
-    static double Reluctivity(const Material& m) {
-        return 1.0 / (Constants::MU_0 * m.RelPermeability);
-    }
     static double Conductivity(const Material& m) {
         return m.Conductivity;
     }
@@ -501,7 +498,7 @@ public:
         
         // Materials
         // Real part: reluctivity nu = 1/mu.
-        nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);
+        BuildReluctivity();
 
         // Assemble conductivity without frequency scaling so the mass matrix can
         // be reused at every sweep point.

@@ -71,8 +71,7 @@ public:
 		fec = std::make_unique<mfem::H1_FECollection>(order, dim);
 
 		// Material Properties (Reluctivity nu = 1/mu), keyed by mesh DOMAIN attribute.
-		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, [](const Material& m) {
-			return 1.0 / (Constants::MU_0 * m.RelPermeability); });
+		BuildReluctivity();
 
 		boundary_conditions = BuildBoundaryConditions();
 		BuildEssentialBoundaryMarker();

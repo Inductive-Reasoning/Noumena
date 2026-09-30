@@ -16,23 +16,48 @@
 #include "../axisym/magnetic_axis_boundary.hpp"
 
 /**
- * @brief Base class for solvers formulated in the magnetic vector potential.
+ * @brief What every magnetic vector-potential solver shares, in 2D or 3D.
+ *
+ * Deliberately thin: the reluctivity table is the one ingredient that does not
+ * change with the discretization. The 2D scalar-potential solvers derive from
+ * MagneticSolver below; the 3D vector-potential solvers
+ * (magnetostatic_solver_3d.hpp) derive from this directly, because almost
+ * nothing else in MagneticSolver -- axis regularity, the scalar curl-curl
+ * operator, I/area source densities -- has a 3D meaning.
+ */
+class MagneticSolverBase : public PhysicsSolver {
+protected:
+	// nu = 1/mu (reluctivity), keyed by mesh DOMAIN attribute. Unclaimed
+	// attributes fall back to vacuum. Built by BuildReluctivity() in each
+	// derived Setup(); refinement-invariant, like every material table.
+	std::unique_ptr<mfem::PWConstCoefficient> nu_coeff;
+
+	MagneticSolverBase(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
+
+	static double Reluctivity(const Material& m) {
+		return 1.0 / (Constants::MU_0 * m.RelPermeability);
+	}
+
+	void BuildReluctivity() {
+		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);
+	}
+};
+
+/**
+ * @brief Base class for the 2D solvers formulated in a scalar vector potential.
  *
  * Holds what the magnetostatic and magnetoquasistatic solvers share by virtue
  * of solving for the same unknown -- A_phi (axisymmetric) or A_z (planar) --
- * rather than by coincidence: the reluctivity coefficient, the curl-curl
- * stiffness term built from it, terminal current density, and the axis
- * regularity condition. None of this applies to an electrostatic run, which is
- * why it does not belong in PhysicsSolver.
+ * rather than by coincidence: the curl-curl stiffness term built from the
+ * reluctivity, terminal current density, and the axis regularity condition.
+ * None of this applies to an electrostatic run, which is why it does not belong
+ * in PhysicsSolver.
  *
  * The solution field itself stays in the derived classes: magnetostatics holds
  * a real GridFunction, the time-harmonic solver a ComplexGridFunction.
  */
-class MagneticSolver : public PhysicsSolver {
+class MagneticSolver : public MagneticSolverBase {
 protected:
-	// nu = 1/mu (reluctivity), keyed by mesh DOMAIN attribute. Assigned by each
-	// derived Setup() via MaterialCoefficient(); everything below reads it.
-	std::unique_ptr<mfem::PWConstCoefficient> nu_coeff;
 
 	// Radial extent and scale-relative axis tolerance of the (r,z) mesh. Owned
 	// here rather than by PhysicsSolver because every consumer is magnetic: the
@@ -46,7 +71,7 @@ protected:
 	// dedicated axis attribute; an electrostatic run on the same mesh does not.
 	mfem::Array<int> axis_boundary;
 
-	MagneticSolver(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
+	MagneticSolver(mfem::Mesh& m, const ProblemConfig& c) : MagneticSolverBase(m, c) {}
 
 	// Adopt the configured coordinate model, restricted to the 2D reductions.
 	//
@@ -54,14 +79,15 @@ protected:
 	// single out-of-plane (A_z) or azimuthal (A_phi) component. A 3D model has
 	// a full vector potential, which needs an H(curl) (Nedelec) discretization,
 	// a divergence-free source and a gauge -- a different formulation rather
-	// than another geometry branch here. Running this class on a 3D mesh would
+	// than another geometry branch here, so SolverFactory routes '3d' runs to
+	// the separate 3D solver classes. Running this class on a 3D mesh would
 	// assemble a scalar Laplacian and report it as a magnetic field, so it is
 	// rejected outright.
 	void InitializeMagneticGeometry() {
 		MFEM_VERIFY(config.GeometryType != GeometryType::Cartesian3D,
-			"geometry_type '3d' is not yet supported for " +
-			std::string(ToString(config.PhysicsType)) + ": a 3D magnetic model "
-			"needs a vector (H(curl)) potential, which is not implemented.");
+			"This " + std::string(ToString(config.PhysicsType)) + " solver is "
+			"the 2D scalar-potential formulation; geometry_type '3d' needs the "
+			"vector (H(curl)) formulation of the 3D solver classes.");
 		InitializeGeometry();
 	}
 
