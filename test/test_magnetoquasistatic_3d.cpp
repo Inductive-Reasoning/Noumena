@@ -325,6 +325,43 @@ TEST_CASE("Stranded conductors carry no eddy currents", "[solvers][mqs][3d][2d][
 	}
 }
 
+// In the weak-induction limit (omega mu sigma a^2 << 1) the eddy-current loss
+// of a region is proportional to its sigma: the loss of a sigma = 1 S/m block
+// must be exactly 1/100 of the same block's at 100 S/m. A block with ends (a
+// 90-degree sector, not a ring) needs surface charge to turn its current, so
+// it exposes any error in charge conservation. The static regularization
+// weight put exactly such an error into weak conductors (68% at 1 S/m);
+// scaled to the weakest conductor it vanishes.
+TEST_CASE("3D MQS loss in a weak conductor scales with sigma", "[solvers][mqs][3d][loss]") {
+	auto sector_loss = [](double sigma) {
+		AnnulusSpec spec;
+		spec.sigma = sigma;
+		spec.conductors = {
+			{ 0.04, 0.06, 0.06, 0.08, ConductorRole::Stranded },
+			{ 0.04, 0.08, 0.02, 0.05, ConductorRole::Passive } };
+		mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			if (mesh.GetAttribute(e) != 3) continue;
+			mfem::Vector c;
+			mesh.GetElementCenter(e, c);
+			if (!(c(0) > 0.0 && c(1) > 0.0)) mesh.SetAttribute(e, 1);  // keep one quadrant
+		}
+		mesh.SetAttributes();
+		json config = MakeAnnulusConfig(spec, true, 1, "magnetoquasistatics", "field");
+		config["scenarios"] = json::array({{{"name", "50 Hz"}, {"frequency", 50.0},
+			{"excitations", json::array({{{"terminal", "C1"}, {"value", 1.0}}})}}});
+		MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config));
+		solver.Setup();
+		solver.Run();
+		const auto losses = solver.ComputeRegionLosses();
+		REQUIRE(losses.size() == 1);
+		return losses[0].Power;
+	};
+	const double weak = sector_loss(1.0), stronger = sector_loss(100.0);
+	REQUIRE(weak > 0.0);
+	REQUIRE(100.0 * weak == Catch::Approx(stronger).epsilon(1e-6));
+}
+
 #ifdef MFEM_USE_MPI
 
 // Both linear solvers solve the same regularized system, so they must agree

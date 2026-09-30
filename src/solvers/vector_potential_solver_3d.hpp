@@ -60,7 +60,9 @@
  * With an orthogonal source this selects the Coulomb-gauged solution and
  * perturbs B by a relative O(kRegularization) in every material, while keeping
  * the null-space pivots (relative size kRegularization * (nu_min/nu_max) *
- * (h/L)^2) above round-off.
+ * (h/L)^2) above round-off. In an eddy-current solve beta also enters charge
+ * conservation in the conductors, so there it is scaled down to the weakest
+ * conductor (MagnetoquasistaticSolver3D).
  *
  * Not yet available, and rejected in Setup(): adaptive refinement.
  */

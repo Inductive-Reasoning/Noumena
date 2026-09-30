@@ -461,8 +461,16 @@ magnetostatics:
   electric scalar potential, so the eddy current is weakly divergence-free with
   no normal component at the conductor surface, with no extra unknown.
 
-Both linear solvers solve the regularized system (`β` as above): in the
-nonconducting regions curl-curl alone is singular. `direct` factors the packed
+Both linear solvers solve a regularized system: in the nonconducting regions
+curl-curl alone is singular. Tested with a gradient, the regularized equation is
+`∫(β + jωσ) A·∇ψ = 0`, so `β` enters charge conservation in and at the surface
+of every conductor, off by a relative `β/(ωσ)`. The static `β` is harmless for
+good conductors but not for weak ones (it overstated the loss of a 1 S/m block
+at 50 Hz by 68%), and confining it to the nonconducting regions does not help,
+since the surface term remains. MQS therefore uses
+`β = 10⁻⁶ min(ν_min/L², ω_min σ_min)` over all scenario frequencies and
+conducting regions, which keeps `β/(ωσ) ≤ 10⁻⁶`, floored at `10⁻⁶` of the
+static weight to stay above round-off (with a warning if the floor binds). `direct` factors the packed
 real form once per frequency (sparse LU); `iterative` is GMRES with the
 block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
 exact inverse of the port corner.

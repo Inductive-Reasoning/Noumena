@@ -5,6 +5,7 @@
 
 #include <complex>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -56,9 +57,25 @@
  * flux linkage lambda = b'_k . A (b'_k its projected unit load), with
  * V = j omega lambda. Written as one R and one L matrix per frequency.
  *
+ * @par Regularization
+ * Both linear solvers solve a regularized system: in the nonconducting
+ * regions curl-curl alone is singular. Tested with a gradient grad(psi),
+ * the regularized field equation reads
+ *     integral (beta + j omega sigma) A . grad(psi) = 0,
+ * so beta enters charge conservation in, and at the surface of, every
+ * conductor: the eddy current is off by a relative beta / (omega sigma). The
+ * static weight beta = kRegularization nu_min / L^2 is harmless for good
+ * conductors, but not for weak ones. At 50 Hz it overstated the loss in a
+ * sigma = 1 S/m block with ends by 68%. Confining beta to the nonconducting
+ * regions does not help: the surface term remains. So beta is scaled to the
+ * weakest conductor instead,
+ *     beta = kRegularization min(nu_min / L^2, omega_min sigma_min),
+ * over every scenario frequency and every conducting attribute, which keeps
+ * beta / (omega sigma) <= kRegularization everywhere. It is floored at
+ * kRegularization times the static weight to keep the null-space pivots
+ * above round-off, with a warning if the floor binds.
+ *
  * @par Linear solvers
- * Both solve the regularized system (see VectorPotentialSolver3D): in the
- * nonconducting regions curl-curl alone is singular.
  *  - "direct": the packed real form of the complex system, factored once per
  *    frequency by sparse LU and reused for every terminal column.
  *  - "iterative" (MPI/HYPRE build only): GMRES preconditioned block-
@@ -116,7 +133,7 @@ public:
 
 		{
 			auto operation = Reporter().Start("field matrix assembly");
-			regularization = std::make_unique<mfem::ConstantCoefficient>(RegularizationWeight());
+			regularization = std::make_unique<mfem::ConstantCoefficient>(EddyCurrentRegularization());
 			stiffness = std::make_unique<mfem::BilinearForm>(fespace.get());
 			stiffness->AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
 			stiffness->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
@@ -319,6 +336,34 @@ private:
 		frequency = f;
 		omega = Constants::TWO_PI * f;
 		if (port_operator) { port_operator->SetOmega(omega); }
+	}
+
+	// beta scaled to the weakest conductor; see the class comment.
+	double EddyCurrentRegularization() const {
+		const double static_weight = RegularizationWeight();
+		double omega_min = std::numeric_limits<double>::max();
+		for (const auto& [name, scenario] : config.Scenarios) {
+			omega_min = std::min(omega_min, Constants::TWO_PI * scenario.Frequency);
+		}
+		double sigma_min = std::numeric_limits<double>::max();
+		for (int attr : mesh.attributes) {
+			const double sigma = (*sigma_coeff)(attr);
+			if (sigma > 0.0) sigma_min = std::min(sigma_min, sigma);
+		}
+		if (sigma_min == std::numeric_limits<double>::max()) { return static_weight; }
+
+		const double weight = std::min(static_weight, kRegularization * omega_min * sigma_min);
+		const double floor = kRegularization * static_weight;
+		if (weight >= floor) { return weight; }
+		std::ostringstream msg;
+		msg << std::setprecision(3) << "The weakest conductor (sigma = " << sigma_min
+			<< " S/m at " << omega_min / Constants::TWO_PI << " Hz) conducts too little "
+			"for the regularization, which is held at its round-off floor: beta / "
+			"(omega sigma) = " << floor / (omega_min * sigma_min) << ", and eddy-current "
+			"losses there may be off by several tens of times that. Model it as "
+			"nonconducting if its eddy currents do not matter.";
+		Reporter().Warning(msg.str());
+		return floor;
 	}
 
 	std::complex<double> FluxLinkage(size_t k) const {
