@@ -318,7 +318,9 @@ geometry). It says where the conductor's current flows:
   conductor must not reach its own axis.
 - `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
   internal faces that crosses the conductor once, and the current crosses it
-  along `normal`. The cut should be (nearly) planar.
+  along `normal`. `normal` must cross every face of the cut within 60° of
+  that face's own normal, so the cut should be close to planar; a normal
+  that runs along the cut is rejected.
 - `electrodes`: an open conductor (a bus bar, a lead). Current enters through
   the `input` boundary group and leaves through `output`. Both must lie on a
   `dirichlet` (`n × A = 0`) boundary, the only place current can enter or

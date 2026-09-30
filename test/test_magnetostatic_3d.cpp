@@ -403,6 +403,28 @@ TEST_CASE("A cut coil reproduces the azimuthal coil", "[solvers][magnetostatic][
 	REQUIRE(cut == Catch::Approx(reference).epsilon(2e-3));
 }
 
+// The cut normal only has to cross the cut: a normal tilted 45 degrees off
+// the cut plane (y = 0) describes the same crossing and gives the same
+// inductance, while one lying in the plane cannot say which side is
+// downstream and is rejected.
+TEST_CASE("The cut normal must cross the cut", "[solvers][magnetostatic][3d][conductor]") {
+	using Catch::Matchers::ContainsSubstring;
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	spec.cut = true;
+	auto solve = [&](const std::vector<double>& normal) {
+		mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+		json config = MakeAnnulusConfig(spec, true, 1);
+		config["terminals"][0]["direction"]["normal"] = normal;
+		MagnetostaticSolver3D solver(mesh, DecodeConfig(config, "cut_normal.h5"));
+		return SolveInductance(solver, "cut_normal.h5")[0][0];
+	};
+	const double straight = solve({ 0.0, 1.0, 0.0 });
+	REQUIRE(solve({ 0.0, 1.0, 1.0 }) == Catch::Approx(straight).epsilon(1e-12));
+	REQUIRE_THROWS_WITH(solve({ 1.0, 0.0, 0.0 }), ContainsSubstring("must cross the cut"));
+	REQUIRE_THROWS_WITH(solve({ 1.0, 0.5, 0.0 }), ContainsSubstring("must cross the cut"));
+}
+
 namespace {
 // Unit cube; a square copper bar (attribute 2, 0.25 < x, y < 0.75) runs from
 // the bottom wall (z = 0, attribute 1) to the top wall (z = 1, attribute 6).

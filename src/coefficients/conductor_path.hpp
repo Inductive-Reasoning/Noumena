@@ -45,7 +45,9 @@
  *                cut on its downstream (+normal) side, H is the sum of the H1
  *                basis functions of the cut DOFs, and 0 elsewhere. H is
  *                continuous everywhere except across the cut, where it jumps
- *                by 1.
+ *                by 1. Which side of the cut an element lies on is read from
+ *                the cut's normal, so the normal must cross every cut face
+ *                clearly (ConductionPath::kMinCutCrossing).
  */
 class ConductorPath {
 public:
@@ -117,6 +119,20 @@ private:
 /// element map) is needed.
 class ConductionPath : public ConductorPath {
 public:
+	/// Smallest |cos| allowed between the cut normal and any cut face's
+	/// normal (the angle between them at most 60 degrees).
+	///
+	/// The side of the cut an element lies on is the sign of its offset from
+	/// the nearest cut face along the normal, which is meaningful only where
+	/// the normal actually crosses that face: a normal tangent to part of the
+	/// cut classifies elements there arbitrarily, and a cut that folds back
+	/// on itself flips the side the normal calls "downstream". Either puts a
+	/// spurious unit jump inside the conductor. A connected cut can only fold
+	/// past 90 degrees by passing through faces nearly tangent to the normal,
+	/// so bounding the angle on every face rules out both, while allowing a
+	/// normal well off the cut's own (a tilted or gently curved cut).
+	static constexpr double kMinCutCrossing = 0.5;
+
 	/// @param conductor     Domain-attribute marker of the conductor.
 	/// @param conductivity  sigma for the potential (massive conductors, so v
 	///                      is the true DC potential); nullptr means uniform
@@ -222,17 +238,34 @@ private:
 						 const std::array<double, 3>& normal, mfem::Coefficient& sigma,
 						 mfem::Vector& rhs) {
 		MFEM_VERIFY(!cut_faces.empty(), "The cut does not cross its conductor.");
+		mfem::Vector direction(3);
+		for (int k = 0; k < 3; ++k) { direction(k) = normal[k]; }
+		MFEM_VERIFY(direction.Norml2() > 0.0, "The cut normal must be a nonzero vector.");
+		direction /= direction.Norml2();
+
 		std::set<int> cut_dofs;
 		std::vector<mfem::Vector> centers;
 		mfem::Array<int> dofs;
+		double worst = 1.0;
+		mfem::Vector face_normal(3);
 		for (int f : cut_faces) {
 			fes.GetFaceDofs(f, dofs);
 			cut_dofs.insert(dofs.begin(), dofs.end());
 			mfem::Vector c;
 			mfem::ElementTransformation* T = mesh.GetFaceTransformation(f);
-			T->Transform(mfem::Geometries.GetCenter(T->GetGeometryType()), c);
+			const mfem::IntegrationPoint& center = mfem::Geometries.GetCenter(T->GetGeometryType());
+			T->SetIntPoint(&center);
+			T->Transform(center, c);
 			centers.push_back(c);
+			mfem::CalcOrtho(T->Jacobian(), face_normal);
+			worst = std::min(worst, std::abs(face_normal * direction) / face_normal.Norml2());
 		}
+		MFEM_VERIFY(worst >= kMinCutCrossing,
+			"The cut normal (" << normal[0] << ", " << normal[1] << ", " << normal[2]
+			<< ") is " << std::acos(worst) * 360.0 / Constants::TWO_PI << " degrees from the normal "
+			"of part of the cut, beyond the 60 allowed: it must cross the cut, not run "
+			"along it. Give the direction the current crosses the cut in, and keep the "
+			"cut close to planar.");
 
 		mfem::DiffusionIntegrator diffusion(sigma);
 		mfem::DenseMatrix ke;
