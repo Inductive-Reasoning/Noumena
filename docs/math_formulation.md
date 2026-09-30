@@ -261,10 +261,16 @@ Boundary conditions are homogeneous only: `dirichlet` 0 means `n × A = 0` (flux
 tangent: `B·n = 0`), and `neumann` 0 or no entry means the natural `n × H = 0`
 (flux normal).
 
-The curl-curl operator is singular: it annihilates every gradient. The direct
-solve adds `β (A, w)` with `β = 10⁻⁶ ν_min / L²` (`L` the bounding-box
-diagonal). With a divergence-free source this selects the Coulomb gauge and
-perturbs `B` by about 10⁻⁶ relative.
+The curl-curl operator is singular: it annihilates every gradient.
+
+- `iterative` (MPI/HYPRE build): CG preconditioned by hypre's AMS solves the
+  singular system directly. It is consistent because every load is projected
+  (below). Afterwards the gradient part of `A` is removed,
+  `A ← A − Gψ` with `(GᵀMG)ψ = GᵀMA`, which is the discrete Coulomb gauge.
+- `direct`: the factorization needs a nonsingular matrix, so `β (A, w)` is
+  added with `β = 10⁻⁶ ν_min / L²` (`L` the bounding-box diagonal). With a
+  divergence-free source this selects the same Coulomb gauge and perturbs `B`
+  by about 10⁻⁶ relative.
 
 Coils carry `J = (I / A_cs) t̂` with `t̂` the terminal's `direction` (currently
 azimuthal, `A_cs = ∫ dV / (2πr)`). Each coil's unit-current load `b` is made

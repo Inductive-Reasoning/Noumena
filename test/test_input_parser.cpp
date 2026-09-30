@@ -130,6 +130,7 @@ TEST_CASE("InputParser decodes every geometry_type", "[input_parser][geometry]")
 TEST_CASE("InputParser defaults linear_solver by geometry", "[input_parser][linear_solver]") {
     json source = CanonicalConfig();
     source["simulation"].erase("linear_solver");
+    source["simulation"]["physics_type"] = "electrostatics";
 
     source["simulation"]["geometry_type"] = "axisymmetric";
     REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
@@ -137,6 +138,11 @@ TEST_CASE("InputParser defaults linear_solver by geometry", "[input_parser][line
     REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
     source["simulation"]["geometry_type"] = "3d";
     REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Iterative);
+
+    // 3D magnetics has an iterative solver only in the MPI/HYPRE build (AMS).
+    source["simulation"]["physics_type"] = "magnetostatics";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver ==
+            (parallel::Enabled() ? LinearSolverType::Iterative : LinearSolverType::Direct));
 
     // An explicit choice always wins.
     source["simulation"]["linear_solver"] = "direct";

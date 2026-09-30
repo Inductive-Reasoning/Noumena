@@ -83,9 +83,11 @@ mesh, `3d` a 3D mesh. A mismatch is rejected, including the `planar` default on
 a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
 `axisymmetric` and `3d` ones are absolute (F, H). `3d` supports
 `electrostatics` and `magnetostatics` (not yet `magnetoquasistatics`), with
-every output format. 3D magnetostatics currently needs `linear_solver`
-`direct`, supports only homogeneous boundary conditions (`dirichlet` 0 for
-`n × A = 0`, `neumann` 0 or no entry for `n × H = 0`), and has no AMR. Gmsh output supports
+every output format. 3D magnetostatics supports only homogeneous boundary
+conditions (`dirichlet` 0 for `n × A = 0`, `neumann` 0 or no entry for
+`n × H = 0`) and has no AMR. Its `iterative` solver (CG preconditioned by
+hypre's AMS) needs the MPI/HYPRE build; a serial build defaults 3D magnetics
+to `direct`, which is practical only for small meshes. Gmsh output supports
 tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.
 
 `direct` is the default linear solver for the 2D models because a
@@ -101,7 +103,9 @@ preconditioned by algebraic multigrid (AMGCL, smoothed aggregation, threaded
 with OpenMP; set `OMP_NUM_THREADS` to control it). Its iteration count stays
 roughly constant as the mesh is refined (about 20-30), and the multigrid
 hierarchy is built once per mesh and reused for every scenario. The MQS solver
-uses unpreconditioned GMRES. In every solver `solver_tolerance` is the relative
+uses unpreconditioned GMRES. 3D magnetostatics uses CG preconditioned by
+hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
+constant under refinement. In every solver `solver_tolerance` is the relative
 residual `||b - Ax|| / ||b||`; a run that does not reach it within
 `solver_max_iter` iterations prints a warning.
 

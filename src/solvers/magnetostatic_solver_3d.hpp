@@ -17,7 +17,9 @@
 #include "../coefficients/azimuthal_coil_coefficient.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../core/constants.hpp"
+#include "../linalg/serial_ams.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
+#include "../parallel/mpi_runtime.hpp"
 
 /**
  * @brief 3D magnetostatics in the full vector potential A (H(curl)).
@@ -45,8 +47,7 @@
  * orthogonal to the gradients, and it makes L = B'^T K^-1 B' symmetric by
  * construction. Units are henries.
  *
- * Not yet available, and rejected in Setup(): adaptive refinement and an
- * iterative solver (the curl-curl operator needs an AMS preconditioner).
+ * Not yet available, and rejected in Setup(): adaptive refinement.
  *
  * @par Boundary conditions
  * A 3D vector potential has no meaningful scalar boundary value, so the
@@ -58,18 +59,26 @@
  * Nonzero tangential data n x A = n x g can be imposed programmatically with
  * SetTangentialBoundaryValue(); it is used by the manufactured-solution tests.
  *
- * @par Gauge and regularization
+ * @par Linear solvers, gauge and regularization
  * The curl-curl operator annihilates gradients, so it is singular even with
  * n x A fixed on the whole boundary: every gradient of an interior nodal
- * function is in its null space. The direct factorization cannot handle a
- * singular matrix, so a small mass term beta (A, w) is added,
+ * function is in its null space. The two linear solvers deal with that
+ * differently:
+ *  - "iterative" (MPI/HYPRE build only): CG preconditioned by hypre's AMS
+ *    (SerialAmsPreconditioner) on the singular system itself, which is
+ *    consistent because every load is projected. The iteration count stays
+ *    roughly constant under refinement. CG leaves A's gradient part
+ *    arbitrary, so it is removed afterwards
+ *    (DivergenceFreeProjector::RemoveGradient), putting A in the discrete
+ *    Coulomb gauge.
+ *  - "direct": the factorization cannot handle a singular matrix, so a small
+ *    mass term beta (A, w) is added,
  *     beta = kRegularization * nu_min / L^2,
  * with L the mesh bounding-box diagonal and nu_min the smallest reluctivity.
  * With a divergence-free source this selects the Coulomb-gauged solution and
  * perturbs B by a relative O(kRegularization) in every material, while keeping
  * the null-space pivots (relative size kRegularization * (nu_min/nu_max) *
- * (h/L)^2) above round-off. An auxiliary-space preconditioned iterative solver
- * handles the singular system directly and will not need this term.
+ * (h/L)^2) above round-off. Its fill-in limits it to small 3D problems.
  *
  * @warning The source must be divergence-free (and, discretely, orthogonal to
  * the gradients of the essential-boundary nodal space) or the regularized
@@ -117,10 +126,10 @@ public:
 		}
 		MFEM_VERIFY(!config.Amr.Enabled,
 			"3D magnetostatics does not yet support adaptive refinement.");
-		MFEM_VERIFY(config.LinearSolver == LinearSolverType::Direct,
-			"3D magnetostatics has no iterative solver yet: the curl-curl "
-			"operator needs an auxiliary-space (AMS) preconditioner. Set "
-			"simulation.linear_solver to 'direct'.");
+		MFEM_VERIFY(config.LinearSolver == LinearSolverType::Direct || parallel::Enabled(),
+			"The iterative solver for 3D magnetostatics uses hypre's AMS "
+			"preconditioner and needs the MPI/HYPRE build (-DUSE_MPI=ON). Set "
+			"simulation.linear_solver to 'direct' in this serial build.");
 
 		BuildReluctivity();
 		fec = std::make_unique<mfem::ND_FECollection>(config.Order, mesh.Dimension());
@@ -147,10 +156,13 @@ public:
 		A = std::make_unique<mfem::GridFunction>(fespace.get());
 		*A = 0.0;
 
-		regularization = std::make_unique<mfem::ConstantCoefficient>(RegularizationWeight());
+		const bool direct = config.LinearSolver == LinearSolverType::Direct;
 		a = std::make_unique<mfem::BilinearForm>(fespace.get());
 		a->AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
-		a->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
+		if (direct) {
+			regularization = std::make_unique<mfem::ConstantCoefficient>(RegularizationWeight());
+			a->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
+		}
 		a->Assemble();
 
 		fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
@@ -158,9 +170,20 @@ public:
 
 		auto* matrix = dynamic_cast<mfem::SparseMatrix*>(A_op.Ptr());
 		MFEM_VERIFY(matrix, "Expected a SparseMatrix operator from FormSystemMatrix.");
-		{
+		direct_solver.reset();
+#ifdef MFEM_USE_MPI
+		ams.reset();
+#endif
+		if (direct) {
+			WarnOnLargeDirectSolve(fespace->GetTrueVSize());
 			auto operation = Reporter().Start("sparse direct factorization");
 			direct_solver = std::make_unique<SparseDirectSolver>(*matrix);
+		}
+		else {
+#ifdef MFEM_USE_MPI
+			auto operation = Reporter().Start("AMS preconditioner setup");
+			ams = std::make_unique<SerialAmsPreconditioner>(*matrix, *fespace, /*singular=*/true);
+#endif
 		}
 
 		auto operation = Reporter().Start("coil source assembly");
@@ -256,6 +279,9 @@ private:
 	std::unique_ptr<mfem::LinearForm> b;
 	mfem::OperatorHandle A_op;
 	std::unique_ptr<SparseDirectSolver> direct_solver;
+#ifdef MFEM_USE_MPI
+	std::unique_ptr<SerialAmsPreconditioner> ams;  // iterative path
+#endif
 
 	mfem::VectorCoefficient* source = nullptr;          // not owned
 	mfem::VectorCoefficient* boundary_value = nullptr;  // not owned
@@ -331,7 +357,15 @@ private:
 		auto operation = Reporter().Start("linear system solve");
 		mfem::Vector X, B;
 		a->FormLinearSystem(ess_tdof_list, *A, *b, A_op, X, B);
-		direct_solver->Mult(B, X);
+		if (direct_solver) {
+			direct_solver->Mult(B, X);
+			a->RecoverFEMSolution(X, *b, *A);
+			return;
+		}
+#ifdef MFEM_USE_MPI
+		SolveSpdIteratively(*A_op, *ams, B, X);
 		a->RecoverFEMSolution(X, *b, *A);
+		projector->RemoveGradient(*A);
+#endif
 	}
 };

@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include "../core/constants.hpp"
 #include "../core/problem_config.hpp"
+#include "../parallel/mpi_runtime.hpp"
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
@@ -321,10 +322,15 @@ private:
     // accuracy does not depend on a residual tolerance. For '3d' it is
     // iterative (multigrid-preconditioned CG), because the direct solver's
     // fill-in makes a 3D factorization of even ~100k unknowns take minutes.
+    // The one exception is 3D magnetics in a serial build: its iterative
+    // solver needs hypre's AMS, which only the MPI build has, so the default
+    // there is the best solver the build actually provides.
     [[nodiscard]] ::LinearSolverType GetLinearSolver() const {
-        const ::LinearSolverType fallback =
-            GetGeometryType() == ::GeometryType::Cartesian3D
-                ? ::LinearSolverType::Iterative : ::LinearSolverType::Direct;
+        const bool three_d = GetGeometryType() == ::GeometryType::Cartesian3D;
+        const bool magnetic = GetPhysicsType() != ::PhysicsType::Electrostatics;
+        const bool iterative_available = !magnetic || parallel::Enabled();
+        const ::LinearSolverType fallback = three_d && iterative_available
+            ? ::LinearSolverType::Iterative : ::LinearSolverType::Direct;
         return ParseEnum(Sim(), "linear_solver", fallback,
                          {{"iterative", ::LinearSolverType::Iterative},
                           {"direct",    ::LinearSolverType::Direct}});

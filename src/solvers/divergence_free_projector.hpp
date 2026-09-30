@@ -76,25 +76,32 @@ public:
 	void Project(mfem::Vector& b) const {
 		mfem::Vector rhs(G->Width());
 		G->MultTranspose(b, rhs);
-		for (int i = 0; i < fixed.Size(); ++i) { rhs(fixed[i]) = 0.0; }
-
-		mfem::Vector psi(G->Width());
-		psi = 0.0;
-		mfem::CGSolver cg;
-		cg.SetOperator(*K);
-		cg.SetPreconditioner(*amg);
-		cg.SetRelTol(kTolerance);
-		cg.SetAbsTol(0.0);
-		cg.SetMaxIter(1000);
-		cg.SetPrintLevel(0);
-		cg.Mult(rhs, psi);
-		MFEM_VERIFY(cg.GetConverged() || rhs.Norml2() == 0.0,
-			"Divergence-free projection of a coil source did not converge.");
+		const mfem::Vector psi = SolvePotential(rhs);
 
 		mfem::Vector grad_psi(G->Height()), correction(M->Height());
 		G->Mult(psi, grad_psi);
 		M->Mult(grad_psi, correction);
 		b -= correction;
+	}
+
+	/// Remove the gradient part of a solved potential @p A, leaving it
+	/// M-orthogonal to every discrete gradient (the discrete Coulomb gauge,
+	/// div A = 0 weakly). B = curl A is unchanged, as is every flux linkage
+	/// computed with a projected load, and A's tangential trace on the
+	/// essential boundary is kept (psi vanishes there).
+	///
+	/// The regularized direct solve lands in this gauge on its own; a solve
+	/// of the singular system (AMS-preconditioned CG) leaves the gradient part
+	/// arbitrary, so this makes both paths export the same A.
+	void RemoveGradient(mfem::Vector& A) const {
+		mfem::Vector MA(M->Height()), rhs(G->Width());
+		M->Mult(A, MA);
+		G->MultTranspose(MA, rhs);
+		const mfem::Vector psi = SolvePotential(rhs);
+
+		mfem::Vector grad_psi(G->Height());
+		G->Mult(psi, grad_psi);
+		A -= grad_psi;
 	}
 
 	/// ||G^T b|| (excluding the fixed DOFs): zero for a balanced load.
@@ -106,6 +113,24 @@ public:
 	}
 
 private:
+	// psi with K psi = rhs, psi = 0 at the fixed DOFs.
+	mfem::Vector SolvePotential(mfem::Vector rhs) const {
+		for (int i = 0; i < fixed.Size(); ++i) { rhs(fixed[i]) = 0.0; }
+		mfem::Vector psi(G->Width());
+		psi = 0.0;
+		mfem::CGSolver cg;
+		cg.SetOperator(*K);
+		cg.SetPreconditioner(*amg);
+		cg.SetRelTol(kTolerance);
+		cg.SetAbsTol(0.0);
+		cg.SetMaxIter(1000);
+		cg.SetPrintLevel(0);
+		cg.Mult(rhs, psi);
+		MFEM_VERIFY(cg.GetConverged() || rhs.Norml2() == 0.0,
+			"Divergence-free projection did not converge.");
+		return psi;
+	}
+
 	mfem::H1_FECollection h1_fec;
 	mfem::FiniteElementSpace h1;
 	std::unique_ptr<mfem::SparseMatrix> G;  // H1 -> Nedelec discrete gradient

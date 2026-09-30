@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -361,9 +362,11 @@ TEST_CASE("3D magnetostatics rejects what it does not yet support",
 	nonzero["boundary_conditions"][0]["value"] = 1.0;
 	REQUIRE_THAT(setup_error(nonzero), ContainsSubstring("only homogeneous conditions"));
 
+#ifndef MFEM_USE_MPI
 	json iterative = MakeCubeConfig(1.0);
 	iterative["simulation"]["linear_solver"] = "iterative";
-	REQUIRE_THAT(setup_error(iterative), ContainsSubstring("AMS"));
+	REQUIRE_THAT(setup_error(iterative), ContainsSubstring("MPI/HYPRE build"));
+#endif
 
 	json amr = MakeCubeConfig(1.0);
 	amr["simulation"]["amr"] = {{"enabled", true}};
@@ -546,3 +549,103 @@ TEST_CASE("3D coil terminals are validated", "[solvers][magnetostatic][3d]") {
 		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("needs a 'direction'"));
 	}
 }
+
+#ifdef MFEM_USE_MPI
+
+// ---- Iterative (AMS-preconditioned CG) path, MPI/HYPRE build ---------------
+
+// The quadratic manufactured solution again, now through the singular system
+// with no regularization. After the gauge fix A is in the Coulomb gauge, which
+// A_exact satisfies, so A as well as B must be exact to solver precision --
+// about four orders tighter than the regularized direct path allows.
+TEST_CASE("3D magnetostatics iterative solve reproduces the manufactured solution",
+		  "[solvers][magnetostatic][3d][manufactured][ams]") {
+	constexpr double mu_r = 2.0;
+	const double nu = 1.0 / (Constants::MU_0 * mu_r);
+	mfem::VectorFunctionCoefficient A_exact(3, [](const mfem::Vector& x, mfem::Vector& A) {
+		A.SetSize(3);
+		A(0) = x(1) * x(1);
+		A(1) = x(2) * x(2);
+		A(2) = x(0) * x(0);
+	});
+	mfem::VectorFunctionCoefficient B_exact(3, [](const mfem::Vector& x, mfem::Vector& B) {
+		B.SetSize(3);
+		B(0) = -2.0 * x(2);
+		B(1) = -2.0 * x(0);
+		B(2) = -2.0 * x(1);
+	});
+	mfem::Vector j(3);
+	j = -2.0 * nu;
+	mfem::VectorConstantCoefficient J(j);
+
+	for (auto etype : { mfem::Element::TETRAHEDRON, mfem::Element::HEXAHEDRON }) {
+		DYNAMIC_SECTION((etype == mfem::Element::TETRAHEDRON ? "tetrahedra" : "hexahedra")) {
+			mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(2, 2, 2, etype);
+			json config = MakeCubeConfig(mu_r);
+			config["simulation"]["linear_solver"] = "iterative";
+			config["simulation"]["solver_tolerance"] = 1e-12;
+			MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+			solver.SetSourceCurrentDensity(&J);
+			solver.SetTangentialBoundaryValue(&A_exact);
+			solver.Setup();
+			solver.Run();
+
+			const FieldError err = MaxFieldError(solver.GetSolution(), mesh, A_exact, B_exact);
+			INFO("A error " << err.a << ", B error " << err.b);
+			REQUIRE(err.a < 1e-9);
+			REQUIRE(err.b < 1e-9);
+			REQUIRE(solver.MagneticEnergy() == Catch::Approx(2.0 * nu).epsilon(1e-10));
+		}
+	}
+}
+
+// Both linear solvers must give the same inductance matrix; they differ only
+// by the direct path's relative-1e-6 regularization.
+TEST_CASE("3D inductances agree between the AMS and direct solvers",
+		  "[solvers][magnetostatic][3d][coupling][ams]") {
+	AnnulusSpec spec;
+	spec.coils = { { 0.04, 0.06, 0.02, 0.04 }, { 0.05, 0.08, 0.06, 0.08 } };
+	const auto direct = Inductance3D(spec, 16, 2);
+
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+	json config = MakeAnnulusConfig(spec, true, 2);
+	config["simulation"]["linear_solver"] = "iterative";
+	config["simulation"]["solver_tolerance"] = 1e-12;
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(config, "ms3d_ams.h5"));
+	const auto iterative = SolveInductance(solver, "ms3d_ams.h5");
+
+	for (int i = 0; i < 2; ++i) {
+		for (int k = 0; k < 2; ++k) {
+			INFO("L(" << i << "," << k << ") AMS " << iterative[i][k] << " direct " << direct[i][k]);
+			REQUIRE(iterative[i][k] == Catch::Approx(direct[i][k]).epsilon(1e-5));
+		}
+	}
+	REQUIRE(iterative[0][1] == Catch::Approx(iterative[1][0]).epsilon(1e-9));
+}
+
+// Hidden benchmark (run with "[ams-benchmark]"): the 2x refined annulus that
+// the direct factorization did not finish in 10 minutes.
+TEST_CASE("AMS scales past the direct solver", "[.][ams-benchmark]") {
+	AnnulusSpec spec;
+	spec.nr *= 2;
+	spec.nz *= 2;
+	spec.coils = { { 0.04, 0.06, 0.04, 0.06 } };
+	const double reference = AxisymmetricInductance(spec)[0][0];
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 32);
+	json config = MakeAnnulusConfig(spec, true, 2);
+	config["simulation"]["linear_solver"] = "iterative";
+	config["simulation"]["solver_tolerance"] = 1e-10;
+	config["simulation"]["solver_print_level"] = 1;
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(config, "ms3d_bench.h5"));
+	// Print the CG iteration counts and phase timings.
+	StatusReporter::Global().SetVerbosity(StatusReporter::Verbosity::Diagnostics);
+	const auto start = std::chrono::steady_clock::now();
+	const double l = SolveInductance(solver, "ms3d_bench.h5")[0][0];
+	const double seconds =
+		std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+	WARN("elements " << mesh.GetNE() << ", L " << l << ", axisymmetric " << reference
+		 << ", relative difference " << (l - reference) / reference << ", " << seconds << " s");
+	REQUIRE(l == Catch::Approx(reference).epsilon(1e-3));
+}
+
+#endif // MFEM_USE_MPI
