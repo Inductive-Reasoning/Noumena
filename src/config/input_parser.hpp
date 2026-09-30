@@ -314,11 +314,18 @@ private:
         return Get(Sim(), "solver_print_level", Constants::DEFAULT_SOLVER_PRINT_LEVEL);
     }
 
-    // "simulation.linear_solver": iterative | direct. Direct is the default: it
+    // "simulation.linear_solver": iterative | direct.
+    //
+    // The default depends on geometry_type. For the 2D models it is direct: it
     // factors once per mesh and reuses the factors across scenarios, and its
-    // accuracy does not depend on a residual tolerance.
+    // accuracy does not depend on a residual tolerance. For '3d' it is
+    // iterative (multigrid-preconditioned CG), because the direct solver's
+    // fill-in makes a 3D factorization of even ~100k unknowns take minutes.
     [[nodiscard]] ::LinearSolverType GetLinearSolver() const {
-        return ParseEnum(Sim(), "linear_solver", ::LinearSolverType::Direct,
+        const ::LinearSolverType fallback =
+            GetGeometryType() == ::GeometryType::Cartesian3D
+                ? ::LinearSolverType::Iterative : ::LinearSolverType::Direct;
+        return ParseEnum(Sim(), "linear_solver", fallback,
                          {{"iterative", ::LinearSolverType::Iterative},
                           {"direct",    ::LinearSolverType::Direct}});
     }

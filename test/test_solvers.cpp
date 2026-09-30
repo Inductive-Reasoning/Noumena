@@ -2129,14 +2129,15 @@ TEST_CASE("3D concentric-sphere capacitance matches the analytic value",
     constexpr double a = 0.1, b = 0.3;
     CreateSphericalShellMesh(mesh_file, a, b, 6, 6);
 
-    const json config = MakeSphereConfig(mesh_file, nullptr, /*outer_terminal=*/true);
+    json config = MakeSphereConfig(mesh_file, nullptr, /*outer_terminal=*/true);
+    config["simulation"]["linear_solver"] = "direct";
     const double analytic = 2.0 * Constants::TWO_PI * Constants::EPSILON_0 * a * b / (b - a);
     REQUIRE(SolveSphereCapacitance(mesh_file, config, matrix_file) ==
             Catch::Approx(analytic).epsilon(2e-3));
 
-    SECTION("the iterative PCG path agrees with the direct solve") {
+    SECTION("the default ('3d' -> multigrid PCG) agrees with the direct solve") {
         json iterative = config;
-        iterative["simulation"]["linear_solver"] = "iterative";
+        iterative["simulation"].erase("linear_solver");
         REQUIRE(SolveSphereCapacitance(mesh_file, iterative, matrix_file) ==
                 Catch::Approx(SolveSphereCapacitance(mesh_file, config, matrix_file))
                     .epsilon(1e-8));
@@ -2535,6 +2536,64 @@ TEST_CASE("Magnetostatic loop inductance matches the analytic ring value",
 
     fs::remove(matrix_file);
     fs::remove(mesh_file);
+}
+
+// The multigrid-preconditioned CG path (linear_solver "iterative") must
+// reproduce the direct factorization on both scalar static operators: the
+// axisymmetric r-weighted diffusion operator (coaxial capacitance) and the
+// axisymmetric curl-curl operator with its 1/r term (loop inductance). With
+// solver_tolerance a true relative residual of 1e-12, agreement well below
+// the discretization error is expected.
+TEST_CASE("Multigrid PCG and the direct solver agree on the 2D static operators",
+          "[solvers][linear_solver][amg]") {
+    auto solve = [](auto make_solver, json config, const std::string& matrix_file,
+                    const std::string& quantity, const std::string& solver_type) {
+        config["simulation"]["linear_solver"] = solver_type;
+        config["simulation"]["solver_tolerance"] = 1e-12;
+        auto solver = make_solver(config, matrix_file);
+        solver->Setup();
+        solver->Run();
+        solver->SaveAnalysis();
+        const auto matrix = ReadHdf5Matrix(matrix_file, quantity);
+        fs::remove(matrix_file);
+        return matrix;
+    };
+
+    SECTION("axisymmetric electrostatics") {
+        const std::string mesh_file = "test_amg_coax.mesh";
+        CreateCoaxMesh(mesh_file, 0.01, 0.03, 0.05, 64, 4);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["amr"]["enabled"] = false;
+        config["simulation"]["order"] = 2;
+        config["simulation"]["analysis_type"] = "coupling_matrix";
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        auto make = [&mesh](const json& c, const std::string& archive) {
+            return std::make_unique<ElectrostaticSolver>(mesh, DecodeConfig(c, archive));
+        };
+        const auto direct = solve(make, config, "amg_coax.h5", "Capacitance", "direct");
+        const auto iterative = solve(make, config, "amg_coax.h5", "Capacitance", "iterative");
+        RequireMatricesEqual(iterative, direct, 1e-8);
+        fs::remove(mesh_file);
+    }
+
+    SECTION("axisymmetric magnetostatics") {
+        const std::string mesh_file = "test_amg_loop.mesh";
+        CreateCurrentLoopMesh(mesh_file);
+        json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
+        config["terminals"] = json::array({
+            {{"name", "LoopCurrent"}, {"quantity", "current"},
+             {"entity_group", "LoopDomain"}}});
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        auto make = [&mesh](const json& c, const std::string& archive) {
+            return std::make_unique<MagnetostaticSolver>(mesh, DecodeConfig(c, archive));
+        };
+        const auto direct = solve(make, config, "amg_loop.h5", "Inductance", "direct");
+        const auto iterative = solve(make, config, "amg_loop.h5", "Inductance", "iterative");
+        RequireMatricesEqual(iterative, direct, 1e-8);
+        REQUIRE(iterative.values[0][0] ==
+            Catch::Approx(AnalyticLoopInductance()).epsilon(0.005));
+        fs::remove(mesh_file);
+    }
 }
 
 // Same analytic reference, but through the MQS assembly, which is a different

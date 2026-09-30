@@ -137,6 +137,58 @@ protected:
         Geometry().VerifyMeshDimension(mesh);
     }
 
+    // Solve an SPD system with preconditioned CG, used by the static solvers'
+    // iterative path.
+    //
+    // solver_tolerance is the RELATIVE residual ||b - A x|| / ||b||, the same
+    // meaning it has in the MQS GMRES path. (The mfem::PCG convenience function
+    // previously used here squares-roots its tolerance argument, so a
+    // configured 1e-12 used to mean 1e-6 for these solvers only.)
+    //
+    // Non-convergence is reported rather than silent: mfem::PCG returned the
+    // last iterate without comment, which reads exactly like a converged run.
+    void SolveSpdIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
+                             const mfem::Vector& B, mfem::Vector& X) const {
+        mfem::CGSolver cg;
+        cg.SetOperator(A);
+        cg.SetPreconditioner(preconditioner);
+        cg.SetRelTol(config.SolverTolerance);
+        cg.SetAbsTol(0.0);
+        cg.SetMaxIter(config.SolverMaxIter);
+        cg.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
+        cg.Mult(B, X);
+
+        std::ostringstream msg;
+        msg << std::scientific << std::setprecision(3);
+        if (cg.GetConverged()) {
+            msg << "CG converged in " << cg.GetNumIterations()
+                << " iterations (relative residual " << cg.GetFinalRelNorm() << ").";
+            Reporter().Diagnostic(msg.str());
+        }
+        else {
+            msg << "CG did not converge: relative residual " << cg.GetFinalRelNorm()
+                << " after " << cg.GetNumIterations() << " iterations, above "
+                   "solver_tolerance " << config.SolverTolerance << ". Raise "
+                   "solver_max_iter, loosen solver_tolerance, or use the direct "
+                   "solver; results may be inaccurate.";
+            Reporter().Warning(msg.str());
+        }
+    }
+
+    // Eigen's simplicial LDL^T is fine for 2D meshes but its fill-in grows much
+    // faster in 3D: measured on a P2 Laplacian, 14 s / 0.24 GB at 36k unknowns
+    // and 346 s / 1.5 GB at 118k. Warn before a 3D factorization that size so
+    // the run does not just appear to hang.
+    void WarnOnLargeDirectSolve(int true_dofs) const {
+        constexpr int kLarge3DDirectDofs = 50000;
+        if (config.LinearSolver != LinearSolverType::Direct) return;
+        if (geometry != GeometryType::Cartesian3D || true_dofs <= kLarge3DDirectDofs) return;
+        Reporter().Warning("Direct factorization of a 3D system with " +
+            std::to_string(true_dofs) + " unknowns may take many minutes and "
+            "gigabytes of memory. Set simulation.linear_solver to 'iterative' "
+            "(algebraic multigrid), the default for geometry_type '3d'.");
+    }
+
     // Marker (1/0 over domain attributes) for a set of element attribute ids.
     // Unlike the boundary variant, a domain attribute that the mesh does not
     // carry is a configuration error: silently dropping it yields an empty

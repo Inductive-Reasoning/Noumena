@@ -16,6 +16,7 @@
 #include "../config/boundary_validation.hpp"
 #include "../core/constants.hpp"
 #include "../io/gmsh_results_writer.hpp"
+#include "../linalg/amg_preconditioner.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
 
 class MagnetostaticSolver : public MagneticSolver
@@ -41,6 +42,9 @@ private:
 	// Factorization of the cached constrained matrix, valid for the same lifetime
 	// as A_op. Null when the iterative solver is configured.
 	std::unique_ptr<SparseDirectSolver> direct_solver;
+
+	// Multigrid preconditioner for the iterative path; see ElectrostaticSolver.
+	std::unique_ptr<AmgPreconditioner> amg;
 
 	std::unique_ptr<mfem::DenseMatrix> L; // Inductance matrix (coupling matrix) for the current mesh
 
@@ -105,9 +109,17 @@ public:
 		// cost is paid once per mesh instead of once per scenario. AMR rebuilds it
 		// implicitly by re-running BuildOperators() after each refinement.
 		direct_solver.reset();
+		amg.reset();
 		if (config.LinearSolver == LinearSolverType::Direct) {
+			WarnOnLargeDirectSolve(fespace->GetTrueVSize());
 			auto operation = Reporter().Start("sparse direct factorization");
 			direct_solver = std::make_unique<SparseDirectSolver>(SystemMatrix());
+		}
+		else {
+			// Built once per mesh like the factorization, and reused for every
+			// scenario's right-hand side.
+			auto operation = Reporter().Start("algebraic multigrid setup");
+			amg = std::make_unique<AmgPreconditioner>(SystemMatrix());
 		}
 	}
 
@@ -276,12 +288,7 @@ public:
 			direct_solver->Mult(B, X);
 		}
 		else {
-			mfem::GSSmoother M(SystemMatrix());
-			mfem::PCG(*A_op, M, B, X,
-				Reporter().SolverPrintLevel(config.SolverPrintLevel),
-				config.SolverMaxIter,
-				config.SolverTolerance,
-				0.0);
+			SolveSpdIteratively(*A_op, *amg, B, X);
 		}
 
 		a->RecoverFEMSolution(X, *b, *A);

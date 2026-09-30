@@ -72,8 +72,8 @@ Object. **Required** -- the only required section.
 | `geometry_type` | string | `planar` | `planar`, `axisymmetric`, `3d` |
 | `analysis_type` | string | `field` | `field`, `coupling_matrix` |
 | `order` | integer | `1` | 1-10 |
-| `linear_solver` | string | `direct` | `direct`, `iterative` |
-| `solver_tolerance` | number | `1e-12` | (0, 1) |
+| `linear_solver` | string | `direct` (2D), `iterative` (`3d`) | `direct`, `iterative` |
+| `solver_tolerance` | number | `1e-12` | (0, 1); relative residual of the iterative solve |
 | `solver_max_iter` | integer | `1000` | >= 1 |
 | `solver_print_level` | integer | `1` | -- |
 | `amr` | object | absent = disabled | See below |
@@ -85,9 +85,22 @@ a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
 for `electrostatics` only, with every output format. Gmsh output supports
 tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.
 
-`direct` is the default linear solver because a coupling-matrix run amortizes
-one factorization over every terminal's right-hand side, and its accuracy does
-not depend on a residual tolerance.
+`direct` is the default linear solver for the 2D models because a
+coupling-matrix run amortizes one factorization over every terminal's
+right-hand side, and its accuracy does not depend on a residual tolerance.
+
+For `3d` the default is `iterative`. The direct solver's fill-in grows far
+faster in 3D (a P2 Laplacian took 346 s and 1.5 GB at 118k unknowns), and a
+warning is printed before a 3D direct factorization above 50k unknowns.
+
+`iterative` means, for electrostatics and magnetostatics, conjugate gradients
+preconditioned by algebraic multigrid (AMGCL, smoothed aggregation, threaded
+with OpenMP; set `OMP_NUM_THREADS` to control it). Its iteration count stays
+roughly constant as the mesh is refined (about 20-30), and the multigrid
+hierarchy is built once per mesh and reused for every scenario. The MQS solver
+uses unpreconditioned GMRES. In every solver `solver_tolerance` is the relative
+residual `||b - Ax|| / ||b||`; a run that does not reach it within
+`solver_max_iter` iterations prints a warning.
 
 `frequency` is **not** valid here. It belongs on each scenario; see
 [`scenarios`](#scenarios).

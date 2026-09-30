@@ -28,6 +28,8 @@ A finite element solver for electromagnetic problems using MFEM (Modular Finite 
 - **MFEM** (v4.7): Automatically downloaded and built by CMake
 - **HDF5** (1.14.6): C library, automatically downloaded and built statically by CMake
 - **HighFive** (3.1.1): Header-only C++ wrapper for HDF5, automatically downloaded by CMake
+- **Eigen** (3.4.0): Header-only sparse direct solvers (MPL2 subset only), automatically downloaded by CMake
+- **AMGCL** (1.5.0): Header-only algebraic multigrid (MIT) for the iterative solver, automatically downloaded by CMake
 
 No separate HDF5 installation is required. The HDF5 build excludes optional tools,
 language bindings, MPI, and zlib/SZip compression dependencies. HDF5 and HighFive

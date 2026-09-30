@@ -166,6 +166,7 @@ private:
             CheckFieldType(sim, "physics_type", "simulation.physics_type", ExpectedType::String);
             CheckFieldType(sim, "geometry_type", "simulation.geometry_type", ExpectedType::String);
             CheckFieldType(sim, "analysis_type", "simulation.analysis_type", ExpectedType::String);
+            CheckFieldType(sim, "linear_solver", "simulation.linear_solver", ExpectedType::String);
             CheckFieldType(sim, "mesh", "simulation.mesh", ExpectedType::String);
             CheckFieldType(sim, "order", "simulation.order", ExpectedType::Integer);
             CheckFieldType(sim, "solver_tolerance", "simulation.solver_tolerance", ExpectedType::Number);
@@ -360,6 +361,14 @@ private:
             std::string g = sim["geometry_type"];
             if (g != "axisymmetric" && g != "planar" && g != "3d") {
                 AddError("simulation.geometry_type", "Invalid geometry_type '" + g + "'. Must be 'axisymmetric', 'planar', or '3d'");
+            }
+        }
+
+        if (sim.contains("linear_solver")) {
+            std::string solver = sim["linear_solver"];
+            if (solver != "direct" && solver != "iterative") {
+                AddError("simulation.linear_solver", "Invalid linear_solver '" + solver +
+                    "'. Must be 'direct' or 'iterative'");
             }
         }
 

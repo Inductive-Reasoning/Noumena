@@ -760,3 +760,24 @@ TEST_CASE("ConfigValidator checks geometry_type against the mesh and physics",
 		REQUIRE(HasError(validator, "simulation.geometry_type"));
 	}
 }
+
+TEST_CASE("ConfigValidator checks linear_solver", "[config_validator][linear_solver]") {
+	for (const char* ok : {"direct", "iterative"}) {
+		json config = ValidConfig();
+		config["simulation"]["linear_solver"] = ok;
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(config));
+	}
+
+	json misspelled = ValidConfig();
+	misspelled["simulation"]["linear_solver"] = "amg";
+	ConfigValidator validator;
+	REQUIRE_FALSE(validator.Validate(misspelled));
+	REQUIRE(HasError(validator, "simulation.linear_solver"));
+
+	json wrong_type = ValidConfig();
+	wrong_type["simulation"]["linear_solver"] = 1;
+	ConfigValidator type_validator;
+	REQUIRE_FALSE(type_validator.Validate(wrong_type));
+	REQUIRE(HasError(type_validator, "simulation.linear_solver"));
+}

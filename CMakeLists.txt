@@ -100,6 +100,26 @@ add_library(eigen_headers INTERFACE)
 target_include_directories(eigen_headers SYSTEM INTERFACE ${eigen_SOURCE_DIR})
 target_compile_definitions(eigen_headers INTERFACE EIGEN_MPL2_ONLY)
 
+# AMGCL supplies the algebraic multigrid preconditioner behind the "iterative"
+# linear solver of the static solvers. Header-only and MIT-licensed, and
+# threaded with OpenMP (when enabled below) rather than MPI, so it adds no
+# build requirement. As with Eigen, its own CMake project is skipped and only
+# the headers are used. AMGCL_NO_BOOST drops its optional Boost.PropertyTree
+# runtime-configuration interface; parameters are set in code instead.
+FetchContent_Declare(
+  amgcl
+  GIT_REPOSITORY https://github.com/ddemidov/amgcl.git
+  GIT_TAG        1.5.0  # Pin to a stable version for reproducibility
+  GIT_SHALLOW    TRUE
+  GIT_PROGRESS   TRUE   # See MFEM block above for rationale.
+  SOURCE_SUBDIR  do-not-configure-amgcl
+)
+FetchContent_MakeAvailable(amgcl)
+
+add_library(amgcl_headers INTERFACE)
+target_include_directories(amgcl_headers SYSTEM INTERFACE ${amgcl_SOURCE_DIR})
+target_compile_definitions(amgcl_headers INTERFACE AMGCL_NO_BOOST)
+
 # nlohmann/json supplies the configuration parser. Fetched rather than vendored
 # so its version is pinned in one visible place, consistent with MFEM and Eigen.
 # JSON_DIAGNOSTICS/JSON_DIAGNOSTIC_POSITIONS include the JSON pointer path and
@@ -163,7 +183,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(highfive)
 
 add_executable(mfem-electromag src/main.cpp)
-target_link_libraries(mfem-electromag PRIVATE mfem eigen_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
+target_link_libraries(mfem-electromag PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
 
 # main.cpp instantiates every solver and writer through heavily templated MFEM
 # and nlohmann/json code, which exceeds the default COFF section limit (65279)
@@ -247,7 +267,11 @@ if(BUILD_TESTING)
         test/test_status_reporter.cpp
     )
 
-    target_link_libraries(mfem_tests PRIVATE mfem eigen_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2WithMain)
+    target_link_libraries(mfem_tests PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2WithMain)
+    # Tests run the same threaded solver paths as the executable.
+    if(USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(mfem_tests PRIVATE OpenMP::OpenMP_CXX)
+    endif()
     target_include_directories(mfem_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
     # Same COFF section limit as mfem-electromag: the solver test translation

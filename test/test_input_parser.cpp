@@ -127,6 +127,22 @@ TEST_CASE("InputParser decodes every geometry_type", "[input_parser][geometry]")
     }
 }
 
+TEST_CASE("InputParser defaults linear_solver by geometry", "[input_parser][linear_solver]") {
+    json source = CanonicalConfig();
+    source["simulation"].erase("linear_solver");
+
+    source["simulation"]["geometry_type"] = "axisymmetric";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
+    source["simulation"]["geometry_type"] = "planar";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
+    source["simulation"]["geometry_type"] = "3d";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Iterative);
+
+    // An explicit choice always wins.
+    source["simulation"]["linear_solver"] = "direct";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
+}
+
 TEST_CASE("InputParser decodes typed Dirichlet and Neumann boundaries",
           "[input_parser][boundaries]") {
     json source = CanonicalConfig();
