@@ -8,6 +8,9 @@
 
 #include <string>
 
+// For MFEM_USE_MPI (build flavour in the banner).
+#include "mfem.hpp"
+
 namespace build_info {
 
 constexpr const char* kVersion = "@PROJECT_VERSION@";
@@ -20,7 +23,13 @@ constexpr const char* kBuildDate = __DATE__ " " __TIME__;
 
 inline std::string Describe() {
 	return std::string("mfem-electromag ") + kVersion +
-		" (commit " + kCommit + ", built " + kBuildDate + ")";
+		" (commit " + kCommit + ", built " + kBuildDate +
+#ifdef MFEM_USE_MPI
+		", MPI/HYPRE"
+#else
+		", serial"
+#endif
+		+ ")";
 }
 
 } // namespace build_info

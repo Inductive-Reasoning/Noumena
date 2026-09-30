@@ -38,8 +38,11 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 
 ### Optional
 
-- **HYPRE**: For advanced preconditioners and solvers
-- **METIS**: For mesh partitioning
+- **MPI** (OpenMPI, MPICH, or MS-MPI on Windows): only for the MPI build
+  (`-DUSE_MPI=ON`), which adds HYPRE's BoomerAMG and AMS solvers
+- **HYPRE** (v3.0.0): built automatically in the MPI build, or supplied via `HYPRE_DIR`
+- **METIS** (5.x): optional in the MPI build, supplied via `METIS_DIR`; only
+  needed for multi-rank partitioning, which is not implemented yet
 - **OpenMP**: For parallel assembly (usually included with compiler)
 - **Doxygen**: For generating API documentation
 - **Catch2**: For running tests (automatically downloaded)
@@ -121,15 +124,28 @@ cmake .. -G "MinGW Makefiles"
 mingw32-make -j
 ```
 
-## Building with MFEM Options
+## MPI/HYPRE Build
 
-MFEM will be automatically downloaded and configured. To enable optional MFEM features:
+The default build is serial and needs no MPI. The MPI build links MFEM against
+MPI and HYPRE, which the 3D magnetic solvers need for their iterative
+(AMS-preconditioned) solves:
 
 ```bash
-# In the build directory
-cmake .. -DMFEM_USE_METIS=ON
-make -j
+sudo apt-get install -y openmpi-bin libopenmpi-dev   # or mpich
+cmake -S . -B build-mpi -DCMAKE_BUILD_TYPE=Release -DUSE_MPI=ON
+cmake --build build-mpi -j
 ```
+
+The first configure fetches and builds HYPRE into `build-mpi/tpl/hypre`
+(a few minutes, once). To use an existing HYPRE instead, pass
+`-DHYPRE_DIR=<prefix>`; with vcpkg on Windows, install the `msmpi` and `hypre`
+ports and point `HYPRE_DIR` at the vcpkg installation. `-DMETIS_DIR=<prefix>`
+enables METIS.
+
+An MPI build currently runs on **one rank**: run the executable directly or
+with `mpirun -np 1`. Starting more ranks is rejected, since the solvers and
+result writers are not distributed yet. `--version` reports whether a binary
+is a `serial` or `MPI/HYPRE` build.
 
 ## Usage
 

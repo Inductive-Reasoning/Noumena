@@ -13,6 +13,10 @@ endif()
 option(BUILD_TESTING "Build tests" ON)
 option(ENABLE_NATIVE_ARCH "Enable -march=native for Release builds" OFF)
 option(USE_OPENMP "Enable OpenMP for parallel assembly" ON)
+# MPI build: MFEM with MPI and HYPRE (BoomerAMG, AMS, ...). Off by default;
+# the serial build needs no MPI installation. HYPRE is built automatically
+# unless HYPRE_DIR points at an existing install; see cmake/ParallelTPLs.cmake.
+option(USE_MPI "Build with MPI and HYPRE" OFF)
 
 # Compiler flags for different build types
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -74,11 +78,18 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL  # Don't build MFEM's miniapps/examples as part of "Build All"
 )
 
+if(USE_MPI)
+    include(${CMAKE_SOURCE_DIR}/cmake/ParallelTPLs.cmake)
+endif()
+
 # This creates the 'mfem' target available for linking.
 # EXCLUDE_FROM_ALL above keeps MFEM out of the default build set so Visual
 # Studio's Output window isn't dominated by MFEM compile messages; the 'mfem'
 # library is still built on demand when mfem-electromag links it.
 FetchContent_MakeAvailable(mfem)
+if(USE_MPI)
+    electromag_wrap_build_tree_tpl_includes(mfem)
+endif()
 
 # Eigen supplies the sparse Cholesky (SimplicialLDLT) behind the "direct"
 # linear solver option. Eigen is header-only, so SOURCE_SUBDIR points at a
@@ -184,6 +195,9 @@ FetchContent_MakeAvailable(highfive)
 
 add_executable(mfem-electromag src/main.cpp)
 target_link_libraries(mfem-electromag PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
+if(USE_MPI)
+    target_link_libraries(mfem-electromag PRIVATE MPI::MPI_CXX)
+endif()
 
 # main.cpp instantiates every solver and writer through heavily templated MFEM
 # and nlohmann/json code, which exceeds the default COFF section limit (65279)
@@ -266,9 +280,15 @@ if(BUILD_TESTING)
         test/test_mqs_port_operator.cpp
         test/test_solvers.cpp
         test/test_status_reporter.cpp
+        test/test_hypre.cpp
     )
 
-    target_link_libraries(mfem_tests PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2WithMain)
+    # The test runner supplies its own main (test_main.cpp) so an MPI build
+    # can initialize MPI and HYPRE around the Catch2 session.
+    target_link_libraries(mfem_tests PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2)
+    if(USE_MPI)
+        target_link_libraries(mfem_tests PRIVATE MPI::MPI_CXX)
+    endif()
     # Tests run the same threaded solver paths as the executable.
     if(USE_OPENMP AND OpenMP_CXX_FOUND)
         target_link_libraries(mfem_tests PRIVATE OpenMP::OpenMP_CXX)
