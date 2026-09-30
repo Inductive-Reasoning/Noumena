@@ -4,9 +4,7 @@
 #pragma once
 
 #include <algorithm>
-#include <cstddef>
 #include <memory>
-#include <ostream>
 #include <tuple>
 #include <vector>
 
@@ -84,14 +82,6 @@ public:
 	// The hierarchy is fixed at construction, as for SparseDirectSolver.
 	void SetOperator(const mfem::Operator&) override {
 		MFEM_ABORT("AmgPreconditioner's operator is set at construction.");
-	}
-
-	/// Memory held by the hierarchy, in bytes (diagnostics).
-	[[nodiscard]] std::size_t Bytes() const { return amg->bytes(); }
-
-	/// AMGCL's own per-level summary (rows, nonzeros, operator complexity).
-	friend std::ostream& operator<<(std::ostream& os, const AmgPreconditioner& p) {
-		return os << *p.amg;
 	}
 
 private:

@@ -71,17 +71,23 @@ struct Region {
 // A 2D model needs no such data: its current is out of plane (planar) or
 // azimuthal (axisymmetric) by construction. In 3D the current density of a
 // stranded coil is J = (I / A_cs) * t, with t the unit current direction and
-// A_cs the coil's cross-section, so t has to be given.
+// A_cs the coil's cross-section, so t has to be given (see coil_path.hpp).
 //
-//   Azimuthal - t = phi-hat about the axis through Origin along Axis, oriented
-//               by the right-hand rule (positive current produces field along
-//               +Axis inside the coil). A_cs = integral over the coil of
-//               dV / (2 pi r), which is exact for any coil of revolution.
+//   Azimuthal  - t = phi-hat about the axis through Origin along Axis, by the
+//                right-hand rule (positive current makes flux along +Axis
+//                inside the coil). For coils of revolution; no mesh features.
+//   Electrodes - an open coil: current enters through the Input boundary
+//                group and leaves through Output, both on n x A = 0 walls.
+//   Cut        - a closed coil of any shape: current crosses the internal
+//                boundary group Cut in the direction of Normal.
 struct CoilDirection {
-	enum class Kind { Azimuthal };
+	enum class Kind { Azimuthal, Electrodes, Cut };
 	Kind Type = Kind::Azimuthal;
 	std::array<double, 3> Origin{ 0.0, 0.0, 0.0 };
-	std::array<double, 3> Axis{ 0.0, 0.0, 1.0 };  // need not be normalized
+	std::array<double, 3> Axis{ 0.0, 0.0, 1.0 };    // need not be normalized
+	std::string Input, Output;                      // Electrodes: group names
+	std::string Cut;                                // Cut: group name
+	std::array<double, 3> Normal{ 0.0, 0.0, 0.0 };  // Cut: current direction
 };
 
 // A driven/measured excitation site. Single primitive for both physics

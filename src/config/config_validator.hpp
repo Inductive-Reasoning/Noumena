@@ -853,13 +853,21 @@ private:
         }
         const auto& d = t["direction"];
         if (!d.is_object()) return;  // reported by the type check
-        for (const auto& item : d.items()) {
-            if (item.key() != "type" && item.key() != "origin" && item.key() != "axis") {
-                AddError(field + "." + item.key(), "Unknown direction setting");
-            }
+        const std::string kind = d.contains("type") && d["type"].is_string()
+            ? d["type"].get<std::string>() : std::string();
+        const std::map<std::string, std::set<std::string>> keys = {
+            {"azimuthal",  {"type", "origin", "axis"}},
+            {"electrodes", {"type", "input", "output"}},
+            {"cut",        {"type", "cut", "normal"}}};
+        const auto allowed = keys.find(kind);
+        if (allowed == keys.end()) {
+            AddError(field + ".type", "Must be 'azimuthal', 'electrodes' or 'cut'");
+            return;
         }
-        if (!d.contains("type") || !d["type"].is_string() || d["type"] != "azimuthal") {
-            AddError(field + ".type", "Must be 'azimuthal'");
+        for (const auto& item : d.items()) {
+            if (!allowed->second.count(item.key())) {
+                AddError(field + "." + item.key(), "Unknown setting for a '" + kind + "' direction");
+            }
         }
         auto vector3 = [&](const char* key, bool required) -> bool {
             const std::string where = field + "." + key;
@@ -880,13 +888,31 @@ private:
             }
             return true;
         };
-        vector3("origin", false);
-        if (vector3("axis", true)) {
-            const auto& a = d["axis"];
+        auto nonzero = [&](const char* key) {
+            if (!vector3(key, true)) return;
+            const auto& a = d[key];
             const double n2 = a[0].get<double>() * a[0].get<double>() +
                               a[1].get<double>() * a[1].get<double>() +
                               a[2].get<double>() * a[2].get<double>();
-            if (!(n2 > 0.0)) AddError(field + ".axis", "Must be a nonzero vector");
+            if (!(n2 > 0.0)) AddError(field + "." + key, "Must be a nonzero vector");
+        };
+        auto boundary_group = [&](const char* key) {
+            const std::string where = field + "." + key;
+            if (!d.contains(key)) {
+                AddError(where, "Missing required field '" + std::string(key) + "'");
+            } else {
+                CheckEntityGroupRef(d[key], where, RequiredGroupKind::Boundary);
+            }
+        };
+        if (kind == "azimuthal") {
+            vector3("origin", false);
+            nonzero("axis");
+        } else if (kind == "electrodes") {
+            boundary_group("input");
+            boundary_group("output");
+        } else {
+            boundary_group("cut");
+            nonzero("normal");
         }
     }
 

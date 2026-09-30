@@ -49,10 +49,6 @@ public:
 	/// Canonical config string ("axisymmetric", "planar", "3d").
 	[[nodiscard]] const char* Name() const { return ToString(type_); }
 
-	[[nodiscard]] bool IsAxisymmetric() const {
-		return type_ == GeometryType::Axisymmetric;
-	}
-
 	/// Topological dimension the mesh must have for this model.
 	[[nodiscard]] int MeshDimension() const {
 		switch (type_) {

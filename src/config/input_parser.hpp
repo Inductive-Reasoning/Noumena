@@ -402,19 +402,25 @@ private:
         return terminals;
     }
 
-    // "terminals[].direction": {"type": "azimuthal", "origin": [x,y,z],
-    // "axis": [x,y,z]}. Tolerant defaults (origin at 0, axis +z); the
-    // validator enforces a well-formed block.
+    // "terminals[].direction": {"type": "azimuthal", "origin", "axis"} |
+    // {"type": "electrodes", "input", "output"} | {"type": "cut", "cut",
+    // "normal"}. Tolerant defaults; the validator enforces a well-formed block.
     static CoilDirection GetCoilDirection(const json& d) {
         CoilDirection direction;
         direction.Type = ParseEnum(d, "type", CoilDirection::Kind::Azimuthal,
-                                   {{"azimuthal", CoilDirection::Kind::Azimuthal}});
+                                   {{"azimuthal",  CoilDirection::Kind::Azimuthal},
+                                    {"electrodes", CoilDirection::Kind::Electrodes},
+                                    {"cut",        CoilDirection::Kind::Cut}});
+        direction.Input = Get(d, "input", std::string{});
+        direction.Output = Get(d, "output", std::string{});
+        direction.Cut = Get(d, "cut", std::string{});
         auto read3 = [&d](const char* key, std::array<double, 3>& out) {
             if (!d.contains(key) || !d[key].is_array() || d[key].size() != 3) return;
             for (int c = 0; c < 3; ++c) out[c] = d[key][c].get<double>();
         };
         read3("origin", direction.Origin);
         read3("axis", direction.Axis);
+        read3("normal", direction.Normal);
         return direction;
     }
 

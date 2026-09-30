@@ -294,21 +294,32 @@ the true current distribution including skin and proximity effects.
 
 `direction` is required on every current terminal of a `3d` magnetic model and
 rejected everywhere else (a 2D model's current direction is fixed by its
-geometry):
+geometry). It says where the coil's current flows:
 
 ```json
 "direction": {"type": "azimuthal", "origin": [0, 0, 0], "axis": [0, 0, 1]}
+"direction": {"type": "cut", "cut": "CoilCut", "normal": [0, 1, 0]}
+"direction": {"type": "electrodes", "input": "LeadIn", "output": "LeadOut"}
 ```
 
-`azimuthal` drives current around the axis through `origin` along `axis`
-(right-hand rule: positive current makes flux along `+axis` inside the coil).
-`origin` defaults to `[0, 0, 0]`; `axis` is required and need not be
-normalized. The coil carries the uniform density `I / A_cs`, with
-`A_cs = ∫ dV / (2πr)` over the coil volume, which is its meridional
-cross-section for any coil of revolution. So a 3D coil and its axisymmetric
-model carry the same current density, and the terminal's `value` is the total
-current through the cross-section, exactly as in 2D. The coil must not reach
-its own axis.
+- `azimuthal`: around the axis through `origin` (default `[0, 0, 0]`) along
+  `axis` (right-hand rule: positive current makes flux along `+axis` inside
+  the coil). For coils of revolution; needs no extra mesh features. The coil
+  must not reach its own axis.
+- `cut`: a closed coil of any shape. `cut` names a boundary group (dim 2) of
+  internal faces that crosses the coil once, and the current crosses it
+  along `normal`. The cut should be (nearly) planar.
+- `electrodes`: an open coil. Current enters through the `input` boundary
+  group and leaves through `output`. Both must lie on a `dirichlet`
+  (`n × A = 0`) boundary, the only place current can enter or leave the
+  model consistently.
+
+For `cut` and `electrodes` the direction comes from a unit conduction
+potential solved on the coil. Every coil carries a uniform current density
+`I / A_cs` along its path, as a coil of many equal fine strands does. `A_cs`
+is its cross-section, so the terminal's `value` is the total current through
+it, exactly as in 2D. For an azimuthal coil `A_cs` is the meridional area,
+so a 3D coil and its axisymmetric model carry the same current density.
 
 ---
 

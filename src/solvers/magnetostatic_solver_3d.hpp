@@ -14,7 +14,7 @@
 #include "mfem.hpp"
 #include "magnetic_solver.hpp"
 #include "divergence_free_projector.hpp"
-#include "../coefficients/azimuthal_coil_coefficient.hpp"
+#include "../coefficients/coil_path.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../core/constants.hpp"
 #include "../linalg/serial_ams.hpp"
@@ -31,10 +31,10 @@
  *
  * @par Sources
  * Current enters through coil terminals: each current terminal gives a volume
- * group and a "direction" (CoilDirection). An azimuthal coil carries the
- * uniform density J = (I / A_cs) phi-hat, A_cs = integral dV / (2 pi r) (see
- * AzimuthalCoilCoefficient), which is exactly the 2D axisymmetric model's
- * I/area source revolved. Each coil's unit-current load is assembled once per
+ * group and a "direction" (CoilDirection): azimuthal about an axis, open
+ * between electrodes, or closed through a cut. Every coil carries a uniform
+ * current density I / A_cs along its path (see coil_path.hpp); an azimuthal
+ * coil's is exactly the 2D axisymmetric model's I/area source revolved. Each coil's unit-current load is assembled once per
  * mesh and made discretely divergence-free (DivergenceFreeProjector); a
  * scenario's load is the excitation-weighted sum. A programmatic source
  * (SetSourceCurrentDensity) is added to it and projected the same way.
@@ -296,20 +296,11 @@ private:
 		mfem::Array<int> marker =
 			DomainMarkerFromAttrs(group.AttributeIds, "coil terminal '" + name + "'");
 
-		AzimuthalCoilCoefficient unit_direction(*term.Direction, 1.0);
-		double min_radius = 0.0;
-		const double area = CoilCrossSection(mesh, marker, unit_direction,
-											 config.Order, min_radius);
-		mfem::Vector lo, hi;
-		mesh.GetBoundingBox(lo, hi);
-		hi -= lo;
-		MFEM_VERIFY(min_radius > 1e-9 * hi.Norml2(),
-			"Coil terminal '" + name + "' reaches its own axis, where the "
-			"azimuthal current direction is undefined.");
-		MFEM_VERIFY(area > 0.0,
-			"Coil terminal '" + name + "' has zero cross-section.");
+		const std::unique_ptr<CoilPath> path = MakeCoilPath(name, *term.Direction, marker);
+		const double area = CoilCrossSection(mesh, marker, *path, config.Order);
+		MFEM_VERIFY(area > 0.0, "Coil terminal '" + name + "' has zero cross-section.");
 
-		AzimuthalCoilCoefficient density(*term.Direction, 1.0 / area);
+		CoilCurrentCoefficient density(*path, 1.0 / area);
 		mfem::LinearForm load(fespace.get());
 		load.AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(density), marker);
 		load.Assemble();
@@ -317,6 +308,50 @@ private:
 		mfem::Vector b(load);
 		projector->Project(b);
 		return b;
+	}
+
+	std::unique_ptr<CoilPath> MakeCoilPath(const std::string& name, const CoilDirection& d,
+										   const mfem::Array<int>& coil) {
+		const std::string context = "coil terminal '" + name + "'";
+		if (d.Type == CoilDirection::Kind::Azimuthal) {
+			auto path = std::make_unique<AzimuthalPath>(d);
+			// The direction is undefined on the axis; a vertex there means the
+			// coil reaches it (quadrature points alone could miss that).
+			mfem::Vector lo, hi;
+			mesh.GetBoundingBox(lo, hi);
+			hi -= lo;
+			mfem::Array<int> vertices;
+			for (int e = 0; e < mesh.GetNE(); ++e) {
+				if (!coil[mesh.GetAttribute(e) - 1]) continue;
+				mesh.GetElementVertices(e, vertices);
+				for (int v : vertices) {
+					mfem::Vector x(mesh.GetVertex(v), 3);
+					MFEM_VERIFY(path->RadiusOf(x) > 1e-9 * hi.Norml2(),
+						"Coil terminal '" + name + "' reaches its own axis, where "
+						"the azimuthal current direction is undefined.");
+				}
+			}
+			return path;
+		}
+
+		const int n_bdr = mesh.bdr_attributes.Size() ? mesh.bdr_attributes.Max() : 0;
+		mfem::Array<int> none(n_bdr);
+		none = 0;
+		if (d.Type == CoilDirection::Kind::Electrodes) {
+			mfem::Array<int> input = MarkerFromGroup(d.Input);
+			mfem::Array<int> output = MarkerFromGroup(d.Output);
+			// Current may only enter or leave the model through an n x A = 0
+			// wall: anywhere else the load is not balanced, and the projection
+			// would silently redistribute the missing return current.
+			for (int a = 0; a < n_bdr; ++a) {
+				MFEM_VERIFY(!(input[a] || output[a]) || ess_bdr[a],
+					"The electrodes of " + context + " must lie on a 'dirichlet' "
+					"(n x A = 0) boundary; for a closed coil use a 'cut'.");
+			}
+			return std::make_unique<ConductionPath>(mesh, config.Order, coil, d, input, output, none);
+		}
+		return std::make_unique<ConductionPath>(mesh, config.Order, coil, d, none, none,
+												MarkerFromGroup(d.Cut));
 	}
 
 	double RegularizationWeight() const {

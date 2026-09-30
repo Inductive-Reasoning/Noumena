@@ -22,7 +22,6 @@
 
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
-#include "coefficients/azimuthal_coil_coefficient.hpp"
 #include "solvers/magnetostatic_solver_3d.hpp"
 #include "solvers/solver_factory.hpp"
 
@@ -105,6 +104,9 @@ struct AnnulusSpec {
 	double r_in = 0.02, r_out = 0.10, height = 0.10;
 	int nr = 8, nz = 10;
 	std::vector<CoilRect> coils;
+	// Describe coil c by a cut (boundary attribute c + 2 on the theta = 0
+	// half-plane, current crossing it along +y) instead of analytically.
+	bool cut = false;
 };
 
 int CellAttribute(const AnnulusSpec& spec, double r, double z) {
@@ -136,8 +138,14 @@ mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta) {
 	const double dr = (spec.r_out - spec.r_in) / nr, dz = spec.height / nz;
 	auto id = [&](int i, int j, int k) { return (k * (nr + 1) + i) * n_theta + (j % n_theta); };
 
+	int n_cut = 0;
+	for (int k = 0; spec.cut && k < nz; ++k) {
+		for (int i = 0; i < nr; ++i) {
+			n_cut += CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz) > 1;
+		}
+	}
 	mfem::Mesh mesh(3, (nr + 1) * (nz + 1) * n_theta, nr * nz * n_theta,
-					2 * n_theta * (nr + nz), 3);
+					2 * n_theta * (nr + nz) + n_cut, 3);
 	for (int k = 0; k <= nz; ++k) {
 		for (int i = 0; i <= nr; ++i) {
 			for (int j = 0; j < n_theta; ++j) {
@@ -170,6 +178,14 @@ mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta) {
 				const int q[4] = { id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k) };
 				mesh.AddBdrQuad(q, 1);
 			}
+		}
+	}
+	for (int k = 0; spec.cut && k < nz; ++k) {
+		for (int i = 0; i < nr; ++i) {
+			const int attr = CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz);
+			if (attr == 1) continue;
+			const int q[4] = { id(i, 0, k), id(i + 1, 0, k), id(i + 1, 0, k + 1), id(i, 0, k + 1) };
+			mesh.AddBdrQuad(q, attr);  // coil c -> attribute c + 2
 		}
 	}
 	mesh.FinalizeHexMesh(1, 0, true);
@@ -209,7 +225,11 @@ json MakeAnnulusConfig(const AnnulusSpec& spec, bool three_d, int order) {
 		groups.push_back({{"name", name}, {"dim", three_d ? 3 : 2},
 						  {"attribute_ids", {static_cast<int>(c) + 2}}});
 		json terminal = {{"name", name}, {"quantity", "current"}, {"entity_group", name}};
-		if (three_d) {
+		if (three_d && spec.cut) {
+			const std::string cut = "Cut" + std::to_string(c + 1);
+			groups.push_back({{"name", cut}, {"dim", 2}, {"attribute_ids", {static_cast<int>(c) + 2}}});
+			terminal["direction"] = {{"type", "cut"}, {"cut", cut}, {"normal", {0.0, 1.0, 0.0}}};
+		} else if (three_d) {
 			terminal["direction"] = {{"type", "azimuthal"}, {"origin", {0.0, 0.0, 0.0}},
 									 {"axis", {0.0, 0.0, 1.0}}};
 		}
@@ -523,6 +543,84 @@ TEST_CASE("Coil loads are made discretely divergence-free",
 	REQUIRE(projector.GradientResidual(coil_load) < 1e-9 * coil_load.Norml2());
 }
 
+// A closed coil described by a cut must carry the same current as the same
+// coil described analytically: the conduction potential of a coil of
+// revolution is theta / (2 pi), so its direction is phi-hat and its
+// cross-section the meridional area. The two agree up to the discretization
+// of that potential, and both match the axisymmetric solver.
+TEST_CASE("A cut coil reproduces the azimuthal coil", "[solvers][magnetostatic][3d][coil]") {
+	AnnulusSpec spec;
+	spec.coils = { { 0.04, 0.06, 0.04, 0.06 } };
+	const double azimuthal = Inductance3D(spec, 16, 2)[0][0];
+	spec.cut = true;
+	const double cut = Inductance3D(spec, 16, 2)[0][0];
+	const double reference = AxisymmetricInductance(spec)[0][0];
+	INFO("cut " << cut << ", azimuthal " << azimuthal << ", axisymmetric " << reference);
+	REQUIRE(cut == Catch::Approx(azimuthal).epsilon(1e-3));
+	REQUIRE(cut == Catch::Approx(reference).epsilon(2e-3));
+}
+
+namespace {
+// Unit cube; a square bar (attribute 2, 0.25 < x, y < 0.75) runs from the
+// bottom wall (z = 0, attribute 1) to the top wall (z = 1, attribute 6).
+json MakeBarConfig() {
+	json config = MakeCubeConfig(1.0);
+	config["simulation"]["order"] = 2;
+	config["entity_groups"][0]["attribute_ids"] = {1, 2};
+	config["entity_groups"].push_back({{"name", "Bar"}, {"dim", 3}, {"attribute_ids", {2}}});
+	config["entity_groups"].push_back({{"name", "Bottom"}, {"dim", 2}, {"attribute_ids", {1}}});
+	config["entity_groups"].push_back({{"name", "Top"}, {"dim", 2}, {"attribute_ids", {6}}});
+	config["terminals"] = json::array({
+		{{"name", "Bar"}, {"quantity", "current"}, {"entity_group", "Bar"},
+		 {"direction", {{"type", "electrodes"}, {"input", "Bottom"}, {"output", "Top"}}}}});
+	config["scenarios"] = json::array({{{"name", "Drive"}, {"excitations", json::array({
+		{{"terminal", "Bar"}, {"value", 1.0}}})}}});
+	return config;
+}
+
+mfem::Mesh MakeBarMesh() {
+	mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(4, 4, 4, mfem::Element::HEXAHEDRON);
+	for (int e = 0; e < mesh.GetNE(); ++e) {
+		mfem::Vector c;
+		mesh.GetElementCenter(e, c);
+		const bool bar = c(0) > 0.25 && c(0) < 0.75 && c(1) > 0.25 && c(1) < 0.75;
+		mesh.SetAttribute(e, bar ? 2 : 1);
+	}
+	mesh.SetAttributes();
+	return mesh;
+}
+} // namespace
+
+// An open coil between electrodes on two n x A = 0 walls: the conduction
+// potential of a straight bar is linear, so the coil must be exactly a uniform
+// 1 A / (0.5 x 0.5) axial current -- the same field as that source given
+// directly.
+TEST_CASE("An electrode coil reproduces a uniform bar current", "[solvers][magnetostatic][3d][coil]") {
+	mfem::Mesh mesh = MakeBarMesh();
+	MagnetostaticSolver3D coil(mesh, DecodeConfig(MakeBarConfig()));
+	coil.Setup();
+	coil.Run();
+
+	json direct = MakeBarConfig();
+	direct["terminals"] = json::array();
+	direct["scenarios"][0]["excitations"] = json::array();
+	mfem::Vector j(3);
+	j = 0.0;
+	j(2) = 1.0 / 0.25;
+	mfem::VectorConstantCoefficient uniform(j);
+	mfem::Array<int> bar(2);
+	bar[0] = 0;
+	bar[1] = 1;
+	mfem::VectorRestrictedCoefficient J(uniform, bar);
+	MagnetostaticSolver3D reference(mesh, DecodeConfig(direct));
+	reference.SetSourceCurrentDensity(&J);
+	reference.Setup();
+	reference.Run();
+
+	REQUIRE(coil.MagneticEnergy() > 0.0);
+	REQUIRE(coil.MagneticEnergy() == Catch::Approx(reference.MagneticEnergy()).epsilon(1e-9));
+}
+
 TEST_CASE("3D coil terminals are validated", "[solvers][magnetostatic][3d]") {
 	using Catch::Matchers::ContainsSubstring;
 
@@ -538,6 +636,15 @@ TEST_CASE("3D coil terminals are validated", "[solvers][magnetostatic][3d]") {
 							{"axis", {0.0, 0.0, 1.0}}}}}});
 		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
 		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("reaches its own axis"));
+	}
+
+	SECTION("electrodes off an n x A = 0 wall are rejected") {
+		mfem::Mesh mesh = MakeBarMesh();
+		json config = MakeBarConfig();
+		config["entity_groups"].push_back({{"name", "Sides"}, {"dim", 2}, {"attribute_ids", {2, 3, 4, 5}}});
+		config["boundary_conditions"][0]["entity_group"] = "Sides";
+		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("must lie on a 'dirichlet'"));
 	}
 
 	SECTION("a terminal without a direction is rejected") {
