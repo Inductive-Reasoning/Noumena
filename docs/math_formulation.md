@@ -41,9 +41,10 @@ measure, is given under "Integration Measure Convention" below.
   makes).
 
 - **3D (`geometry_type: 3d`).** Assembly integrates over the true volume of a
-  3D mesh, so extracted quantities are absolute (F, H, Ohm). Currently
-  electrostatics only; the magnetic formulations above are scalar-potential 2D
-  reductions and a 3D magnetic model needs a vector (H(curl)) potential.
+  3D mesh, so extracted quantities are absolute (F, H, Ohm). Electrostatics
+  keeps its scalar potential; the magnetic formulations above are
+  scalar-potential 2D reductions, so 3D magnetics uses separate solvers in a
+  vector (H(curl)) potential (the "3D Form" sections).
 
 The measure, the matching scalar integrators, the required mesh dimension and
 the output units are all defined in one place, `GeometryModel`
@@ -272,13 +273,19 @@ The curl-curl operator is singular: it annihilates every gradient.
   divergence-free source this selects the same Coulomb gauge and perturbs `B`
   by about 10⁻⁶ relative.
 
-Coils carry `J = (I / A_cs) t̂` with `t̂` the terminal's `direction` (currently
-azimuthal, `A_cs = ∫ dV / (2πr)`). Each coil's unit-current load `b` is made
-discretely divergence-free before use: with `G` the discrete gradient from the
-matching H1 space and `M` the Nédélec mass matrix, `(GᵀMG) ψ = Gᵀ b` and
-`b' = b − M G ψ`, so `Gᵀ b' = 0`. The flux linkage of coil `k` is
-`λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current density), and
-the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by construction.
+Every current terminal is a conductor with a direction field `w = −∇v`,
+from a unit conduction potential `v` (analytic `w = φ̂ / (2πr)` for
+`azimuthal`; solved on the conductor for `electrodes` and `cut`, with `σ`
+weighting for a massive conductor). A stranded conductor carries
+`J = (I / A_cs) w / |w|` with `A_cs = ∫|w| dV` (for azimuthal,
+`∫ dV / (2πr)`, the meridional area); a massive one its DC distribution
+`J = σ w I / G` with `G = ∫σ|w|² dV` its conductance. Each unit-current
+load `b` is made discretely divergence-free before use: with `G` the discrete
+gradient from the matching H1 space and `M` the Nédélec mass matrix,
+`(GᵀMG) ψ = Gᵀ b` and `b' = b − M G ψ`, so `Gᵀ b' = 0`. The flux linkage of
+terminal `k` is `λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current
+density), and the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by
+construction.
 
 ## 3. Magnetoquasistatics (Eddy Currents)
 
@@ -430,6 +437,38 @@ Same essential/natural split as magnetostatics:
 - **Neumann:** The configured real outward natural flux is assembled into the
   real field RHS. A zero value remains implicit.
 - **Robin:** Reserved in the input schema but not yet implemented.
+
+### 3D Form
+
+`geometry_type: 3d` (`MagnetoquasistaticSolver3D`) solves for the complex
+Nédélec potential `A` with the same conductors and boundary conditions as 3D
+magnetostatics:
+
+```
+∇ × (ν ∇ × A) + jωσA = J_s + σ V w
+```
+
+- Stranded terminals are sources `J_s = I (w/|w|) / A_cs`, projected as in
+  magnetostatics.
+- A massive terminal is a port: in the conductor `E = V w − jωA`, and the
+  voltage `V` is the unknown that makes its net current `∫σE·w dV = I`,
+  i.e. `G V − jω cᵀA = I` with `c_i = ∫σ w·N_i dV`. The block system is the
+  same `MqsMassivePortOperator` as in 2D.
+- Every other conducting region carries `−jωσA`. `A` is the modified
+  potential of the A-formulation: in a conductor its gradient part carries the
+  electric scalar potential, so the eddy current is weakly divergence-free with
+  no normal component at the conductor surface, with no extra unknown.
+
+Both linear solvers solve the regularized system (`β` as above): in the
+nonconducting regions curl-curl alone is singular. `direct` factors the packed
+real form once per frequency (sparse LU); `iterative` is GMRES with the
+block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
+exact inverse of the port corner.
+
+Coupling rows: a massive terminal's `Z = V/I` from its solved voltage, a
+stranded terminal's `Z = jω λ` with `λ = b'·A`; `R = Re Z`, `L = Im Z / ω`.
+The loss density is `½σ|V w − jωA|²`, which for a port satisfies
+`∫ loss = ½ Re(V I*)` exactly for the discrete solution.
 
 ## Finite Element Discretization
 

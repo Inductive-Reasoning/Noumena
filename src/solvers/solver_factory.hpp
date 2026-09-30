@@ -14,6 +14,7 @@
 #include "electrostatic_solver.hpp"
 #include "magnetostatic_solver.hpp"
 #include "magnetostatic_solver_3d.hpp"
+#include "magnetoquasistatic_solver_3d.hpp"
 #include "magnetoquasistatic_solver.hpp"
 
 /**
@@ -46,6 +47,9 @@ private:
 
         Register(PhysicsType::Magnetoquasistatics,
             [](mfem::Mesh& mesh, const ProblemConfig& config) -> std::unique_ptr<PhysicsSolver> {
+                if (config.GeometryType == GeometryType::Cartesian3D) {
+                    return std::make_unique<MagnetoquasistaticSolver3D>(mesh, config);
+                }
                 return std::make_unique<MagnetoquasistaticSolver>(mesh, config);
             });
     }

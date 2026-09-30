@@ -15,7 +15,7 @@
  *
  * mfem::HypreAMS builds its auxiliary operators from a ParFiniteElementSpace,
  * whose DOF numbering on a ParMesh differs from the serial space every other
- * part of this code (coil loads, the divergence-free projector, the writers)
+ * part of this code (conductor loads, the divergence-free projector, the writers)
  * is built on. This class builds the same operators from the serial space
  * instead and hands them to hypre wrapped as single-rank HypreParMatrix
  * objects, mirroring HypreAMS::MakeSolver / MakeGradientAndInterpolation:

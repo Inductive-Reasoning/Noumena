@@ -5,7 +5,9 @@
 
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -18,28 +20,197 @@
 /**
  * @brief What every magnetic vector-potential solver shares, in 2D or 3D.
  *
- * Deliberately thin: the reluctivity table is the one ingredient that does not
- * change with the discretization. The 2D scalar-potential solvers derive from
- * MagneticSolver below; the 3D vector-potential solvers
- * (magnetostatic_solver_3d.hpp) derive from this directly, because almost
- * nothing else in MagneticSolver -- axis regularity, the scalar curl-curl
- * operator, I/area source densities -- has a 3D meaning.
+ * The material tables, which do not change with the discretization, and the
+ * bookkeeping of eddy-current losses, which depends only on which regions
+ * conduct. The 2D scalar-potential solvers derive from MagneticSolver below;
+ * the 3D vector-potential solvers derive from VectorPotentialSolver3D, because
+ * almost nothing else in MagneticSolver -- axis regularity, the scalar
+ * curl-curl operator, I/area source densities -- has a 3D meaning.
  */
 class MagneticSolverBase : public PhysicsSolver {
+public:
+	/// One conductive region's time-averaged dissipation [W], and the label
+	/// under which it reports.
+	struct RegionLoss {
+		std::string Name;
+		double Power = 0.0;
+	};
+
 protected:
-	// nu = 1/mu (reluctivity), keyed by mesh DOMAIN attribute. Unclaimed
-	// attributes fall back to vacuum. Built by BuildReluctivity() in each
-	// derived Setup(); refinement-invariant, like every material table.
+	// nu = 1/mu (reluctivity) and sigma, keyed by mesh DOMAIN attribute.
+	// Unclaimed attributes fall back to vacuum. Built in each derived Setup();
+	// refinement-invariant, like every material table.
 	std::unique_ptr<mfem::PWConstCoefficient> nu_coeff;
+	std::unique_ptr<mfem::PWConstCoefficient> sigma_coeff;
 
 	MagneticSolverBase(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
 
 	static double Reluctivity(const Material& m) {
 		return 1.0 / (Constants::MU_0 * m.RelPermeability);
 	}
+	static double Conductivity(const Material& m) { return m.Conductivity; }
 
 	void BuildReluctivity() {
 		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);
+	}
+	void BuildConductivity() {
+		sigma_coeff = MaterialCoefficient(0.0, Conductivity);
+	}
+
+	// A massive conductor's current is sigma E, so every attribute of it must
+	// conduct: sigma = 0 there would carry no current and make its conductance
+	// meaningless.
+	void ValidateMassiveConductivity(const std::string& name,
+									 const std::vector<int>& attributes) const {
+		for (int attr : attributes) {
+			const Material* material = MaterialForAttr(attr);
+			MFEM_VERIFY(material != nullptr,
+				"Massive conductor '" + name + "' contains domain attribute " +
+				std::to_string(attr) + " without an assigned material.");
+			MFEM_VERIFY(material->Conductivity > 0.0,
+				"Massive conductor '" + name + "' contains domain attribute " +
+				std::to_string(attr) + " with non-positive conductivity " +
+				std::to_string(material->Conductivity) +
+				". Assign a material with a positive 'sigma' or make it a "
+				"stranded conductor.");
+		}
+	}
+
+	// Integrate a loss density over every region that can dissipate, one
+	// entry per reporting owner.
+	//
+	// Membership is decided by sigma > 0, not by whether a region owns a port.
+	// The sigma mass term induces eddy currents in any conductive material, so
+	// a flux shield or a steel brace dissipates real power while appearing in
+	// no coupling matrix. Reporting only ported regions would produce a
+	// "total" that silently omits it.
+	//
+	// Stranded terminals are excluded: they model a bundle of fine insulated
+	// strands carrying an imposed current, with eddy effects deliberately not
+	// represented, so the field-based expression does not describe them.
+	//
+	// Each conductive attribute has exactly one owner. Exclusive ownership is
+	// essential, not cosmetic: a terminal and a region routinely share an
+	// entity group (a massive conductor is usually also declared as a
+	// material region), so grouping by both names independently would
+	// integrate that attribute twice. Terminals win because they are the more
+	// specific description of the same metal; conductive attributes no
+	// terminal or region claims report individually.
+	std::vector<RegionLoss> IntegrateRegionLosses(mfem::Coefficient& density) const {
+		std::set<int> stranded;
+		for (const auto& [name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Stranded) continue;
+			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+			stranded.insert(group.AttributeIds.begin(), group.AttributeIds.end());
+		}
+
+		std::map<int, std::string> owner;
+		for (const Region& region : config.Regions) {
+			const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
+			for (int attr : group.AttributeIds) { owner[attr] = region.EntityGroupName; }
+		}
+		for (const auto& [name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Massive) continue;
+			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+			for (int attr : group.AttributeIds) { owner[attr] = name; }
+		}
+
+		std::map<std::string, std::set<int>> groups;
+		for (int attr = 1; attr <= mesh.attributes.Max(); ++attr) {
+			if (stranded.count(attr)) continue;
+			const Material* material = MaterialForAttr(attr);
+			if (material == nullptr || material->Conductivity <= 0.0) continue;
+			const auto named = owner.find(attr);
+			groups[named != owner.end() ? named->second
+									   : "attribute " + std::to_string(attr)].insert(attr);
+		}
+
+		std::vector<RegionLoss> losses;
+		for (const auto& [name, attrs] : groups) {
+			losses.push_back({ name, IntegrateOverAttributes(density, attrs) });
+		}
+		return losses;
+	}
+
+	// Print per-region and total dissipation.
+	//
+	// Reported only for field scenarios. Coupling runs drive synthetic unit
+	// currents one terminal at a time, so the loss of any single such column
+	// is not the loss of a physically realised operating point.
+	void ReportRegionLosses(const std::vector<RegionLoss>& losses) const {
+		if (losses.empty()) { return; }
+		std::ostringstream out;
+		out << "Time-averaged Joule loss " << CouplingUnitLabel("W")
+			<< " (peak-phasor convention):\n";
+		out << std::scientific << std::setprecision(6);
+		double total = 0.0;
+		for (const RegionLoss& loss : losses) {
+			out << "  " << loss.Name << ": " << loss.Power << "\n";
+			total += loss.Power;
+		}
+		out << "  total: " << total;
+		Reporter().Status(out.str());
+	}
+
+	/// Resistance and inductance matrices at one frequency of an MQS
+	/// coupling run.
+	struct ImpedancePoint {
+		double Frequency = 0.0;
+		mfem::DenseMatrix Resistance, Inductance;
+	};
+
+	// Write and print an MQS coupling sweep: one R and one L per frequency.
+	void WriteImpedanceSeries(const std::vector<ImpedancePoint>& points) const {
+		if (points.empty()) {
+			Reporter().Warning("WriteCouplingMatrix: MQS coupling matrices not computed.");
+			return;
+		}
+		std::vector<double> frequencies;
+		std::vector<const mfem::DenseMatrix*> resistance, inductance;
+		for (const ImpedancePoint& point : points) {
+			frequencies.push_back(point.Frequency);
+			resistance.push_back(&point.Resistance);
+			inductance.push_back(&point.Inductance);
+		}
+		if (auto writer = CreateCouplingWriter()) {
+			writer->WriteFrequencies(frequencies);
+			writer->WriteMatrixSeries("Inductance", inductance, CouplingUnits("H"));
+			writer->WriteMatrixSeries("Resistance", resistance, CouplingUnits("Ohm"));
+		}
+		for (const ImpedancePoint& point : points) {
+			std::ostringstream at;
+			at << " at " << std::setprecision(std::numeric_limits<double>::max_digits10)
+			   << point.Frequency << " Hz ";
+			PrintCouplingMatrix(point.Inductance,
+				"Inductance Matrix" + at.str() + CouplingUnitLabel("H"));
+			PrintCouplingMatrix(point.Resistance,
+				"Resistance Matrix" + at.str() + CouplingUnitLabel("Ohm"));
+		}
+	}
+
+private:
+	// Element-wise integral of @p density over the given attributes, with the
+	// geometric measure (2 pi r in axisymmetry). The rule is sized for a
+	// density quadratic in the solution; the axisymmetric drive field's 1/r
+	// factors are why it is not borrowed from a source integrator.
+	double IntegrateOverAttributes(mfem::Coefficient& density,
+								   const std::set<int>& attrs) const {
+		double total = 0.0;
+		mfem::Vector pos;
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
+			mfem::ElementTransformation& T = *mesh.GetElementTransformation(e);
+			const mfem::FiniteElement& fe = *fespace->GetFE(e);
+			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
+			const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(), order);
+			for (int q = 0; q < ir.GetNPoints(); ++q) {
+				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
+				T.SetIntPoint(&ip);
+				T.Transform(ip, pos);
+				total += density.Eval(T, ip) * ip.weight * T.Weight() * Geometry().Measure(pos);
+			}
+		}
+		return total;
 	}
 };
 

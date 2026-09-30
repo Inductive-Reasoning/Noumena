@@ -16,8 +16,8 @@
  * matching H1 space, vanishing where A has an essential boundary). A load b
  * can only be balanced if it is orthogonal to all of them, G^T b = 0. A source
  * that is divergence-free in the continuum generally is not, discretely: a
- * faceted coil surface, or a source direction sampled by quadrature, leaves a
- * small gradient component. An iterative solve then drifts in the null space,
+ * faceted conductor surface, or a source direction sampled by quadrature,
+ * leaves a small gradient component. An iterative solve then drifts in the null space,
  * and a regularized direct solve amplifies it by 1/beta into A, which pollutes
  * every flux linkage computed from A.
  *

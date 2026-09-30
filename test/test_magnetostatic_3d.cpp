@@ -9,6 +9,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
@@ -20,6 +21,7 @@
 
 #include <highfive/H5File.hpp>
 
+#include "annulus_fixture.hpp"
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
 #include "solvers/magnetostatic_solver_3d.hpp"
@@ -28,6 +30,8 @@
 namespace fs = std::filesystem;
 
 ProblemConfig DecodeConfig(const json& config, const std::string& archive = {});
+
+using namespace annulus;
 
 namespace {
 
@@ -90,166 +94,6 @@ FieldError MaxFieldError(const mfem::GridFunction& A, mfem::Mesh& mesh,
 	return err;
 }
 
-
-// ---- Annular-cylinder coil geometry shared by the 3D and axisymmetric runs --
-//
-// Domain r_in <= r <= r_out, 0 <= z <= height about the z axis, with n x A = 0
-// on every wall. For an azimuthal source that is EXACTLY the axisymmetric
-// problem on the (r, z) rectangle with A_phi = 0 on its boundary (n x A = 0
-// for an azimuthal A is A_phi = 0), so the 2D solver is a reference with no
-// modeling difference, only discretization. Coils are rectangles in (r, z)
-// aligned with the lattice; attribute 1 is air, 2, 3, ... the coils.
-struct CoilRect { double r0, r1, z0, z1; };
-struct AnnulusSpec {
-	double r_in = 0.02, r_out = 0.10, height = 0.10;
-	int nr = 8, nz = 10;
-	std::vector<CoilRect> coils;
-	// Describe coil c by a cut (boundary attribute c + 2 on the theta = 0
-	// half-plane, current crossing it along +y) instead of analytically.
-	bool cut = false;
-};
-
-int CellAttribute(const AnnulusSpec& spec, double r, double z) {
-	for (size_t c = 0; c < spec.coils.size(); ++c) {
-		const auto& k = spec.coils[c];
-		if (r > k.r0 && r < k.r1 && z > k.z0 && z < k.z1) return static_cast<int>(c) + 2;
-	}
-	return 1;
-}
-
-mfem::Mesh MakeAnnulus2D(const AnnulusSpec& spec, int refine) {
-	mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(spec.nr * refine, spec.nz * refine,
-		mfem::Element::QUADRILATERAL, true, spec.r_out - spec.r_in, spec.height);
-	for (int v = 0; v < mesh.GetNV(); ++v) { mesh.GetVertex(v)[0] += spec.r_in; }
-	for (int e = 0; e < mesh.GetNE(); ++e) {
-		mfem::Vector c;
-		mesh.GetElementCenter(e, c);
-		mesh.SetAttribute(e, CellAttribute(spec, c(0), c(1)));
-	}
-	mesh.SetAttributes();
-	return mesh;
-}
-
-// The same lattice revolved about z with n_theta cells around, as curved
-// (order-2 geometry) hexahedra whose nodes are snapped radially onto their
-// lattice circle. Boundary attribute 1 on every wall.
-mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta) {
-	const int nr = spec.nr, nz = spec.nz;
-	const double dr = (spec.r_out - spec.r_in) / nr, dz = spec.height / nz;
-	auto id = [&](int i, int j, int k) { return (k * (nr + 1) + i) * n_theta + (j % n_theta); };
-
-	int n_cut = 0;
-	for (int k = 0; spec.cut && k < nz; ++k) {
-		for (int i = 0; i < nr; ++i) {
-			n_cut += CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz) > 1;
-		}
-	}
-	mfem::Mesh mesh(3, (nr + 1) * (nz + 1) * n_theta, nr * nz * n_theta,
-					2 * n_theta * (nr + nz) + n_cut, 3);
-	for (int k = 0; k <= nz; ++k) {
-		for (int i = 0; i <= nr; ++i) {
-			for (int j = 0; j < n_theta; ++j) {
-				const double r = spec.r_in + i * dr, t = Constants::TWO_PI * j / n_theta;
-				mesh.AddVertex(r * std::cos(t), r * std::sin(t), k * dz);
-			}
-		}
-	}
-	for (int k = 0; k < nz; ++k) {
-		for (int i = 0; i < nr; ++i) {
-			const int attr = CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz);
-			for (int j = 0; j < n_theta; ++j) {
-				// (r, theta, z) is right-handed, so this corner order is too.
-				const int v[8] = { id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
-								   id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
-								   id(i, j + 1, k + 1) };
-				mesh.AddHex(v, attr);
-			}
-		}
-	}
-	for (int j = 0; j < n_theta; ++j) {
-		for (int k = 0; k < nz; ++k) {
-			for (int i : { 0, nr }) {
-				const int q[4] = { id(i, j, k), id(i, j + 1, k), id(i, j + 1, k + 1), id(i, j, k + 1) };
-				mesh.AddBdrQuad(q, 1);
-			}
-		}
-		for (int i = 0; i < nr; ++i) {
-			for (int k : { 0, nz }) {
-				const int q[4] = { id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k) };
-				mesh.AddBdrQuad(q, 1);
-			}
-		}
-	}
-	for (int k = 0; spec.cut && k < nz; ++k) {
-		for (int i = 0; i < nr; ++i) {
-			const int attr = CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz);
-			if (attr == 1) continue;
-			const int q[4] = { id(i, 0, k), id(i + 1, 0, k), id(i + 1, 0, k + 1), id(i, 0, k + 1) };
-			mesh.AddBdrQuad(q, attr);  // coil c -> attribute c + 2
-		}
-	}
-	mesh.FinalizeHexMesh(1, 0, true);
-
-	// The radial snap below is unambiguous only while the chord sag of an
-	// angular edge stays under a quarter of the radial spacing; beyond that a
-	// node can snap to the wrong circle and fold its element.
-	const double sag = spec.r_out * (1.0 - std::cos(0.5 * Constants::TWO_PI / n_theta));
-	REQUIRE(sag < 0.25 * dr);
-
-	mesh.SetCurvature(2);
-	const double half = 0.5 * dr;
-	mesh.Transform([&](const mfem::Vector& x, mfem::Vector& y) {
-		y = x;
-		const double r = std::hypot(x(0), x(1));
-		const double snapped = spec.r_in + half * std::round((r - spec.r_in) / half);
-		y(0) *= snapped / r;
-		y(1) *= snapped / r;
-	});
-	return mesh;
-}
-
-// Coupling-matrix config for the annulus in either model; one terminal per
-// coil, named Coil1, Coil2, ...
-json MakeAnnulusConfig(const AnnulusSpec& spec, bool three_d, int order) {
-	json groups = json::array();
-	json regions = json::array();
-	json terminals = json::array();
-	std::vector<int> all;
-	for (int a = 1; a <= static_cast<int>(spec.coils.size()) + 1; ++a) all.push_back(a);
-	groups.push_back({{"name", "Domain"}, {"dim", three_d ? 3 : 2}, {"attribute_ids", all}});
-	groups.push_back({{"name", "Walls"}, {"dim", three_d ? 2 : 1},
-					  {"attribute_ids", three_d ? std::vector<int>{1} : std::vector<int>{1, 2, 3, 4}}});
-	regions.push_back({{"name", "Domain"}, {"entity_group", "Domain"}, {"material", "Air"}});
-	for (size_t c = 0; c < spec.coils.size(); ++c) {
-		const std::string name = "Coil" + std::to_string(c + 1);
-		groups.push_back({{"name", name}, {"dim", three_d ? 3 : 2},
-						  {"attribute_ids", {static_cast<int>(c) + 2}}});
-		json terminal = {{"name", name}, {"quantity", "current"}, {"entity_group", name}};
-		if (three_d && spec.cut) {
-			const std::string cut = "Cut" + std::to_string(c + 1);
-			groups.push_back({{"name", cut}, {"dim", 2}, {"attribute_ids", {static_cast<int>(c) + 2}}});
-			terminal["direction"] = {{"type", "cut"}, {"cut", cut}, {"normal", {0.0, 1.0, 0.0}}};
-		} else if (three_d) {
-			terminal["direction"] = {{"type", "azimuthal"}, {"origin", {0.0, 0.0, 0.0}},
-									 {"axis", {0.0, 0.0, 1.0}}};
-		}
-		terminals.push_back(terminal);
-	}
-	return json{
-		{"simulation", {
-			{"physics_type", "magnetostatics"}, {"mesh", "unused.mesh"}, {"order", order},
-			{"geometry_type", three_d ? "3d" : "axisymmetric"},
-			{"analysis_type", "coupling_matrix"}, {"linear_solver", "direct"}
-		}},
-		{"entity_groups", groups},
-		{"regions", regions},
-		{"materials", json::array({{{"name", "Air"}, {"properties", {{"mu_r", 1.0}}}}})},
-		{"terminals", terminals},
-		{"boundary_conditions", json::array({
-			{{"name", "Walls"}, {"type", "dirichlet"}, {"entity_group", "Walls"}, {"value", 0.0}}})},
-		{"scenarios", json::array()}
-	};
-}
 
 // Inductance matrix of a coupling run, read back from its HDF5 archive.
 std::vector<std::vector<double>> SolveInductance(PhysicsSolver& solver, const std::string& archive) {
@@ -455,7 +299,7 @@ TEST_CASE("3D magnetostatic fields are written in every output format",
 TEST_CASE("3D coil inductances match the axisymmetric solver",
 		  "[solvers][magnetostatic][3d][coupling][analytic]") {
 	AnnulusSpec spec;
-	spec.coils = { { 0.04, 0.06, 0.02, 0.04 }, { 0.05, 0.08, 0.06, 0.08 } };
+	spec.conductors = { { 0.04, 0.06, 0.02, 0.04 }, { 0.05, 0.08, 0.06, 0.08 } };
 	const auto reference = AxisymmetricInductance(spec);
 	const auto l3d = Inductance3D(spec, 16, 2);
 
@@ -477,14 +321,13 @@ TEST_CASE("3D field scenario is consistent with the inductance matrix",
 	AnnulusSpec spec;
 	spec.nr = 4;
 	spec.nz = 5;
-	spec.coils = { { 0.04, 0.06, 0.02, 0.04 }, { 0.06, 0.08, 0.06, 0.08 } };
+	spec.conductors = { { 0.04, 0.06, 0.02, 0.04 }, { 0.06, 0.08, 0.06, 0.08 } };
 	const auto L = Inductance3D(spec, 12, 2);
 
 	const double I[2] = { 3.0, -1.5 };
-	json config = MakeAnnulusConfig(spec, true, 2);
-	config["simulation"]["analysis_type"] = "field";
+	json config = MakeAnnulusConfig(spec, true, 2, "magnetostatics", "field");
 	config["scenarios"] = json::array({{{"name", "Drive"}, {"excitations", json::array({
-		{{"terminal", "Coil1"}, {"value", I[0]}}, {{"terminal", "Coil2"}, {"value", I[1]}}})}}});
+		{{"terminal", "C1"}, {"value", I[0]}}, {{"terminal", "C2"}, {"value", I[1]}}})}}});
 	mfem::Mesh mesh = MakeAnnulus3D(spec, 12);
 	MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
 	solver.Setup();
@@ -513,7 +356,7 @@ TEST_CASE("Coil loads are made discretely divergence-free",
 	AnnulusSpec spec;
 	spec.nr = 4;
 	spec.nz = 5;
-	spec.coils = { { 0.04, 0.06, 0.04, 0.06 } };
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
 	mfem::Mesh mesh = MakeAnnulus3D(spec, 12);
 	MagnetostaticSolver3D solver(mesh, DecodeConfig(MakeAnnulusConfig(spec, true, 2), "proj.h5"));
 	solver.Setup();
@@ -539,7 +382,7 @@ TEST_CASE("Coil loads are made discretely divergence-free",
 	REQUIRE(before > 1e-3 * raw.Norml2());
 	REQUIRE(after < 1e-9 * before);
 
-	const mfem::Vector& coil_load = solver.CoilLoads()[0];
+	const mfem::Vector& coil_load = solver.TerminalLoads()[0];
 	REQUIRE(projector.GradientResidual(coil_load) < 1e-9 * coil_load.Norml2());
 }
 
@@ -548,9 +391,9 @@ TEST_CASE("Coil loads are made discretely divergence-free",
 // revolution is theta / (2 pi), so its direction is phi-hat and its
 // cross-section the meridional area. The two agree up to the discretization
 // of that potential, and both match the axisymmetric solver.
-TEST_CASE("A cut coil reproduces the azimuthal coil", "[solvers][magnetostatic][3d][coil]") {
+TEST_CASE("A cut coil reproduces the azimuthal coil", "[solvers][magnetostatic][3d][conductor]") {
 	AnnulusSpec spec;
-	spec.coils = { { 0.04, 0.06, 0.04, 0.06 } };
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
 	const double azimuthal = Inductance3D(spec, 16, 2)[0][0];
 	spec.cut = true;
 	const double cut = Inductance3D(spec, 16, 2)[0][0];
@@ -561,17 +404,20 @@ TEST_CASE("A cut coil reproduces the azimuthal coil", "[solvers][magnetostatic][
 }
 
 namespace {
-// Unit cube; a square bar (attribute 2, 0.25 < x, y < 0.75) runs from the
-// bottom wall (z = 0, attribute 1) to the top wall (z = 1, attribute 6).
-json MakeBarConfig() {
+// Unit cube; a square copper bar (attribute 2, 0.25 < x, y < 0.75) runs from
+// the bottom wall (z = 0, attribute 1) to the top wall (z = 1, attribute 6).
+json MakeBarConfig(const std::string& conductor_type = "stranded") {
 	json config = MakeCubeConfig(1.0);
 	config["simulation"]["order"] = 2;
-	config["entity_groups"][0]["attribute_ids"] = {1, 2};
 	config["entity_groups"].push_back({{"name", "Bar"}, {"dim", 3}, {"attribute_ids", {2}}});
 	config["entity_groups"].push_back({{"name", "Bottom"}, {"dim", 2}, {"attribute_ids", {1}}});
 	config["entity_groups"].push_back({{"name", "Top"}, {"dim", 2}, {"attribute_ids", {6}}});
+	config["regions"].push_back({{"name", "Bar"}, {"entity_group", "Bar"}, {"material", "Copper"}});
+	config["materials"].push_back(
+		{{"name", "Copper"}, {"properties", {{"mu_r", 1.0}, {"sigma", 5.8e7}}}});
 	config["terminals"] = json::array({
 		{{"name", "Bar"}, {"quantity", "current"}, {"entity_group", "Bar"},
+		 {"conductor_type", conductor_type},
 		 {"direction", {{"type", "electrodes"}, {"input", "Bottom"}, {"output", "Top"}}}}});
 	config["scenarios"] = json::array({{{"name", "Drive"}, {"excitations", json::array({
 		{{"terminal", "Bar"}, {"value", 1.0}}})}}});
@@ -591,15 +437,18 @@ mfem::Mesh MakeBarMesh() {
 }
 } // namespace
 
-// An open coil between electrodes on two n x A = 0 walls: the conduction
-// potential of a straight bar is linear, so the coil must be exactly a uniform
-// 1 A / (0.5 x 0.5) axial current -- the same field as that source given
-// directly.
-TEST_CASE("An electrode coil reproduces a uniform bar current", "[solvers][magnetostatic][3d][coil]") {
+// An open conductor between electrodes on two n x A = 0 walls: the conduction
+// potential of a straight uniform bar is linear, so stranded and massive alike
+// must carry exactly a uniform 1 A / (0.5 x 0.5) axial current -- the same
+// field as that source given directly.
+TEST_CASE("An electrode conductor reproduces a uniform bar current",
+		  "[solvers][magnetostatic][3d][conductor]") {
+	const std::string type = GENERATE(std::string("stranded"), std::string("massive"));
+	INFO("conductor_type " << type);
 	mfem::Mesh mesh = MakeBarMesh();
-	MagnetostaticSolver3D coil(mesh, DecodeConfig(MakeBarConfig()));
-	coil.Setup();
-	coil.Run();
+	MagnetostaticSolver3D bar(mesh, DecodeConfig(MakeBarConfig(type)));
+	bar.Setup();
+	bar.Run();
 
 	json direct = MakeBarConfig();
 	direct["terminals"] = json::array();
@@ -608,23 +457,23 @@ TEST_CASE("An electrode coil reproduces a uniform bar current", "[solvers][magne
 	j = 0.0;
 	j(2) = 1.0 / 0.25;
 	mfem::VectorConstantCoefficient uniform(j);
-	mfem::Array<int> bar(2);
-	bar[0] = 0;
-	bar[1] = 1;
-	mfem::VectorRestrictedCoefficient J(uniform, bar);
+	mfem::Array<int> marker(2);
+	marker[0] = 0;
+	marker[1] = 1;
+	mfem::VectorRestrictedCoefficient J(uniform, marker);
 	MagnetostaticSolver3D reference(mesh, DecodeConfig(direct));
 	reference.SetSourceCurrentDensity(&J);
 	reference.Setup();
 	reference.Run();
 
-	REQUIRE(coil.MagneticEnergy() > 0.0);
-	REQUIRE(coil.MagneticEnergy() == Catch::Approx(reference.MagneticEnergy()).epsilon(1e-9));
+	REQUIRE(bar.MagneticEnergy() > 0.0);
+	REQUIRE(bar.MagneticEnergy() == Catch::Approx(reference.MagneticEnergy()).epsilon(1e-9));
 }
 
-TEST_CASE("3D coil terminals are validated", "[solvers][magnetostatic][3d]") {
+TEST_CASE("3D current terminals are validated", "[solvers][magnetostatic][3d]") {
 	using Catch::Matchers::ContainsSubstring;
 
-	SECTION("a coil touching its axis is rejected") {
+	SECTION("a conductor touching its axis is rejected") {
 		// Unit cube with the axis through its centre line: interior vertices
 		// of the 2x2x2 mesh lie on it.
 		mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(2, 2, 2, mfem::Element::TETRAHEDRON);
@@ -632,6 +481,7 @@ TEST_CASE("3D coil terminals are validated", "[solvers][magnetostatic][3d]") {
 		config["simulation"]["order"] = 1;
 		config["terminals"] = json::array({
 			{{"name", "Coil"}, {"quantity", "current"}, {"entity_group", "Domain"},
+			 {"conductor_type", "stranded"},
 			 {"direction", {{"type", "azimuthal"}, {"origin", {0.5, 0.5, 0.0}},
 							{"axis", {0.0, 0.0, 1.0}}}}}});
 		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
@@ -711,7 +561,7 @@ TEST_CASE("3D magnetostatics iterative solve reproduces the manufactured solutio
 TEST_CASE("3D inductances agree between the AMS and direct solvers",
 		  "[solvers][magnetostatic][3d][coupling][ams]") {
 	AnnulusSpec spec;
-	spec.coils = { { 0.04, 0.06, 0.02, 0.04 }, { 0.05, 0.08, 0.06, 0.08 } };
+	spec.conductors = { { 0.04, 0.06, 0.02, 0.04 }, { 0.05, 0.08, 0.06, 0.08 } };
 	const auto direct = Inductance3D(spec, 16, 2);
 
 	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
@@ -736,7 +586,7 @@ TEST_CASE("AMS scales past the direct solver", "[.][ams-benchmark]") {
 	AnnulusSpec spec;
 	spec.nr *= 2;
 	spec.nz *= 2;
-	spec.coils = { { 0.04, 0.06, 0.04, 0.06 } };
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
 	const double reference = AxisymmetricInductance(spec)[0][0];
 	mfem::Mesh mesh = MakeAnnulus3D(spec, 32);
 	json config = MakeAnnulusConfig(spec, true, 2);

@@ -52,7 +52,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	mfem::real_t factored_omega = 0.0;
 
     // Coefficients
-    std::unique_ptr<mfem::PWConstCoefficient> sigma_coeff;
     std::unique_ptr<mfem::PWConstCoefficient> j_coeff;     
     mfem::Vector neumann_rhs;
     std::vector<mfem::real_t> port_conductances;
@@ -68,11 +67,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
                                         // which is an FE-space list and does not
                                         // apply to this formulation.
 
-    struct CouplingResult {
-        double Frequency;
-        std::unique_ptr<mfem::DenseMatrix> Resistance;
-        std::unique_ptr<mfem::DenseMatrix> Inductance;
-    };
     struct MassivePortDefinition {
         std::string Name;
         std::vector<int> AttributeIds;
@@ -111,15 +105,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         return massive_ports;
     }
 
-    std::vector<CouplingResult> coupling_results;
-    mfem::DenseMatrix* resistance_matrix = nullptr;
-    mfem::DenseMatrix* inductance_matrix = nullptr;
-
-    // Material property pickers for MaterialCoefficient, named instead of inlined
-    // as lambdas so the Setup() coefficient construction reads at a glance.
-    static double Conductivity(const Material& m) {
-        return m.Conductivity;
-    }
+    std::vector<ImpedancePoint> coupling_results;
 
     // Function to build the port vector for a specific port attribute
     //
@@ -210,21 +196,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         return G_dc;
     }
 
-    void ValidatePortConductivity(const MassivePortDefinition& port) const
-    {        for (int attr : port.AttributeIds) {
-            const Material* material = MaterialForAttr(attr);
-            MFEM_VERIFY(material != nullptr,
-                "Massive port '" + port.Name + "' contains domain attribute " +
-                std::to_string(attr) + " without an assigned material.");
-            MFEM_VERIFY(material->Conductivity > 0.0,
-                "Massive port '" + port.Name + "' contains domain attribute " +
-                std::to_string(attr) + " with non-positive conductivity " +
-                std::to_string(material->Conductivity) +
-                ". Assign a material with a positive 'sigma' or model the region "
-                "as a non-conducting region.");
-        }
-    }
-
     // The complex block system is solved as a single real vector laid out
     // [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; ComplexPortVectorView and
     // ConstComplexPortVectorView (complex_block_layout.hpp) name the four slots
@@ -299,65 +270,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 		}
 	}
 
-	public:
-	// One conductive region's dissipation, and the label under which it reports.
-	struct RegionLoss {
-		std::string Name;
-		double Power = 0.0;
-	};
-
-private:
-	// Element-wise integral of the loss density over the given attributes.
-	//
-	// The measure is applied here rather than borrowed from an existing
-	// integrator on purpose. The axisymmetric linear-form integrators size their
-	// quadrature for a piecewise-constant source, but this integrand is
-	// quadratic in A and, for a driven axisymmetric region, additionally carries
-	// 1/r and 1/r^2 terms from the drive field. Reusing a rule chosen for a
-	// different integrand is exactly the mismatch that finding M5 was about, so
-	// the order is raised explicitly for the quadratic density.
-	double IntegrateLossDensity(mfem::Coefficient& density,
-								const std::vector<int>& attrs) const {
-		std::set<int> wanted(attrs.begin(), attrs.end());
-		double total = 0.0;
-
-		for (int e = 0; e < mesh.GetNE(); ++e) {
-			if (wanted.find(mesh.GetAttribute(e)) == wanted.end()) { continue; }
-
-			mfem::ElementTransformation& T = *mesh.GetElementTransformation(e);
-			const mfem::FiniteElement& fe = *fespace->GetFE(e);
-			// Quadratic in the solution, plus the geometric measure.
-			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
-			const mfem::IntegrationRule& ir =
-				mfem::IntRules.Get(fe.GetGeomType(), order);
-
-			for (int q = 0; q < ir.GetNPoints(); ++q) {
-				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
-				T.SetIntPoint(&ip);
-
-				mfem::Vector pos;
-				T.Transform(ip, pos);
-				const double measure = ip.weight * T.Weight() * Geometry().Measure(pos);
-				total += density.Eval(T, ip) * measure;
-			}
-		}
-		return total;
-	}
-
-	// Dissipation of every region that can dissipate.
-	//
-	// Membership is decided by sigma > 0, not by whether a region owns a port.
-	// The sigma mass term induces eddy currents in any conductive material, so a
-	// flux shield or a steel brace dissipates real power while appearing in no
-	// coupling matrix. Reporting only ported regions would produce a "total"
-	// that silently omits it.
-	//
-	// Stranded terminals are excluded: they model a bundle of fine insulated
-	// strands carrying an imposed current, with eddy effects deliberately not
-	// represented, so the field-based expression does not describe them.
-	//
-	// Public because the dissipated power is a result of the analysis in its own
-	// right, not an implementation detail of reporting.
 public:
 	// Solved complex vector potential. Exposed const so verification code can
 	// recompute derived quantities independently of the solver's own paths.
@@ -381,91 +293,17 @@ public:
 		return { 0.0, 0.0 };
 	}
 
+	// Time-averaged dissipation of every region that can dissipate. Public
+	// because it is a result of the analysis in its own right.
 	std::vector<RegionLoss> ComputeRegionLosses() const {
-		std::vector<RegionLoss> losses;
-		if (!A || !sigma_coeff) { return losses; }
-
+		if (!A || !sigma_coeff) { return {}; }
 		std::vector<double> drive_re, drive_im;
 		BuildDriveTables(drive_re, drive_im);
 		MqsLossDensityCoefficient density(
 			*sigma_coeff, A->real(), A->imag(), omega,
 			drive_re, drive_im,
 			geometry == GeometryType::Axisymmetric);
-
-		std::set<int> stranded_attrs;
-		for (const auto& [term_name, term] : config.Terminals) {
-			if (term.Conductor == ConductorType::Massive) { continue; }
-			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-			stranded_attrs.insert(group.AttributeIds.begin(), group.AttributeIds.end());
-		}
-
-		// Assign each conductive attribute exactly one reporting owner.
-		//
-		// Exclusive ownership is essential, not cosmetic: a terminal and a
-		// region routinely share an entity group (a massive port's conductor is
-		// usually also declared as a material region), so grouping by both names
-		// independently would integrate that attribute twice and double the
-		// reported total. Terminals win because they are the more specific
-		// description of the same metal.
-		std::map<int, std::string> attr_owner;
-		for (const Region& region : config.Regions) {
-			const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
-			for (int attr : group.AttributeIds) {
-				attr_owner[attr] = region.EntityGroupName;
-			}
-		}
-		for (const auto& [term_name, term] : config.Terminals) {
-			if (term.Conductor != ConductorType::Massive) { continue; }
-			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-			for (int attr : group.AttributeIds) { attr_owner[attr] = term_name; }
-		}
-
-		// Conductive attributes that no terminal or region claims still
-		// dissipate; report them individually rather than dropping them.
-		for (int attr = 1; attr <= mesh.attributes.Max(); ++attr) {
-			if (attr_owner.count(attr) != 0) { continue; }
-			const Material* material = MaterialForAttr(attr);
-			if (material == nullptr || material->Conductivity <= 0.0) { continue; }
-			attr_owner[attr] = "attribute " + std::to_string(attr);
-		}
-
-		std::map<std::string, std::vector<int>> named_attrs;
-		for (const auto& [attr, name] : attr_owner) {
-			if (stranded_attrs.count(attr) != 0) { continue; }
-			const Material* material = MaterialForAttr(attr);
-			if (material == nullptr || material->Conductivity <= 0.0) { continue; }
-			named_attrs[name].push_back(attr);
-		}
-
-		for (const auto& [name, attrs] : named_attrs) {
-			losses.push_back({ name, IntegrateLossDensity(density, attrs) });
-		}
-		return losses;
-	}
-
-	private:
-		// Print per-region and total dissipation for the current solution.
-	//
-	// Reported only for field scenarios. Coupling runs drive synthetic unit
-	// currents one terminal at a time, so the loss of any single such column is
-	// not the loss of a physically realised operating point and printing it
-	// would invite the reader to add up numbers that never coexist.
-	void ReportRegionLosses() const {
-		const std::vector<RegionLoss> losses = ComputeRegionLosses();
-		if (losses.empty()) { return; }
-
-		const std::string unit = CouplingUnitLabel("W");
-		std::ostringstream out;
-		out << "Time-averaged Joule loss " << unit
-			<< " (peak-phasor convention):\n";
-		out << std::scientific << std::setprecision(6);
-		double total = 0.0;
-		for (const RegionLoss& loss : losses) {
-			out << "  " << loss.Name << ": " << loss.Power << "\n";
-			total += loss.Power;
-		}
-		out << "  total: " << total;
-		Reporter().Status(out.str());
+		return IntegrateRegionLosses(density);
 	}
 
 public:
@@ -502,7 +340,7 @@ public:
 
         // Assemble conductivity without frequency scaling so the mass matrix can
         // be reused at every sweep point.
-        sigma_coeff = MaterialCoefficient(0.0, Conductivity);
+        BuildConductivity();
 
         // MQS terminals are ports driven through the port block, not essential
         // boundaries, so they are deliberately NOT registered into the set here.
@@ -574,7 +412,7 @@ public:
                     "Its DC conductance integral sigma/(2*pi*r) is divergent; "
                     "model it as a stranded conductor or move it off the axis.");
             }
-            ValidatePortConductivity(port);
+            ValidateMassiveConductivity(port.Name, port.AttributeIds);
             port_loads.push_back(
                 BuildPortVector(fespace.get(), port.AttributeIds, *sigma_coeff,
                                 port.Name));
@@ -690,7 +528,7 @@ public:
                 ImprintScenario(scenario, ImprintMode::Field);
                 SolveSystem();
                 AccumulateScenarioError();
-                ReportRegionLosses();
+                ReportRegionLosses(ComputeRegionLosses());
                 SaveScenario(name, scenario);
             }
             return;
@@ -929,20 +767,21 @@ public:
             "MQS coupling scenario references an unknown terminal.");
         const int column = static_cast<int>(std::distance(config.Terminals.begin(), driven));
 
+        ImpedancePoint& point = coupling_results.back();
         int massive_port = 0;
         int row = 0;
         for (const auto& [term_name, term] : config.Terminals) {
             if (term.Conductor == ConductorType::Massive) {
-                (*resistance_matrix)(row, column) = (*Re_port_values)(massive_port);
-                (*inductance_matrix)(row, column) =
+                point.Resistance(row, column) = (*Re_port_values)(massive_port);
+                point.Inductance(row, column) =
                     (*Im_port_values)(massive_port) / omega;
                 ++massive_port;
             }
             else {
                 const auto [flux_re, flux_im] =
                     ComputeStrandedFluxLinkage(term_name);
-                (*resistance_matrix)(row, column) = -omega * flux_im;
-                (*inductance_matrix)(row, column) = flux_re;
+                point.Resistance(row, column) = -omega * flux_im;
+                point.Inductance(row, column) = flux_re;
             }
             ++row;
         }
@@ -957,64 +796,26 @@ public:
             }
 
             coupling_results.clear();
-            coupling_results.reserve(config.Scenarios.size());
-            resistance_matrix = nullptr;
-            inductance_matrix = nullptr;
 		}
 	}
 
     void BeginCouplingPoint(double point_frequency) {
-        const int num_terminals = static_cast<int>(config.Terminals.size());
-        CouplingResult result;
-        result.Frequency = point_frequency;
-        result.Resistance = std::make_unique<mfem::DenseMatrix>(num_terminals, num_terminals);
-        result.Inductance = std::make_unique<mfem::DenseMatrix>(num_terminals, num_terminals);
-        *result.Resistance = 0.0;
-        *result.Inductance = 0.0;
-        coupling_results.push_back(std::move(result));
-        resistance_matrix = coupling_results.back().Resistance.get();
-        inductance_matrix = coupling_results.back().Inductance.get();
+        const int n = static_cast<int>(config.Terminals.size());
+        ImpedancePoint point;
+        point.Frequency = point_frequency;
+        point.Resistance.SetSize(n);
+        point.Inductance.SetSize(n);
+        point.Resistance = 0.0;
+        point.Inductance = 0.0;
+        coupling_results.push_back(std::move(point));
     }
 
     void SaveAnalysisResults() override
 	{
 		if (config.AnalysisType == AnalysisType::CouplingMatrix) {
-			WriteCouplingMatrix();
+			WriteImpedanceSeries(coupling_results);
 		}
 	}
-
-	void WriteCouplingMatrix() {
-        if (coupling_results.empty()) {
-            Reporter().Warning("WriteCouplingMatrix: MQS coupling matrices not computed.");
-            return;
-        }
-
-        std::vector<double> frequencies;
-        std::vector<const mfem::DenseMatrix*> resistance;
-        std::vector<const mfem::DenseMatrix*> inductance;
-        for (const CouplingResult& result : coupling_results) {
-            frequencies.push_back(result.Frequency);
-            resistance.push_back(result.Resistance.get());
-            inductance.push_back(result.Inductance.get());
-        }
-        auto writer = CreateCouplingWriter();
-        if (writer) {
-            writer->WriteFrequencies(frequencies);
-            writer->WriteMatrixSeries("Inductance", inductance, CouplingUnits("H"));
-            writer->WriteMatrixSeries("Resistance", resistance, CouplingUnits("Ohm"));
-        }
-        for (const CouplingResult& result : coupling_results) {
-            std::ostringstream frequency_label;
-            frequency_label << std::setprecision(std::numeric_limits<double>::max_digits10)
-                << result.Frequency << " Hz";
-            PrintCouplingMatrix(*result.Inductance,
-                "Inductance Matrix at " + frequency_label.str() + " " +
-                    CouplingUnitLabel("H"));
-            PrintCouplingMatrix(*result.Resistance,
-                "Resistance Matrix at " + frequency_label.str() + " " +
-                    CouplingUnitLabel("Ohm"));
-        }
-    }
 
     std::pair<double, double> ComputeStrandedFluxLinkage(
         const std::string& terminal_name) const {

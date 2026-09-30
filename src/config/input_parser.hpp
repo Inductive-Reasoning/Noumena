@@ -394,7 +394,7 @@ private:
 												{"stranded", ConductorType::Stranded}});
 				terminal.EntityGroupName = Get(t, "entity_group", std::string{});
 				if (t.contains("direction")) {
-					terminal.Direction = GetCoilDirection(t["direction"]);
+					terminal.Direction = GetCurrentDirection(t["direction"]);
 				}
 				terminals.emplace(std::move(name), std::move(terminal));
             }
@@ -405,12 +405,12 @@ private:
     // "terminals[].direction": {"type": "azimuthal", "origin", "axis"} |
     // {"type": "electrodes", "input", "output"} | {"type": "cut", "cut",
     // "normal"}. Tolerant defaults; the validator enforces a well-formed block.
-    static CoilDirection GetCoilDirection(const json& d) {
-        CoilDirection direction;
-        direction.Type = ParseEnum(d, "type", CoilDirection::Kind::Azimuthal,
-                                   {{"azimuthal",  CoilDirection::Kind::Azimuthal},
-                                    {"electrodes", CoilDirection::Kind::Electrodes},
-                                    {"cut",        CoilDirection::Kind::Cut}});
+    static CurrentDirection GetCurrentDirection(const json& d) {
+        CurrentDirection direction;
+        direction.Type = ParseEnum(d, "type", CurrentDirection::Kind::Azimuthal,
+                                   {{"azimuthal",  CurrentDirection::Kind::Azimuthal},
+                                    {"electrodes", CurrentDirection::Kind::Electrodes},
+                                    {"cut",        CurrentDirection::Kind::Cut}});
         direction.Input = Get(d, "input", std::string{});
         direction.Output = Get(d, "output", std::string{});
         direction.Cut = Get(d, "cut", std::string{});

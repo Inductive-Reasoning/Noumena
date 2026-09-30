@@ -156,7 +156,7 @@ TEST_CASE("InputParser decodes a 3D coil direction", "[input_parser][3d][coil]")
     const ProblemConfig config = InputParser(source).GetProblemConfig();
     const Terminal& coil = config.Terminals.begin()->second;
     REQUIRE(coil.Direction.has_value());
-    REQUIRE(coil.Direction->Type == CoilDirection::Kind::Azimuthal);
+    REQUIRE(coil.Direction->Type == CurrentDirection::Kind::Azimuthal);
     REQUIRE(coil.Direction->Origin == std::array<double, 3>{1.0, 2.0, 3.0});
     REQUIRE(coil.Direction->Axis == std::array<double, 3>{0.0, 1.0, 0.0});
 

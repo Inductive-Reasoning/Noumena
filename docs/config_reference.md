@@ -81,13 +81,13 @@ Object. **Required** -- the only required section.
 `geometry_type` must match the mesh: `planar` and `axisymmetric` require a 2D
 mesh, `3d` a 3D mesh. A mismatch is rejected, including the `planar` default on
 a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
-`axisymmetric` and `3d` ones are absolute (F, H). `3d` supports
-`electrostatics` and `magnetostatics` (not yet `magnetoquasistatics`), with
-every output format. 3D magnetostatics supports only homogeneous boundary
-conditions (`dirichlet` 0 for `n × A = 0`, `neumann` 0 or no entry for
-`n × H = 0`) and has no AMR. Its `iterative` solver (CG preconditioned by
-hypre's AMS) needs the MPI/HYPRE build; a serial build defaults 3D magnetics
-to `direct`, which is practical only for small meshes. Gmsh output supports
+`axisymmetric` and `3d` ones are absolute (F, H, Ohm). `3d` supports every
+physics type and every output format. 3D magnetics (magnetostatics and MQS)
+supports only homogeneous boundary conditions (`dirichlet` 0 for
+`n × A = 0`, `neumann` 0 or no entry for `n × H = 0`) and has no AMR. Its
+`iterative` solvers (preconditioned by hypre's AMS) need the MPI/HYPRE
+build; a serial build defaults 3D magnetics to `direct`, which is practical
+only for small meshes. Gmsh output supports
 tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.
 
 `direct` is the default linear solver for the 2D models because a
@@ -105,7 +105,10 @@ roughly constant as the mesh is refined (about 20-30), and the multigrid
 hierarchy is built once per mesh and reused for every scenario. The MQS solver
 uses unpreconditioned GMRES. 3D magnetostatics uses CG preconditioned by
 hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
-constant under refinement. In every solver `solver_tolerance` is the relative
+constant under refinement; 3D MQS uses GMRES preconditioned block-diagonally
+by AMS on `K + ωM_σ` (MPI/HYPRE build only). The 3D MQS `direct` solver is a
+sparse LU of the complex system, refactored per frequency; no MUMPS or other
+parallel direct solver is included. In every solver `solver_tolerance` is the relative
 residual `||b - Ax|| / ||b||`; a run that does not reach it within
 `solver_max_iter` iterations prints a warning.
 
@@ -278,7 +281,7 @@ Array of objects naming drive/measurement sites.
 | `quantity` | string | yes | none | `voltage`, `current` |
 | `entity_group` | string | yes | -- | Role depends on `quantity` |
 | `conductor_type` | string | no | `massive` | `massive`, `stranded` |
-| `direction` | object | 3D magnetic current terminals | -- | Current path of a 3D coil; see below |
+| `direction` | object | 3D magnetic current terminals | -- | Current path of a 3D conductor; see below |
 
 | `quantity` | Required group role | Realization |
 |------------|---------------------|-------------|
@@ -288,38 +291,51 @@ Array of objects naming drive/measurement sites.
 `quantity` has no default: a wrong guess would silently change the physics while
 still solving.
 
-`conductor_type` applies to current terminals in MQS. `stranded` imposes uniform
-current density (litz/fine-wire, eddy currents suppressed); `massive` solves for
-the true current distribution including skin and proximity effects.
+`conductor_type` applies to magnetic current terminals. In MQS, `stranded`
+imposes uniform current density (litz/fine-wire, eddy currents suppressed);
+`massive` solves for the true current distribution including skin and
+proximity effects. 2D magnetostatics treats both as uniform `I / area`. 3D
+magnetostatics gives a `massive` conductor its DC distribution `σ E` (which
+differs from uniform where the path length varies, e.g. `J ∝ 1/r` in a ring),
+so a `massive` 3D conductor needs a material with positive `sigma`.
 
 `direction` is required on every current terminal of a `3d` magnetic model and
 rejected everywhere else (a 2D model's current direction is fixed by its
-geometry). It says where the coil's current flows:
+geometry). It says where the conductor's current flows:
 
 ```json
 "direction": {"type": "azimuthal", "origin": [0, 0, 0], "axis": [0, 0, 1]}
-"direction": {"type": "cut", "cut": "CoilCut", "normal": [0, 1, 0]}
+"direction": {"type": "cut", "cut": "LoopCut", "normal": [0, 1, 0]}
 "direction": {"type": "electrodes", "input": "LeadIn", "output": "LeadOut"}
 ```
 
 - `azimuthal`: around the axis through `origin` (default `[0, 0, 0]`) along
   `axis` (right-hand rule: positive current makes flux along `+axis` inside
-  the coil). For coils of revolution; needs no extra mesh features. The coil
-  must not reach its own axis.
-- `cut`: a closed coil of any shape. `cut` names a boundary group (dim 2) of
-  internal faces that crosses the coil once, and the current crosses it
+  the loop). For conductors of revolution; needs no extra mesh features. The
+  conductor must not reach its own axis.
+- `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
+  internal faces that crosses the conductor once, and the current crosses it
   along `normal`. The cut should be (nearly) planar.
-- `electrodes`: an open coil. Current enters through the `input` boundary
-  group and leaves through `output`. Both must lie on a `dirichlet`
-  (`n × A = 0`) boundary, the only place current can enter or leave the
-  model consistently.
+- `electrodes`: an open conductor (a bus bar, a lead). Current enters through
+  the `input` boundary group and leaves through `output`. Both must lie on a
+  `dirichlet` (`n × A = 0`) boundary, the only place current can enter or
+  leave the model consistently.
 
 For `cut` and `electrodes` the direction comes from a unit conduction
-potential solved on the coil. Every coil carries a uniform current density
+potential solved on the conductor, weighted by its `sigma` if it is
+`massive`. A `stranded` conductor carries a uniform current density
 `I / A_cs` along its path, as a coil of many equal fine strands does. `A_cs`
 is its cross-section, so the terminal's `value` is the total current through
-it, exactly as in 2D. For an azimuthal coil `A_cs` is the meridional area,
-so a 3D coil and its axisymmetric model carry the same current density.
+it, exactly as in 2D. For an azimuthal conductor `A_cs` is the meridional
+area, so a 3D coil and its axisymmetric model carry the same current density.
+A `massive` conductor carries `σ E`: at DC its conduction current (conductance
+`G = ∫σ|∇v|²`), in MQS the solved eddy-current distribution driven by a port
+voltage, with `R → 1/G` as the frequency goes to zero.
+
+In a 3D MQS model every conducting region without a terminal (a shield, a
+tank wall) carries the eddy currents the field induces in it. Region
+`current_constraint` (`open`) is a 2D device for conductors whose ends the
+planar model cannot represent, and is rejected for `3d`.
 
 ---
 
@@ -414,7 +430,7 @@ than one at a time.
 - `simulation.frequency` is rejected for MQS; frequency belongs on scenarios.
 - Robin boundary conditions are electrostatics-only and need a non-negative
   `robin_coefficient`.
-- `geometry_type` `3d` is not yet available for magnetoquasistatics.
+- Region `current_constraint` is rejected for `geometry_type` `3d`.
 
 ---
 

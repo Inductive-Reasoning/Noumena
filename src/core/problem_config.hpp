@@ -66,21 +66,23 @@ struct Region {
 	RegionCurrentConstraint CurrentConstraint = RegionCurrentConstraint::None;
 };
 
-// The path current follows through a 3D coil ("terminals[].direction").
+// The path current follows through a 3D conductor ("terminals[].direction").
 //
 // A 2D model needs no such data: its current is out of plane (planar) or
-// azimuthal (axisymmetric) by construction. In 3D the current density of a
-// stranded coil is J = (I / A_cs) * t, with t the unit current direction and
-// A_cs the coil's cross-section, so t has to be given (see coil_path.hpp).
+// azimuthal (axisymmetric) by construction. In 3D the current density has to
+// follow the conductor's shape, so its direction field is given here and
+// resolved by conductor_path.hpp: J = (I / A_cs) t for a stranded conductor
+// (t the unit direction, A_cs its cross-section), J = sigma E for a massive one.
 //
-//   Azimuthal  - t = phi-hat about the axis through Origin along Axis, by the
-//                right-hand rule (positive current makes flux along +Axis
-//                inside the coil). For coils of revolution; no mesh features.
-//   Electrodes - an open coil: current enters through the Input boundary
+//   Azimuthal  - current circulates about the axis through Origin along Axis,
+//                by the right-hand rule (positive current makes flux along
+//                +Axis inside the loop). For conductors of revolution; no mesh
+//                features needed.
+//   Electrodes - an open conductor: current enters through the Input boundary
 //                group and leaves through Output, both on n x A = 0 walls.
-//   Cut        - a closed coil of any shape: current crosses the internal
+//   Cut        - a closed loop of any shape: current crosses the internal
 //                boundary group Cut in the direction of Normal.
-struct CoilDirection {
+struct CurrentDirection {
 	enum class Kind { Azimuthal, Electrodes, Cut };
 	Kind Type = Kind::Azimuthal;
 	std::array<double, 3> Origin{ 0.0, 0.0, 0.0 };
@@ -97,7 +99,7 @@ struct Terminal {
     Quantity DriveQuantity = Quantity::Voltage;
     ConductorType Conductor = ConductorType::Massive;
 	std::string EntityGroupName;   // mesh boundary (essential BC) or domain (RHS source) group name (validated)
-	std::optional<CoilDirection> Direction;  // 3D magnetic coils only (validated)
+	std::optional<CurrentDirection> Direction;  // 3D magnetic current terminals only (validated)
 };
 
 // One scenario's setting of one terminal.

@@ -735,20 +735,29 @@ TEST_CASE("ConfigValidator checks geometry_type against the mesh and physics",
 		REQUIRE(HasError(validator, "simulation.geometry_type"));
 	}
 
-	SECTION("rejects '3d' magnetoquasistatics") {
-		json config = three_d_config();
-		config["simulation"]["physics_type"] = "magnetoquasistatics";
-		ConfigValidator validator;
-		REQUIRE_FALSE(validator.Validate(config));
-		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	SECTION("accepts '3d' magnetics") {
+		for (const char* physics : { "magnetostatics", "magnetoquasistatics" }) {
+			json config = three_d_config();
+			config["simulation"]["physics_type"] = physics;
+			ConfigValidator validator;
+			validator.Validate(config);
+			REQUIRE_FALSE(HasError(validator, "simulation.geometry_type"));
+		}
 	}
 
-	SECTION("accepts '3d' magnetostatics") {
+	SECTION("rejects region current constraints in '3d'") {
 		json config = three_d_config();
-		config["simulation"]["physics_type"] = "magnetostatics";
+		config["simulation"]["physics_type"] = "magnetoquasistatics";
+		config["regions"][0]["current_constraint"] = "open";
+		config["materials"][0]["properties"]["sigma"] = 1e6;
 		ConfigValidator validator;
-		validator.Validate(config);
-		REQUIRE_FALSE(HasError(validator, "simulation.geometry_type"));
+		REQUIRE_FALSE(validator.Validate(config));
+		bool rejected_for_3d = false;
+		for (const auto& error : validator.GetErrors()) {
+			rejected_for_3d |= error.field == "regions[0].current_constraint" &&
+				error.message.find("'3d'") != std::string::npos;
+		}
+		REQUIRE(rejected_for_3d);
 	}
 
 	SECTION("accepts Gmsh and ParaView output for '3d'") {

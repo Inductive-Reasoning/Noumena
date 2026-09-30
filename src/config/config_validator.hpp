@@ -824,10 +824,10 @@ private:
         }
     }
 
-    // "direction" is how a 3D coil states where its current flows, so it is
+    // "direction" is how a 3D conductor states where its current flows, so it is
     // required on every 3D magnetic current terminal and meaningless anywhere
     // else (a 2D model's current direction is fixed by the geometry).
-    void ValidateCoilDirection(const json& config, const json& t, const std::string& prefix,
+    void ValidateCurrentDirection(const json& config, const json& t, const std::string& prefix,
                                const std::string& physics, const std::string& quantity) {
         std::string geometry = "planar";
         if (config.contains("simulation") && config["simulation"].is_object() &&
@@ -841,7 +841,7 @@ private:
 
         if (!t.contains("direction")) {
             if (wants_direction) {
-                AddError(field, "3D coil terminals require 'direction', e.g. "
+                AddError(field, "3D magnetic current terminals require 'direction', e.g. "
                     "{\"type\": \"azimuthal\", \"origin\": [0, 0, 0], \"axis\": [0, 0, 1]}");
             }
             return;
@@ -980,7 +980,7 @@ private:
                 AddError(prefix + ".conductor_type", "Invalid conductor_type '" + conductor + "'. Must be 'massive' or 'stranded'");
             }
 
-            ValidateCoilDirection(config, t, prefix, type, excitation);
+            ValidateCurrentDirection(config, t, prefix, type, excitation);
 
             // Voltage terminals bind to boundary groups; current terminals to domain groups.
             const bool is_current = (excitation == "current");
@@ -1131,8 +1131,8 @@ private:
     }
 
     // Cross-checks between geometry_type and the rest of the run: the mesh
-    // dimension it requires, and the physics that do not yet support a 3D
-    // model. Runs after ValidateSimulation(), so an invalid
+    // dimension it requires, and the settings that have no 3D meaning. Runs
+    // after ValidateSimulation(), so an invalid
     // geometry_type string has already been reported and is skipped here.
     //
     // The dimension check matters because nothing downstream would catch the
@@ -1165,13 +1165,18 @@ private:
 
         if (!three_d) return;
 
-        if (sim.contains("physics_type") && sim["physics_type"].is_string()) {
-            const std::string physics = sim["physics_type"];
-            if (physics == "magnetoquasistatics") {
-                AddError("simulation.geometry_type",
-                    "geometry_type '3d' is not yet supported for " + physics +
-                    ": the 3D eddy-current formulation is in development. "
-                    "Electrostatics and magnetostatics support '3d'");
+        // A 2D "open" region forces a conductor's net current to zero because
+        // the planar model cannot represent where its ends are. In 3D the
+        // ends are part of the mesh, so the constraint has no meaning.
+        if (config.contains("regions") && config["regions"].is_array()) {
+            const auto& regions = config["regions"];
+            for (size_t i = 0; i < regions.size(); ++i) {
+                if (regions[i].is_object() && regions[i].contains("current_constraint")) {
+                    AddError("regions[" + std::to_string(i) + "].current_constraint",
+                        "Current constraints are not available for geometry_type "
+                        "'3d': a 3D conductor with no terminal carries only "
+                        "induced current, so model its actual extent instead");
+                }
             }
         }
     }

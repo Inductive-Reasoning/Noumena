@@ -97,7 +97,7 @@ TEST_CASE("HYPRE BoomerAMG solves a 3D Laplacian", "[hypre][mpi]") {
 	REQUIRE(coarse.energy == Catch::Approx(B * X).epsilon(1e-9));
 }
 
-// The M3 case: curl(nu curl A) = J with NO regularization -- singular, since
+// The 3D magnetostatic case: curl(nu curl A) = J with NO regularization -- singular, since
 // every gradient is in the null space -- preconditioned by AMS, with a
 // divergence-free source so the system is consistent. The quadratic
 // manufactured A = (y^2, z^2, x^2) lies in the third-order Nedelec space, so B
