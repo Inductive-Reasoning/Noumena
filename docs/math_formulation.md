@@ -417,10 +417,12 @@ through the general expression rather than through a separate code path. Note
 that this makes the "frequently quoted simplification" above exactly correct for
 unported conductors, and wrong only for driven ones.
 
-Stranded terminals are excluded: they model a bundle of fine insulated strands
-carrying an imposed current, with eddy effects deliberately not represented, so
-the field-based expression does not describe them even when the bulk material
-property is conductive.
+Stranded terminals dissipate nothing here. A stranded conductor is a winding of
+insulated strands in series: the connection fixes every strand's current and
+none crosses between strands, so its current is the imposed source alone and
+the `jωσA` term is omitted there, whatever the material's `σ` (which is the
+wire conductivity, relevant to the winding's own resistance and in-strand
+losses, neither of which is modelled).
 
 **Verification:** the DC limit gives `P → I²/(2 G_dc)` for a single massive port,
 and global power balance `Σ_regions P = ½ Re(Σ_p V_p I_p*)` holds to

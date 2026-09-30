@@ -292,9 +292,12 @@ Array of objects naming drive/measurement sites.
 still solving.
 
 `conductor_type` applies to magnetic current terminals. In MQS, `stranded`
-imposes uniform current density (litz/fine-wire, eddy currents suppressed);
-`massive` solves for the true current distribution including skin and
-proximity effects. 2D magnetostatics treats both as uniform `I / area`. 3D
+imposes uniform current density (a winding of fine insulated strands in
+series); `massive` solves for the true current distribution including skin
+and proximity effects. A `stranded` conductor carries no eddy current: its
+material's `sigma` is taken as the wire's conductivity and does not enter the
+field solve, so it neither screens the field nor dissipates. The winding's own
+resistance is not included in `R`. 2D magnetostatics treats both as uniform `I / area`. 3D
 magnetostatics gives a `massive` conductor its DC distribution `σ E` (which
 differs from uniform where the path length varies, e.g. `J ∝ 1/r` in a ring),
 so a `massive` 3D conductor needs a material with positive `sigma`.

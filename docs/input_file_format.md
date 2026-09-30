@@ -209,7 +209,8 @@ realized:
 while still solving, so it must be stated.
 
 `conductor_type` applies to current terminals in MQS: `stranded` imposes uniform
-current density (litz/fine-wire, eddy currents suppressed); `massive` solves for
+current density (a winding of insulated strands; its material `sigma` does not
+enter the field solve, so no eddy current flows in it); `massive` solves for
 the true current distribution including skin and proximity effects.
 
 ### 3.7 `scenarios`

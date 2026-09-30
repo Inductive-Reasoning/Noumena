@@ -37,9 +37,10 @@ public:
 	};
 
 protected:
-	// nu = 1/mu (reluctivity) and sigma, keyed by mesh DOMAIN attribute.
-	// Unclaimed attributes fall back to vacuum. Built in each derived Setup();
-	// refinement-invariant, like every material table.
+	// nu = 1/mu (reluctivity) and the field-solve conductivity sigma, keyed
+	// by mesh DOMAIN attribute. Unclaimed attributes fall back to vacuum.
+	// Built in each derived Setup(); refinement-invariant, like every material
+	// table. sigma is zero on stranded conductors; see BuildConductivity().
 	std::unique_ptr<mfem::PWConstCoefficient> nu_coeff;
 	std::unique_ptr<mfem::PWConstCoefficient> sigma_coeff;
 
@@ -53,8 +54,35 @@ protected:
 	void BuildReluctivity() {
 		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);
 	}
+	// The conductivity of the eddy-current term j omega sigma A, which is zero
+	// on every stranded conductor whatever its material.
+	//
+	// A stranded conductor is a winding: insulated strands in series, so the
+	// winding's connection fixes the current in every strand and none crosses
+	// between them. Its current is the imposed source alone. A sigma term
+	// there would add a free induced current -j omega sigma A on top, as if
+	// the winding were also a solid block -- in a ring coil, a shorted turn
+	// sharing its volume -- which changes the coil's actual current, screens
+	// its field and dissipates power no terminal accounts for. The material's
+	// sigma is the wire's conductivity; it matters for the winding's own
+	// resistance and in-strand losses, which are not modelled, not for the
+	// field.
 	void BuildConductivity() {
 		sigma_coeff = MaterialCoefficient(0.0, Conductivity);
+		for (const auto& [name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Stranded) continue;
+			bool conducts = false;
+			for (int attr : config.EntityGroups.at(term.EntityGroupName).AttributeIds) {
+				if (attr < 1 || attr > sigma_coeff->GetNConst()) continue;
+				conducts |= (*sigma_coeff)(attr) > 0.0;
+				(*sigma_coeff)(attr) = 0.0;
+			}
+			if (conducts) {
+				Reporter().Diagnostic("Stranded conductor '" + name + "': its material "
+					"conductivity is the wire's and does not enter the field solve, "
+					"which imposes the winding current without eddy currents.");
+			}
+		}
 	}
 
 	// A massive conductor's current is sigma E, so every attribute of it must
@@ -79,15 +107,13 @@ protected:
 	// Integrate a loss density over every region that can dissipate, one
 	// entry per reporting owner.
 	//
-	// Membership is decided by sigma > 0, not by whether a region owns a port.
-	// The sigma mass term induces eddy currents in any conductive material, so
-	// a flux shield or a steel brace dissipates real power while appearing in
-	// no coupling matrix. Reporting only ported regions would produce a
-	// "total" that silently omits it.
-	//
-	// Stranded terminals are excluded: they model a bundle of fine insulated
-	// strands carrying an imposed current, with eddy effects deliberately not
-	// represented, so the field-based expression does not describe them.
+	// Membership is decided by the field-solve sigma > 0, not by whether a
+	// region owns a port. The sigma mass term induces eddy currents in any
+	// conductive material, so a flux shield or a steel brace dissipates real
+	// power while appearing in no coupling matrix. Reporting only ported
+	// regions would produce a "total" that silently omits it. Stranded
+	// conductors have sigma = 0 there (BuildConductivity), so they report
+	// nothing: the field solve dissipates nothing in them.
 	//
 	// Each conductive attribute has exactly one owner. Exclusive ownership is
 	// essential, not cosmetic: a terminal and a region routinely share an
@@ -97,13 +123,6 @@ protected:
 	// specific description of the same metal; conductive attributes no
 	// terminal or region claims report individually.
 	std::vector<RegionLoss> IntegrateRegionLosses(mfem::Coefficient& density) const {
-		std::set<int> stranded;
-		for (const auto& [name, term] : config.Terminals) {
-			if (term.Conductor != ConductorType::Stranded) continue;
-			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-			stranded.insert(group.AttributeIds.begin(), group.AttributeIds.end());
-		}
-
 		std::map<int, std::string> owner;
 		for (const Region& region : config.Regions) {
 			const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
@@ -117,9 +136,7 @@ protected:
 
 		std::map<std::string, std::set<int>> groups;
 		for (int attr = 1; attr <= mesh.attributes.Max(); ++attr) {
-			if (stranded.count(attr)) continue;
-			const Material* material = MaterialForAttr(attr);
-			if (material == nullptr || material->Conductivity <= 0.0) continue;
+			if (attr > sigma_coeff->GetNConst() || (*sigma_coeff)(attr) <= 0.0) continue;
 			const auto named = owner.find(attr);
 			groups[named != owner.end() ? named->second
 									   : "attribute " + std::to_string(attr)].insert(attr);

@@ -265,6 +265,66 @@ TEST_CASE("3D MQS routing, exports and rejections", "[solvers][mqs][3d]") {
 	}
 }
 
+// A stranded conductor is a winding: its current is the imposed source alone,
+// so its material's sigma (the wire's) must not add eddy currents to the field
+// solve. The same winding in copper and in air gives the same impedance, and
+// reports no loss. Checked in the axisymmetric model (a coil beside a massive
+// ring) and in 3D (the electrode bar as a stranded conductor).
+TEST_CASE("Stranded conductors carry no eddy currents", "[solvers][mqs][3d][2d][stranded]") {
+	SECTION("axisymmetric") {
+		AnnulusSpec spec;
+		spec.sigma = 1e6;
+		spec.conductors = {
+			{ 0.04, 0.06, 0.02, 0.04, ConductorRole::Massive },
+			{ 0.05, 0.08, 0.06, 0.08, ConductorRole::Stranded } };
+		const std::vector<double> f = { 2000.0 };
+		const ImpedanceSweep air = AxisymmetricImpedance(spec, f);
+
+		// The coil's region is air in the fixture; make it copper.
+		mfem::Mesh mesh = MakeAnnulus2D(spec, 4);
+		json config = MakeAnnulusConfig(spec, false, 3, "magnetoquasistatics");
+		config["scenarios"] = FrequencyScenarios(f);
+		config["entity_groups"].push_back({{"name", "Winding"}, {"dim", 2}, {"attribute_ids", {3}}});
+		for (auto& group : config["entity_groups"]) {
+			if (group["name"] == "Air") group["attribute_ids"] = {1};
+		}
+		config["regions"].push_back({{"name", "Winding"}, {"entity_group", "Winding"},
+									 {"material", "Copper"}});
+		MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, "stranded_cu.h5"));
+		const ImpedanceSweep copper = SolveImpedance(solver, "stranded_cu.h5");
+		for (int i = 0; i < 2; ++i) {
+			for (int k = 0; k < 2; ++k) {
+				REQUIRE(copper.R[0][i][k] == Catch::Approx(air.R[0][i][k]).epsilon(1e-12));
+				REQUIRE(copper.L[0][i][k] == Catch::Approx(air.L[0][i][k]).epsilon(1e-12));
+			}
+		}
+	}
+
+	SECTION("3d") {
+		json config = MakeBarConfig(1e7, "field");
+		config["terminals"][0]["conductor_type"] = "stranded";
+		config["scenarios"] = json::array({{{"name", "AC"}, {"frequency", 1000.0},
+			{"excitations", json::array({{{"terminal", "Bar"}, {"value", 1.0}}})}}});
+		json insulating = config;
+		insulating["materials"][1]["properties"]["sigma"] = 0.0;
+
+		mfem::Mesh mesh = MakeBarMesh(4), copy(mesh);
+		MagnetoquasistaticSolver3D copper(mesh, DecodeConfig(config));
+		MagnetoquasistaticSolver3D air(copy, DecodeConfig(insulating));
+		for (auto* solver : { &copper, &air }) {
+			solver->Setup();
+			solver->Run();
+		}
+		REQUIRE(copper.ComputeRegionLosses().empty());
+		mfem::Vector difference(copper.GetSolutionReal());
+		difference -= air.GetSolutionReal();
+		REQUIRE(difference.Normlinf() == 0.0);
+		difference = copper.GetSolutionImag();
+		difference -= air.GetSolutionImag();
+		REQUIRE(difference.Normlinf() == 0.0);
+	}
+}
+
 #ifdef MFEM_USE_MPI
 
 // Both linear solvers solve the same regularized system, so they must agree
