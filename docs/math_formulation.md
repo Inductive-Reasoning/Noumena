@@ -246,7 +246,7 @@ For an axisymmetric magnetic problem that reaches `r = 0`, regularity requires
 `A_φ = 0` on the axis. The solver detects that boundary and applies this
 essential constraint automatically; it is not a natural Neumann condition.
 
-### 3D Form (in development)
+### 3D Form
 
 `geometry_type: 3d` uses a separate formulation (`MagnetostaticSolver3D`),
 because in 3D the potential is a full vector field:
@@ -264,8 +264,15 @@ tangent: `B·n = 0`), and `neumann` 0 or no entry means the natural `n × H = 0`
 The curl-curl operator is singular: it annihilates every gradient. The direct
 solve adds `β (A, w)` with `β = 10⁻⁶ ν_min / L²` (`L` the bounding-box
 diagonal). With a divergence-free source this selects the Coulomb gauge and
-perturbs `B` by about 10⁻⁶ relative. The configuration validator still rejects
-3D magnetics because coil sources are not implemented yet.
+perturbs `B` by about 10⁻⁶ relative.
+
+Coils carry `J = (I / A_cs) t̂` with `t̂` the terminal's `direction` (currently
+azimuthal, `A_cs = ∫ dV / (2πr)`). Each coil's unit-current load `b` is made
+discretely divergence-free before use: with `G` the discrete gradient from the
+matching H1 space and `M` the Nédélec mass matrix, `(GᵀMG) ψ = Gᵀ b` and
+`b' = b − M G ψ`, so `Gᵀ b' = 0`. The flux linkage of coil `k` is
+`λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current density), and
+the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by construction.
 
 ## 3. Magnetoquasistatics (Eddy Currents)
 

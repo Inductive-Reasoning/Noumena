@@ -250,6 +250,7 @@ private:
             }
             CheckFieldType(terminal, "conductor_type", prefix + ".conductor_type", ExpectedType::String);
             CheckFieldType(terminal, "entity_group", prefix + ".entity_group", ExpectedType::String);
+            CheckFieldType(terminal, "direction", prefix + ".direction", ExpectedType::Object);
         });
 
         CheckObjectArrayTypes(config, "boundary_conditions", [&](const json& boundary, const std::string& prefix) {
@@ -823,6 +824,72 @@ private:
         }
     }
 
+    // "direction" is how a 3D coil states where its current flows, so it is
+    // required on every 3D magnetic current terminal and meaningless anywhere
+    // else (a 2D model's current direction is fixed by the geometry).
+    void ValidateCoilDirection(const json& config, const json& t, const std::string& prefix,
+                               const std::string& physics, const std::string& quantity) {
+        std::string geometry = "planar";
+        if (config.contains("simulation") && config["simulation"].is_object() &&
+            config["simulation"].contains("geometry_type") &&
+            config["simulation"]["geometry_type"].is_string()) {
+            geometry = config["simulation"]["geometry_type"].get<std::string>();
+        }
+        const bool magnetic = physics == "magnetostatics" || physics == "magnetoquasistatics";
+        const bool wants_direction = geometry == "3d" && magnetic && quantity == "current";
+        const std::string field = prefix + ".direction";
+
+        if (!t.contains("direction")) {
+            if (wants_direction) {
+                AddError(field, "3D coil terminals require 'direction', e.g. "
+                    "{\"type\": \"azimuthal\", \"origin\": [0, 0, 0], \"axis\": [0, 0, 1]}");
+            }
+            return;
+        }
+        if (!wants_direction) {
+            AddError(field, "'direction' applies only to current terminals of a 3D "
+                "magnetic model; 2D current directions are fixed by the geometry");
+            return;
+        }
+        const auto& d = t["direction"];
+        if (!d.is_object()) return;  // reported by the type check
+        for (const auto& item : d.items()) {
+            if (item.key() != "type" && item.key() != "origin" && item.key() != "axis") {
+                AddError(field + "." + item.key(), "Unknown direction setting");
+            }
+        }
+        if (!d.contains("type") || !d["type"].is_string() || d["type"] != "azimuthal") {
+            AddError(field + ".type", "Must be 'azimuthal'");
+        }
+        auto vector3 = [&](const char* key, bool required) -> bool {
+            const std::string where = field + "." + key;
+            if (!d.contains(key)) {
+                if (required) AddError(where, "Missing required field '" + std::string(key) + "'");
+                return false;
+            }
+            const auto& v = d[key];
+            if (!v.is_array() || v.size() != 3) {
+                AddError(where, "Must be an array of three numbers");
+                return false;
+            }
+            for (const auto& c : v) {
+                if (!c.is_number() || !std::isfinite(c.get<double>())) {
+                    AddError(where, "Must be an array of three finite numbers");
+                    return false;
+                }
+            }
+            return true;
+        };
+        vector3("origin", false);
+        if (vector3("axis", true)) {
+            const auto& a = d["axis"];
+            const double n2 = a[0].get<double>() * a[0].get<double>() +
+                              a[1].get<double>() * a[1].get<double>() +
+                              a[2].get<double>() * a[2].get<double>();
+            if (!(n2 > 0.0)) AddError(field + ".axis", "Must be a nonzero vector");
+        }
+    }
+
     void ValidateTerminals(const json& config, const mfem::Mesh* mesh = nullptr) {
         std::string type = PhysicsType(config);
 
@@ -886,6 +953,8 @@ private:
             if (conductor != "massive" && conductor != "stranded") {
                 AddError(prefix + ".conductor_type", "Invalid conductor_type '" + conductor + "'. Must be 'massive' or 'stranded'");
             }
+
+            ValidateCoilDirection(config, t, prefix, type, excitation);
 
             // Voltage terminals bind to boundary groups; current terminals to domain groups.
             const bool is_current = (excitation == "current");
@@ -1072,12 +1141,11 @@ private:
 
         if (sim.contains("physics_type") && sim["physics_type"].is_string()) {
             const std::string physics = sim["physics_type"];
-            if (physics == "magnetostatics" || physics == "magnetoquasistatics") {
+            if (physics == "magnetoquasistatics") {
                 AddError("simulation.geometry_type",
                     "geometry_type '3d' is not yet supported for " + physics +
-                    ": the 3D vector-potential (H(curl)) formulation is in "
-                    "development and has no coil sources yet. Only "
-                    "electrostatics supports '3d'");
+                    ": the 3D eddy-current formulation is in development. "
+                    "Electrostatics and magnetostatics support '3d'");
             }
         }
     }

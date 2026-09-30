@@ -143,6 +143,21 @@ TEST_CASE("InputParser defaults linear_solver by geometry", "[input_parser][line
     REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
 }
 
+TEST_CASE("InputParser decodes a 3D coil direction", "[input_parser][3d][coil]") {
+    json source = CanonicalConfig();
+    source["terminals"][0]["direction"] = {
+        {"type", "azimuthal"}, {"origin", {1.0, 2.0, 3.0}}, {"axis", {0.0, 1.0, 0.0}}};
+    const ProblemConfig config = InputParser(source).GetProblemConfig();
+    const Terminal& coil = config.Terminals.begin()->second;
+    REQUIRE(coil.Direction.has_value());
+    REQUIRE(coil.Direction->Type == CoilDirection::Kind::Azimuthal);
+    REQUIRE(coil.Direction->Origin == std::array<double, 3>{1.0, 2.0, 3.0});
+    REQUIRE(coil.Direction->Axis == std::array<double, 3>{0.0, 1.0, 0.0});
+
+    source["terminals"][0].erase("direction");
+    REQUIRE_FALSE(InputParser(source).GetProblemConfig().Terminals.begin()->second.Direction);
+}
+
 TEST_CASE("InputParser decodes typed Dirichlet and Neumann boundaries",
           "[input_parser][boundaries]") {
     json source = CanonicalConfig();

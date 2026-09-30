@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <vector>
 #include <string>
 #include <map>
@@ -65,6 +66,24 @@ struct Region {
 	RegionCurrentConstraint CurrentConstraint = RegionCurrentConstraint::None;
 };
 
+// The path current follows through a 3D coil ("terminals[].direction").
+//
+// A 2D model needs no such data: its current is out of plane (planar) or
+// azimuthal (axisymmetric) by construction. In 3D the current density of a
+// stranded coil is J = (I / A_cs) * t, with t the unit current direction and
+// A_cs the coil's cross-section, so t has to be given.
+//
+//   Azimuthal - t = phi-hat about the axis through Origin along Axis, oriented
+//               by the right-hand rule (positive current produces field along
+//               +Axis inside the coil). A_cs = integral over the coil of
+//               dV / (2 pi r), which is exact for any coil of revolution.
+struct CoilDirection {
+	enum class Kind { Azimuthal };
+	Kind Type = Kind::Azimuthal;
+	std::array<double, 3> Origin{ 0.0, 0.0, 0.0 };
+	std::array<double, 3> Axis{ 0.0, 0.0, 1.0 };  // need not be normalized
+};
+
 // A driven/measured excitation site. Single primitive for both physics
 //   DriveQuantity == Voltage -> AttributeIds are BOUNDARY attrs (essential BC)
 //   DriveQuantity == Current -> AttributeIds are DOMAIN   attrs (RHS source)
@@ -72,6 +91,7 @@ struct Terminal {
     Quantity DriveQuantity = Quantity::Voltage;
     ConductorType Conductor = ConductorType::Massive;
 	std::string EntityGroupName;   // mesh boundary (essential BC) or domain (RHS source) group name (validated)
+	std::optional<CoilDirection> Direction;  // 3D magnetic coils only (validated)
 };
 
 // One scenario's setting of one terminal.

@@ -387,10 +387,29 @@ private:
 											   {{"massive",  ConductorType::Massive},
 												{"stranded", ConductorType::Stranded}});
 				terminal.EntityGroupName = Get(t, "entity_group", std::string{});
+				if (t.contains("direction")) {
+					terminal.Direction = GetCoilDirection(t["direction"]);
+				}
 				terminals.emplace(std::move(name), std::move(terminal));
             }
         }
         return terminals;
+    }
+
+    // "terminals[].direction": {"type": "azimuthal", "origin": [x,y,z],
+    // "axis": [x,y,z]}. Tolerant defaults (origin at 0, axis +z); the
+    // validator enforces a well-formed block.
+    static CoilDirection GetCoilDirection(const json& d) {
+        CoilDirection direction;
+        direction.Type = ParseEnum(d, "type", CoilDirection::Kind::Azimuthal,
+                                   {{"azimuthal", CoilDirection::Kind::Azimuthal}});
+        auto read3 = [&d](const char* key, std::array<double, 3>& out) {
+            if (!d.contains(key) || !d[key].is_array() || d[key].size() != 3) return;
+            for (int c = 0; c < 3; ++c) out[c] = d[key][c].get<double>();
+        };
+        read3("origin", direction.Origin);
+        read3("axis", direction.Axis);
+        return direction;
     }
 
     std::vector<Region> GetRegions() const {

@@ -81,8 +81,11 @@ Object. **Required** -- the only required section.
 `geometry_type` must match the mesh: `planar` and `axisymmetric` require a 2D
 mesh, `3d` a 3D mesh. A mismatch is rejected, including the `planar` default on
 a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
-`axisymmetric` and `3d` ones are absolute (F, H). `3d` is currently supported
-for `electrostatics` only, with every output format. Gmsh output supports
+`axisymmetric` and `3d` ones are absolute (F, H). `3d` supports
+`electrostatics` and `magnetostatics` (not yet `magnetoquasistatics`), with
+every output format. 3D magnetostatics currently needs `linear_solver`
+`direct`, supports only homogeneous boundary conditions (`dirichlet` 0 for
+`n × A = 0`, `neumann` 0 or no entry for `n × H = 0`), and has no AMR. Gmsh output supports
 tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.
 
 `direct` is the default linear solver for the 2D models because a
@@ -271,6 +274,7 @@ Array of objects naming drive/measurement sites.
 | `quantity` | string | yes | none | `voltage`, `current` |
 | `entity_group` | string | yes | -- | Role depends on `quantity` |
 | `conductor_type` | string | no | `massive` | `massive`, `stranded` |
+| `direction` | object | 3D magnetic current terminals | -- | Current path of a 3D coil; see below |
 
 | `quantity` | Required group role | Realization |
 |------------|---------------------|-------------|
@@ -283,6 +287,24 @@ still solving.
 `conductor_type` applies to current terminals in MQS. `stranded` imposes uniform
 current density (litz/fine-wire, eddy currents suppressed); `massive` solves for
 the true current distribution including skin and proximity effects.
+
+`direction` is required on every current terminal of a `3d` magnetic model and
+rejected everywhere else (a 2D model's current direction is fixed by its
+geometry):
+
+```json
+"direction": {"type": "azimuthal", "origin": [0, 0, 0], "axis": [0, 0, 1]}
+```
+
+`azimuthal` drives current around the axis through `origin` along `axis`
+(right-hand rule: positive current makes flux along `+axis` inside the coil).
+`origin` defaults to `[0, 0, 0]`; `axis` is required and need not be
+normalized. The coil carries the uniform density `I / A_cs`, with
+`A_cs = ∫ dV / (2πr)` over the coil volume, which is its meridional
+cross-section for any coil of revolution. So a 3D coil and its axisymmetric
+model carry the same current density, and the terminal's `value` is the total
+current through the cross-section, exactly as in 2D. The coil must not reach
+its own axis.
 
 ---
 
@@ -377,7 +399,7 @@ than one at a time.
 - `simulation.frequency` is rejected for MQS; frequency belongs on scenarios.
 - Robin boundary conditions are electrostatics-only and need a non-negative
   `robin_coefficient`.
-- `geometry_type` `3d` is electrostatics-only.
+- `geometry_type` `3d` is not yet available for magnetoquasistatics.
 
 ---
 

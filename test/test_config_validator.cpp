@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "config/config_validator.hpp"
 #include "config/boundary_validation.hpp"
+#include <functional>
 #include <limits>
 
 namespace {
@@ -734,14 +735,20 @@ TEST_CASE("ConfigValidator checks geometry_type against the mesh and physics",
 		REQUIRE(HasError(validator, "simulation.geometry_type"));
 	}
 
-	SECTION("rejects '3d' magnetics") {
-		for (const char* physics : {"magnetostatics", "magnetoquasistatics"}) {
-			json config = three_d_config();
-			config["simulation"]["physics_type"] = physics;
-			ConfigValidator validator;
-			REQUIRE_FALSE(validator.Validate(config));
-			REQUIRE(HasError(validator, "simulation.geometry_type"));
-		}
+	SECTION("rejects '3d' magnetoquasistatics") {
+		json config = three_d_config();
+		config["simulation"]["physics_type"] = "magnetoquasistatics";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("accepts '3d' magnetostatics") {
+		json config = three_d_config();
+		config["simulation"]["physics_type"] = "magnetostatics";
+		ConfigValidator validator;
+		validator.Validate(config);
+		REQUIRE_FALSE(HasError(validator, "simulation.geometry_type"));
 	}
 
 	SECTION("accepts Gmsh and ParaView output for '3d'") {
@@ -780,4 +787,62 @@ TEST_CASE("ConfigValidator checks linear_solver", "[config_validator][linear_sol
 	ConfigValidator type_validator;
 	REQUIRE_FALSE(type_validator.Validate(wrong_type));
 	REQUIRE(HasError(type_validator, "simulation.linear_solver"));
+}
+
+TEST_CASE("ConfigValidator checks 3D coil directions", "[config_validator][3d][coil]") {
+	mfem::Mesh cube = mfem::Mesh::MakeCartesian3D(
+		1, 1, 1, mfem::Element::TETRAHEDRON, 1.0, 1.0, 1.0);
+	auto coil_config = []() {
+		json config = ValidConfig();
+		config["simulation"]["physics_type"] = "magnetostatics";
+		config["simulation"]["geometry_type"] = "3d";
+		config["entity_groups"][0]["dim"] = 3;
+		config["entity_groups"][1]["dim"] = 2;
+		config["materials"][0]["properties"] = {{"mu_r", 1.0}};
+		config["terminals"] = json::array({
+			{{"name", "Coil"}, {"quantity", "current"}, {"entity_group", "Domain"},
+			 {"direction", {{"type", "azimuthal"}, {"origin", {0.0, 0.0, 0.0}},
+							{"axis", {0.0, 0.0, 1.0}}}}}});
+		config["scenarios"][0]["excitations"][0]["terminal"] = "Coil";
+		return config;
+	};
+
+	SECTION("accepts a well-formed azimuthal coil") {
+		ConfigValidator validator;
+		INFO(validator.GetErrorMessage());
+		REQUIRE(validator.Validate(coil_config(), &cube));
+	}
+
+	SECTION("requires a direction on 3D magnetic current terminals") {
+		json config = coil_config();
+		config["terminals"][0].erase("direction");
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "terminals[0].direction"));
+	}
+
+	SECTION("rejects a direction in a 2D model") {
+		json config = coil_config();
+		config["simulation"]["geometry_type"] = "planar";
+		config["entity_groups"][0]["dim"] = 2;
+		config["entity_groups"][1]["dim"] = 1;
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "terminals[0].direction"));
+	}
+
+	SECTION("rejects malformed directions") {
+		auto error_for = [&](const std::function<void(json&)>& mutate, const std::string& field) {
+			json config = coil_config();
+			mutate(config["terminals"][0]["direction"]);
+			ConfigValidator validator;
+			REQUIRE_FALSE(validator.Validate(config, &cube));
+			REQUIRE(HasError(validator, field));
+		};
+		error_for([](json& d) { d["type"] = "toroidal"; }, "terminals[0].direction.type");
+		error_for([](json& d) { d.erase("axis"); }, "terminals[0].direction.axis");
+		error_for([](json& d) { d["axis"] = {0.0, 0.0, 0.0}; }, "terminals[0].direction.axis");
+		error_for([](json& d) { d["origin"] = {1.0, 2.0}; }, "terminals[0].direction.origin");
+		error_for([](json& d) { d["center"] = {0.0, 0.0, 0.0}; }, "terminals[0].direction.center");
+	}
 }

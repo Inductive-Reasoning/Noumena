@@ -9,9 +9,12 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "mfem.hpp"
 #include "magnetic_solver.hpp"
+#include "divergence_free_projector.hpp"
+#include "../coefficients/azimuthal_coil_coefficient.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../core/constants.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
@@ -24,12 +27,26 @@
  * therefore the normal continuity of B = curl A -- holds exactly, and material
  * interfaces need no special treatment.
  *
- * Status (milestone M0 of the 3D magnetics plan): the formulation, assembly,
- * boundary conditions, direct solve and field export are in place. Sources
- * are supplied programmatically through SetSourceCurrentDensity(); coil
- * terminals (M1), the coupling-matrix analysis (M1) and an iterative solver
- * (M3) are not yet available and are rejected in Setup(). The configuration
- * validator still rejects '3d' magnetostatics for the same reason.
+ * @par Sources
+ * Current enters through coil terminals: each current terminal gives a volume
+ * group and a "direction" (CoilDirection). An azimuthal coil carries the
+ * uniform density J = (I / A_cs) phi-hat, A_cs = integral dV / (2 pi r) (see
+ * AzimuthalCoilCoefficient), which is exactly the 2D axisymmetric model's
+ * I/area source revolved. Each coil's unit-current load is assembled once per
+ * mesh and made discretely divergence-free (DivergenceFreeProjector); a
+ * scenario's load is the excitation-weighted sum. A programmatic source
+ * (SetSourceCurrentDensity) is added to it and projected the same way.
+ *
+ * @par Coupling matrix
+ * Column j drives terminal j with 1 A; entry (k, j) is the flux linkage
+ * lambda_k = integral(A . J_k) with J_k terminal k's unit-current density,
+ * evaluated as b'_k . A with the projected load b'_k. That is the same winding
+ * functional the 2D solvers use, it is gauge-invariant because b'_k is
+ * orthogonal to the gradients, and it makes L = B'^T K^-1 B' symmetric by
+ * construction. Units are henries.
+ *
+ * Not yet available, and rejected in Setup(): adaptive refinement and an
+ * iterative solver (the curl-curl operator needs an AMS preconditioner).
  *
  * @par Boundary conditions
  * A 3D vector potential has no meaningful scalar boundary value, so the
@@ -92,12 +109,12 @@ public:
 		InitializeGeometry();
 		MFEM_VERIFY(geometry == GeometryType::Cartesian3D,
 			"MagnetostaticSolver3D requires geometry_type '3d'.");
-		MFEM_VERIFY(config.Terminals.empty(),
-			"3D magnetostatics does not yet support terminals: coil sources "
-			"are not implemented.");
-		MFEM_VERIFY(config.AnalysisType == AnalysisType::Field,
-			"3D magnetostatics does not yet support the coupling-matrix "
-			"analysis, which needs coil terminals.");
+		for (const auto& [name, term] : config.Terminals) {
+			MFEM_VERIFY(term.DriveQuantity == Quantity::Current,
+				"Magnetostatic terminal '" + name + "' must use a current excitation.");
+			MFEM_VERIFY(term.Direction.has_value(),
+				"3D coil terminal '" + name + "' needs a 'direction'.");
+		}
 		MFEM_VERIFY(!config.Amr.Enabled,
 			"3D magnetostatics does not yet support adaptive refinement.");
 		MFEM_VERIFY(config.LinearSolver == LinearSolverType::Direct,
@@ -141,18 +158,52 @@ public:
 
 		auto* matrix = dynamic_cast<mfem::SparseMatrix*>(A_op.Ptr());
 		MFEM_VERIFY(matrix, "Expected a SparseMatrix operator from FormSystemMatrix.");
-		auto operation = Reporter().Start("sparse direct factorization");
-		direct_solver = std::make_unique<SparseDirectSolver>(*matrix);
+		{
+			auto operation = Reporter().Start("sparse direct factorization");
+			direct_solver = std::make_unique<SparseDirectSolver>(*matrix);
+		}
+
+		auto operation = Reporter().Start("coil source assembly");
+		projector = std::make_unique<DivergenceFreeProjector>(*fespace, ess_bdr);
+		coil_loads.clear();
+		for (const auto& [name, term] : config.Terminals) {
+			coil_loads.push_back(AssembleUnitCoilLoad(name, term));
+		}
 	}
 
 	void RunOnCurrentMesh() override {
+		const bool coupling = config.AnalysisType == AnalysisType::CouplingMatrix;
+		const int n = static_cast<int>(config.Terminals.size());
+		if (coupling) {
+			L = std::make_unique<mfem::DenseMatrix>(n, n);
+			*L = 0.0;
+		}
+		int column = 0;
 		for (const auto& [name, scenario] : BuildSolveScenarios()) {
 			auto operation = Reporter().Start("scenario '" + name + "'");
-			ImprintScenario();
+			ImprintScenario(scenario);
 			SolveSystem();
-			SaveScenario(name, scenario);
+			if (coupling) {
+				for (int row = 0; row < n; ++row) { (*L)(row, column) = coil_loads[row] * *A; }
+				++column;
+			}
+			SaveScenario(name, scenario,
+				coupling ? scenario.Excitations.front().TerminalName : "");
 		}
 	}
+
+	/// Flux linkage lambda_k [Wb] of every terminal for the current solution,
+	/// in config.Terminals (name) order.
+	std::vector<double> FluxLinkages() const {
+		std::vector<double> lambda;
+		for (const auto& load : coil_loads) { lambda.push_back(load * *A); }
+		return lambda;
+	}
+
+	/// The projected unit-current load of each terminal, in config.Terminals
+	/// order (exposed for verification).
+	const std::vector<mfem::Vector>& CoilLoads() const { return coil_loads; }
+	const DivergenceFreeProjector& Projector() const { return *projector; }
 
 	// Post-solve fields: the potential A (a vector Nedelec field) and the flux
 	// density B = curl A, evaluated exactly from the element basis.
@@ -184,7 +235,15 @@ public:
 	}
 
 protected:
-	void SaveAnalysisResults() override {}
+	void SaveAnalysisResults() override {
+		if (config.AnalysisType != AnalysisType::CouplingMatrix) return;
+		if (!L) {
+			Reporter().Warning("WriteCouplingMatrix: coupling matrix not computed.");
+			return;
+		}
+		SaveCouplingMatrix(*L, "Inductance Matrix " + CouplingUnitLabel("H"),
+			"Inductance", "H");
+	}
 
 	void EstimateCurrentSolutionError(mfem::Vector&) override {
 		MFEM_ABORT("3D magnetostatics does not yet support adaptive refinement.");
@@ -201,6 +260,39 @@ private:
 	mfem::VectorCoefficient* source = nullptr;          // not owned
 	mfem::VectorCoefficient* boundary_value = nullptr;  // not owned
 
+	std::unique_ptr<DivergenceFreeProjector> projector;
+	std::vector<mfem::Vector> coil_loads;  // projected unit loads, terminal order
+	std::unique_ptr<mfem::DenseMatrix> L;  // inductance matrix (coupling runs)
+
+	// Load vector of terminal @p name driven by 1 A, made divergence-free.
+	mfem::Vector AssembleUnitCoilLoad(const std::string& name, const Terminal& term) {
+		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+		mfem::Array<int> marker =
+			DomainMarkerFromAttrs(group.AttributeIds, "coil terminal '" + name + "'");
+
+		AzimuthalCoilCoefficient unit_direction(*term.Direction, 1.0);
+		double min_radius = 0.0;
+		const double area = CoilCrossSection(mesh, marker, unit_direction,
+											 config.Order, min_radius);
+		mfem::Vector lo, hi;
+		mesh.GetBoundingBox(lo, hi);
+		hi -= lo;
+		MFEM_VERIFY(min_radius > 1e-9 * hi.Norml2(),
+			"Coil terminal '" + name + "' reaches its own axis, where the "
+			"azimuthal current direction is undefined.");
+		MFEM_VERIFY(area > 0.0,
+			"Coil terminal '" + name + "' has zero cross-section.");
+
+		AzimuthalCoilCoefficient density(*term.Direction, 1.0 / area);
+		mfem::LinearForm load(fespace.get());
+		load.AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(density), marker);
+		load.Assemble();
+
+		mfem::Vector b(load);
+		projector->Project(b);
+		return b;
+	}
+
 	double RegularizationWeight() const {
 		mfem::Vector lo, hi;
 		mesh.GetBoundingBox(lo, hi);
@@ -215,7 +307,7 @@ private:
 		return kRegularization * nu_min / (length * length);
 	}
 
-	void ImprintScenario() {
+	void ImprintScenario(const Scenario& scenario) {
 		*A = 0.0;
 		if (boundary_value) {
 			A->ProjectBdrCoefficientTangent(*boundary_value, ess_bdr);
@@ -225,6 +317,14 @@ private:
 			b->AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(*source));
 		}
 		b->Assemble();
+		if (source) { projector->Project(*b); }
+
+		int k = 0;
+		for (const auto& [name, term] : config.Terminals) {
+			const double current = ExcitationFor(scenario, name);
+			if (current != 0.0) { b->Add(current, coil_loads[k]); }
+			++k;
+		}
 	}
 
 	void SolveSystem() {
