@@ -123,6 +123,18 @@ protected:
 	// specific description of the same metal; conductive attributes no
 	// terminal or region claims report individually.
 	std::vector<RegionLoss> IntegrateRegionLosses(mfem::Coefficient& density) const {
+		std::vector<RegionLoss> losses;
+		for (const auto& [name, attrs] : ConductingGroups()) {
+			losses.push_back({ name, IntegrateOverAttributes(density, attrs) });
+		}
+		return losses;
+	}
+
+	// The conducting attributes (field-solve sigma > 0), grouped by the name
+	// they report under: a massive terminal, else a region, else
+	// "attribute N". See IntegrateRegionLosses for why each attribute has
+	// exactly one owner.
+	std::map<std::string, std::set<int>> ConductingGroups() const {
 		std::map<int, std::string> owner;
 		for (const Region& region : config.Regions) {
 			const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
@@ -141,12 +153,7 @@ protected:
 			groups[named != owner.end() ? named->second
 									   : "attribute " + std::to_string(attr)].insert(attr);
 		}
-
-		std::vector<RegionLoss> losses;
-		for (const auto& [name, attrs] : groups) {
-			losses.push_back({ name, IntegrateOverAttributes(density, attrs) });
-		}
-		return losses;
+		return groups;
 	}
 
 	// Print per-region and total dissipation.

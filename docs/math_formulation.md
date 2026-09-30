@@ -260,7 +260,9 @@ because in 3D the potential is a full vector field:
 `A`, and therefore the normal component of `B`, is continuous across every face.
 Boundary conditions are homogeneous only: `dirichlet` 0 means `n × A = 0` (flux
 tangent: `B·n = 0`), and `neumann` 0 or no entry means the natural `n × H = 0`
-(flux normal).
+(flux normal). In an eddy-current solve an `n × A = 0` wall also acts as a
+perfect electrical contact for any conductor touching it (see the 3D
+magnetoquasistatic form).
 
 The curl-curl operator is singular: it annihilates every gradient.
 
@@ -470,15 +472,28 @@ at 50 Hz by 68%), and confining it to the nonconducting regions does not help,
 since the surface term remains. MQS therefore uses
 `β = 10⁻⁶ min(ν_min/L², ω_min σ_min)` over all scenario frequencies and
 conducting regions, which keeps `β/(ωσ) ≤ 10⁻⁶`, floored at `10⁻⁶` of the
-static weight to stay above round-off (with a warning if the floor binds). `direct` factors the packed
-real form once per frequency (sparse LU); `iterative` is GMRES with the
+static weight to stay above round-off (with a warning if the floor binds).
+
+`direct` factors the packed real form once per frequency (sparse LU); `iterative` is GMRES with the
 block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
 exact inverse of the port corner.
 
 Coupling rows: a massive terminal's `Z = V/I` from its solved voltage, a
 stranded terminal's `Z = jω λ` with `λ = b'·A`; `R = Re Z`, `L = Im Z / ω`.
-The loss density is `½σ|V w − jωA|²`, which for a port satisfies
-`∫ loss = ½ Re(V I*)` exactly for the discrete solution.
+The loss density is `½σ|V w − jωA|²`. For the discrete solution the total loss
+equals the real input power `½ Re(Σ_k V_k I_k*)` (with `V_k = jωλ_k` for a
+stranded terminal) by the Galerkin energy identity, but only as exactly as the
+quadratures agree: `G`, the port columns `c` and the loss integral use their own
+rules, which are exact on affine elements and approximate on curved ones, so on
+a curved mesh the balance holds to quadrature error. Stranded regions do not
+conduct in the field solve, so they add nothing to either side.
+
+**Conductors touching an `n × A = 0` wall.** `n × A = 0` makes the tangential
+`E = −jωA` vanish on the wall, so the wall behaves like a perfect electrical
+contact: eddy current may flow from a conductor into it and return elsewhere
+through it. That is right on a symmetry plane that current crosses normally,
+but on an outer box it shorts the conductor's surface to the box. MQS warns
+when a conductor touches such a wall outside its own electrodes.
 
 ## Finite Element Discretization
 

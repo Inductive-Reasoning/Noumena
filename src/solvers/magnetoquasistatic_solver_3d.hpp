@@ -6,7 +6,9 @@
 #include <complex>
 #include <iomanip>
 #include <limits>
+#include <algorithm>
 #include <map>
+#include <set>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -123,6 +125,7 @@ public:
 		}
 		ActivateFrequency(config.Scenarios.front().second.Frequency);
 		InitializeVectorPotential();
+		WarnOnConductorsTouchingContacts();
 		BuildOperators();
 		ValidateVectorPotentialBoundaries();
 	}
@@ -336,6 +339,44 @@ private:
 		frequency = f;
 		omega = Constants::TWO_PI * f;
 		if (port_operator) { port_operator->SetOmega(omega); }
+	}
+
+	// n x A = 0 forces the tangential E = -j omega A to zero on the wall, so
+	// the wall is a perfect electrical contact: a conductor touching it can
+	// pass eddy current into it and back out elsewhere. Right on a symmetry
+	// plane that current crosses normally; on an outer box it shorts the
+	// conductor's surface to the box. The electrodes of a terminal are meant
+	// to touch such a wall and are not reported.
+	void WarnOnConductorsTouchingContacts() const {
+		std::set<int> electrodes;
+		for (const auto& [name, term] : config.Terminals) {
+			const CurrentDirection& d = *term.Direction;
+			if (d.Type != CurrentDirection::Kind::Electrodes) continue;
+			for (const std::string& group : { d.Input, d.Output }) {
+				const auto& ids = config.EntityGroups.at(group).AttributeIds;
+				electrodes.insert(ids.begin(), ids.end());
+			}
+		}
+		std::set<int> touching;
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			const int a = mesh.GetBdrAttribute(be);
+			if (a < 1 || a > ess_bdr.Size() || !ess_bdr[a - 1] || electrodes.count(a)) continue;
+			int e1, e2;
+			mesh.GetFaceElements(mesh.GetBdrElementFaceIndex(be), &e1, &e2);
+			for (int e : { e1, e2 }) {
+				if (e >= 0 && (*sigma_coeff)(mesh.GetAttribute(e)) > 0.0) {
+					touching.insert(mesh.GetAttribute(e));
+				}
+			}
+		}
+		for (const auto& [name, attrs] : ConductingGroups()) {
+			if (std::none_of(attrs.begin(), attrs.end(),
+					[&](int a) { return touching.count(a) != 0; })) continue;
+			Reporter().Warning("Conductor '" + name + "' touches an n x A = 0 "
+				"('dirichlet') boundary, which acts as a perfect electrical contact: "
+				"eddy current can flow between it and the boundary. Intended on a "
+				"symmetry plane; otherwise keep the conductor off the boundary.");
+		}
 	}
 
 	// beta scaled to the weakest conductor; see the class comment.

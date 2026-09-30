@@ -84,8 +84,11 @@ a 3D mesh. `planar` coupling quantities are per unit length (F/m, H/m); the
 `axisymmetric` and `3d` ones are absolute (F, H, Ohm). `3d` supports every
 physics type and every output format. 3D magnetics (magnetostatics and MQS)
 supports only homogeneous boundary conditions (`dirichlet` 0 for
-`n × A = 0`, `neumann` 0 or no entry for `n × H = 0`) and has no AMR. Its
-`iterative` solvers (preconditioned by hypre's AMS) need the MPI/HYPRE
+`n × A = 0`, `neumann` 0 or no entry for `n × H = 0`) and has no AMR. In 3D
+MQS an `n × A = 0` wall is also a perfect electrical contact: a conductor
+touching it can pass eddy current into the wall, so keep conductors off such
+walls unless the wall is a symmetry plane (a warning is printed when one
+touches). The 3D magnetic `iterative` solvers (preconditioned by hypre's AMS) need the MPI/HYPRE
 build; a serial build defaults 3D magnetics to `direct`, which is practical
 only for small meshes. Gmsh output supports
 tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.

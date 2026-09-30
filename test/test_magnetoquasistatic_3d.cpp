@@ -14,6 +14,8 @@
 #include <cmath>
 #include <complex>
 #include <filesystem>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -123,6 +125,19 @@ json MakeBarConfig(double sigma, const std::string& analysis) {
 		{"scenarios", json::array()}
 	};
 }
+
+// Redirects std::cerr (where the status reporter writes warnings) for its
+// lifetime.
+class CerrCapture {
+public:
+	CerrCapture() : previous(std::cerr.rdbuf(text.rdbuf())) {}
+	~CerrCapture() { std::cerr.rdbuf(previous); }
+	std::string Text() const { return text.str(); }
+
+private:
+	std::ostringstream text;
+	std::streambuf* previous;
+};
 
 mfem::Mesh MakeBarMesh(int n) {
 	mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::HEXAHEDRON);
@@ -262,6 +277,23 @@ TEST_CASE("3D MQS routing, exports and rejections", "[solvers][mqs][3d]") {
 		config["materials"][1]["properties"]["sigma"] = 0.0;
 		MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config));
 		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("non-positive conductivity"));
+	}
+
+	// n x A = 0 is a perfect electrical contact. The bar touches the walls
+	// only at its electrodes, which is intended; as a passive conductor with
+	// no terminal the same faces short it to the box.
+	SECTION("a conductor touching an n x A = 0 wall is reported") {
+		auto warnings = [&](const json& c) {
+			CerrCapture capture;
+			MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(c));
+			solver.Setup();
+			return capture.Text();
+		};
+		REQUIRE(warnings(config).find("perfect electrical contact") == std::string::npos);
+		json passive = config;
+		passive["terminals"] = json::array();
+		passive["scenarios"][0]["excitations"] = json::array();
+		REQUIRE_THAT(warnings(passive), ContainsSubstring("Conductor 'Bar' touches"));
 	}
 }
 
