@@ -426,6 +426,33 @@ TEST_CASE("The cut normal must cross the cut", "[solvers][magnetostatic][3d][con
 	REQUIRE_THROWS_WITH(solve({ 1.0, 0.5, 0.0 }), ContainsSubstring("must cross the cut"));
 }
 
+// A cut must sever its conductor. With the cut faces of the coil's outer
+// radial half moved to an unused attribute, the cut covers half the cross-
+// section and its rim runs through the conductor, so the jump would end
+// inside it.
+TEST_CASE("A cut must sever its conductor", "[solvers][magnetostatic][3d][conductor]") {
+	using Catch::Matchers::ContainsSubstring;
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	spec.cut = true;
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+	int moved = 0;
+	for (int be = 0; be < mesh.GetNBE(); ++be) {
+		if (mesh.GetBdrAttribute(be) != 2) continue;
+		mfem::Vector c;
+		mesh.GetBdrElementTransformation(be)->Transform(
+			mfem::Geometries.GetCenter(mesh.GetBdrElementGeometry(be)), c);
+		if (std::hypot(c(0), c(1)) > 0.05) {
+			mesh.SetBdrAttribute(be, 99);
+			++moved;
+		}
+	}
+	mesh.SetAttributes();
+	REQUIRE(moved > 0);
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(MakeAnnulusConfig(spec, true, 1)));
+	REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("does not span its conductor"));
+}
+
 // An imposed current must stay in its conductor. A correct azimuthal
 // direction crosses no face net -- on a faceted cylinder as well as a curved
 // one, since each flat face is crossed symmetrically in and out -- while the

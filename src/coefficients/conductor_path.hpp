@@ -47,7 +47,8 @@
  *                continuous everywhere except across the cut, where it jumps
  *                by 1. Which side of the cut an element lies on is read from
  *                the cut's normal, so the normal must cross every cut face
- *                clearly (ConductionPath::kMinCutCrossing).
+ *                clearly (ConductionPath::kMinCutCrossing), and the cut must
+ *                sever the conductor, its rim lying on the conductor surface.
  */
 class ConductorPath {
 public:
@@ -266,6 +267,7 @@ private:
 			"of part of the cut, beyond the 60 allowed: it must cross the cut, not run "
 			"along it. Give the direction the current crosses the cut in, and keep the "
 			"cut close to planar.");
+		RequireCutSpansConductor(mesh, inside, cut_faces);
 
 		mfem::DiffusionIntegrator diffusion(sigma);
 		mfem::DenseMatrix ke;
@@ -303,6 +305,37 @@ private:
 		}
 		MFEM_VERIFY(!lifted.empty(), "No element lies downstream of the cut; "
 			"check the cut normal.");
+	}
+
+	// A cut must sever the conductor: every edge on its rim (an edge of just
+	// one cut face) has to lie on the conductor's surface. A cut that stops
+	// short leaves its jump ending inside the conductor, where the potential
+	// has nowhere to recover it, putting a singular current around that rim.
+	static void RequireCutSpansConductor(mfem::Mesh& mesh, const std::vector<bool>& inside,
+										 const std::vector<int>& cut_faces) {
+		mfem::Array<int> edges, orientation;
+		std::map<int, int> cut_edge_count;
+		for (int f : cut_faces) {
+			mesh.GetFaceEdges(f, edges, orientation);
+			for (int e : edges) { ++cut_edge_count[e]; }
+		}
+		std::set<int> surface_edges;
+		for (int f = 0; f < mesh.GetNumFaces(); ++f) {
+			int e1, e2;
+			mesh.GetFaceElements(f, &e1, &e2);
+			const bool in1 = e1 >= 0 && inside[e1], in2 = e2 >= 0 && inside[e2];
+			if (in1 == in2) continue;
+			mesh.GetFaceEdges(f, edges, orientation);
+			surface_edges.insert(edges.begin(), edges.end());
+		}
+		int interior_rim = 0;
+		for (const auto& [edge, count] : cut_edge_count) {
+			if (count == 1 && !surface_edges.count(edge)) ++interior_rim;
+		}
+		MFEM_VERIFY(interior_rim == 0,
+			"The cut does not span its conductor's cross-section: " << interior_rim
+			<< " edges of its rim lie inside the conductor instead of on its surface. "
+			"The cut must sever the conductor completely.");
 	}
 
 	// Solve K v = rhs for the DOFs not in @p fixed, which keep their values

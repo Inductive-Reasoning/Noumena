@@ -323,7 +323,8 @@ geometry). It says where the conductor's current flows:
   (a misplaced `origin` or `axis`, or a shape that is not revolved) is
   rejected.
 - `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
-  internal faces that crosses the conductor once, and the current crosses it
+  internal faces that crosses the conductor once and severs it completely
+  (its rim must lie on the conductor surface), and the current crosses it
   along `normal`. `normal` must cross every face of the cut within 60° of
   that face's own normal, so the cut should be close to planar; a normal
   that runs along the cut is rejected.
