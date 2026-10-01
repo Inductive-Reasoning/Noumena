@@ -12,7 +12,7 @@
 #include <amgcl/amg.hpp>
 #include <amgcl/backend/builtin.hpp>
 #include <amgcl/coarsening/smoothed_aggregation.hpp>
-#include <amgcl/relaxation/spai0.hpp>
+#include <amgcl/relaxation/chebyshev.hpp>
 #include <amgcl/util.hpp>
 
 #include "mfem.hpp"
@@ -25,16 +25,27 @@
  * Cholesky) only damps the highest-frequency error, so the CG iteration count
  * grows with mesh refinement; in 3D that growth, not the per-iteration cost,
  * dominates. One multigrid V-cycle reduces error at every scale, so the
- * iteration count stays roughly constant as the mesh is refined. Measured on a
- * 3D P2 Laplacian: 18-22 iterations from 36k to 531k unknowns, against 92-201
- * for Gauss-Seidel PCG, and 6x faster at 531k even including the AMG setup.
+ * iteration count grows slowly, if at all, as the mesh is refined. Measured on
+ * a 3D Laplacian in the unit cube (CG to 1e-10): order-3 tetrahedra, 13-14
+ * iterations from 16k to 389k unknowns; order-2 hexahedra, 23-63 from 36k to
+ * 913k. Gauss-Seidel PCG took 92-201 iterations on a P2 problem of 36k-531k
+ * and was 6x slower at the top, even including the AMG setup.
  *
  * Why AMGCL: header-only, MIT-licensed, and threaded with OpenMP rather than
  * MPI (HYPRE's BoomerAMG requires an MPI build of MFEM).
  *
- * Configuration: smoothed-aggregation coarsening with SPAI(0) relaxation, the
- * robust default for scalar elliptic operators such as the (axisymmetric or
- * Cartesian) diffusion operators assembled here. It is NOT suitable for the
+ * Configuration: smoothed-aggregation coarsening with Chebyshev relaxation
+ * (degree 5), for scalar elliptic operators such as the (axisymmetric or
+ * Cartesian) diffusion operators assembled here.
+ *
+ * Why Chebyshev: a pointwise smoother with a fixed weight -- SPAI(0), damped
+ * Jacobi -- is stable only while the weight is below 2 / rho(D^-1 A).
+ * Higher-order Lagrange stiffness matrices push rho(D^-1 A) past that: at
+ * order 3 on tetrahedra (even a uniform cube) the V-cycle stopped being
+ * positive definite and CG broke down within four iterations, under every
+ * coarsening tried. Chebyshev sizes itself from an estimate of the spectrum,
+ * so it stays stable at any order. Measured: the same iteration count as
+ * SPAI(0) at order 2 (or fewer), at 1.0-1.6x the time per solve. It is NOT suitable for the
  * 3D H(curl) curl-curl operator, whose gradient null space defeats nodal AMG;
  * that needs an auxiliary-space (AMS-type) preconditioner instead.
  *
@@ -45,7 +56,7 @@
 class AmgPreconditioner : public mfem::Solver {
 	using Backend = amgcl::backend::builtin<double>;
 	using Amg = amgcl::amg<Backend, amgcl::coarsening::smoothed_aggregation,
-						   amgcl::relaxation::spai0>;
+						   amgcl::relaxation::chebyshev>;
 
 public:
 	explicit AmgPreconditioner(const mfem::SparseMatrix& A)

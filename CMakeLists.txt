@@ -276,6 +276,7 @@ if(BUILD_TESTING)
         test/test_gmsh_msh_format.cpp
         test/test_hdf5.cpp
         test/test_input_parser.cpp
+        test/test_electrostatic_3d.cpp
         test/test_magnetostatic_3d.cpp
         test/test_magnetoquasistatic_3d.cpp
         test/test_mqs_port_operator.cpp
@@ -295,6 +296,9 @@ if(BUILD_TESTING)
         target_link_libraries(mfem_tests PRIVATE OpenMP::OpenMP_CXX)
     endif()
     target_include_directories(mfem_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    # Committed test inputs (meshes and the Gmsh scripts that generate them).
+    target_compile_definitions(mfem_tests PRIVATE
+        MFEM_ELECTROMAG_TEST_DATA="${CMAKE_SOURCE_DIR}/test/data")
 
     # Same COFF section limit as mfem-electromag: the solver test translation
     # units instantiate the full solver/writer stack.

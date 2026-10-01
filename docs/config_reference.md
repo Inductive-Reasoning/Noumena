@@ -102,9 +102,11 @@ faster in 3D (a P2 Laplacian took 346 s and 1.5 GB at 118k unknowns), and a
 warning is printed before a 3D direct factorization above 50k unknowns.
 
 `iterative` means, for electrostatics and magnetostatics, conjugate gradients
-preconditioned by algebraic multigrid (AMGCL, smoothed aggregation, threaded
-with OpenMP; set `OMP_NUM_THREADS` to control it). Its iteration count stays
-roughly constant as the mesh is refined (about 20-30), and the multigrid
+preconditioned by algebraic multigrid (AMGCL: smoothed aggregation with
+Chebyshev smoothing, which stays stable at every element order; threaded with
+OpenMP, set `OMP_NUM_THREADS` to control it). Its iteration count grows slowly,
+if at all, as the mesh is refined (13-14 for order-3 tetrahedra up to 389k
+unknowns, 23-63 for order-2 hexahedra up to 913k), and the multigrid
 hierarchy is built once per mesh and reused for every scenario. The MQS solver
 uses unpreconditioned GMRES. 3D magnetostatics uses CG preconditioned by
 hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
