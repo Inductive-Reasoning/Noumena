@@ -180,22 +180,28 @@ protected:
 	/// The divergence-free load of 1 A through @p c: J = w / (|w| A_cs)
 	/// stranded, the DC distribution sigma w / G massive.
 	///
-	/// A well-posed current is divergence-free in the continuum and has no
-	/// normal component on its conductor's surface (except at electrodes),
-	/// so the projection removes only discretization-level imbalance from
-	/// it. A sizable removal means the current as given does not balance in
-	/// its conductor, and the projection supplies the difference through the
-	/// surroundings instead. That happens with an azimuthal direction about
+	/// The load is projected within the conductor
+	/// (DivergenceFreeProjector::ProjectWithin), so the result is the nearest
+	/// divergence-free current that stays inside it. A well-posed current is
+	/// divergence-free in the continuum and has no normal component on its
+	/// conductor's surface (except at electrodes), so the projection removes
+	/// only discretization-level imbalance from it. A sizable removal means
+	/// the current as given does not balance in its conductor and the
+	/// projection has redistributed it, which is reported. That happens with an azimuthal direction about
 	/// the wrong axis, or on a conductor that is not a body of revolution
 	/// about it (including, to a few percent, a coarsely faceted round one),
 	/// and with a stranded current -- uniform along its path -- in a
 	/// conductor whose cross-section varies along it or that has a dead-end
 	/// branch. It is reported as the fraction |grad psi| / |J| of the
 	/// current's L2 norm that was removed.
+	///
+	/// Projecting within the conductor keeps the current: the removed
+	/// gradient carries none along the path, since integral grad(psi) . w = 0
+	/// for the harmonic path w (no lateral flux, psi = 0 at electrodes).
 	mfem::Vector ProjectedUnitCurrentLoad(const TerminalConductor& c) {
 		const double scale = 1.0 / c.PathIntegral;
 		mfem::Vector load = AssembleConductorLoad(c, scale);
-		const double removed = projector->Project(load);
+		const double removed = projector->ProjectWithin(load, c.Marker);
 		ConductorCurrentCoefficient J(*c.Path, ConductivityOf(c), scale);
 		const double fraction = std::sqrt(std::max(removed, 0.0) /
 			ConductorCurrentNormSquared(mesh, c.Marker, J, config.Order));
@@ -207,7 +213,7 @@ protected:
 			return load;
 		}
 		msg << ", so the current as given does not stay balanced in its conductor and "
-			"part of it is carried by the surroundings instead. ";
+			"has been redistributed within it. ";
 		if (c.Direction == CurrentDirection::Kind::Azimuthal) {
 			msg << "An 'azimuthal' direction fits only a conductor that is a body of "
 				"revolution about 'origin' and 'axis': check both, refine a coarsely "

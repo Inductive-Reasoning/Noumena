@@ -4,9 +4,12 @@
 #pragma once
 
 #include <memory>
+#include <set>
+#include <vector>
 
 #include "mfem.hpp"
 #include "../linalg/amg_preconditioner.hpp"
+#include "../linalg/subset_solve.hpp"
 
 /**
  * @brief Removes the gradient part of a Nedelec load vector, making the source
@@ -31,6 +34,9 @@
  *
  * The H1 system is solved by multigrid-preconditioned CG to a tight
  * tolerance; the hierarchy is built once per mesh and reused for every load.
+ *
+ * A conductor's load can instead be projected within the conductor
+ * (ProjectWithin), which keeps the correction current inside it.
  */
 class DivergenceFreeProjector {
 public:
@@ -45,7 +51,7 @@ public:
 	///                 psi vanishes there. With none, psi is fixed at one DOF
 	///                 to remove the constant from K's null space.
 	DivergenceFreeProjector(mfem::FiniteElementSpace& nd, const mfem::Array<int>& ess_bdr)
-		: h1_fec(nd.GetMaxElementOrder(), nd.GetMesh()->Dimension()),
+		: nd(nd), h1_fec(nd.GetMaxElementOrder(), nd.GetMesh()->Dimension()),
 		  h1(nd.GetMesh(), &h1_fec) {
 		mfem::DiscreteLinearOperator gradient(&h1, &nd);
 		gradient.AddDomainInterpolator(new mfem::GradientInterpolator);
@@ -64,6 +70,7 @@ public:
 
 		mfem::Array<int> marker(ess_bdr);
 		h1.GetEssentialTrueDofs(marker, fixed);
+		for (int i = 0; i < fixed.Size(); ++i) { essential.insert(fixed[i]); }
 		if (fixed.Size() == 0) { fixed.Append(0); }
 		for (int i = 0; i < fixed.Size(); ++i) {
 			K->EliminateRowCol(fixed[i], mfem::Operator::DIAG_ONE);
@@ -88,6 +95,86 @@ public:
 		M->Mult(grad_psi, correction);
 		b -= correction;
 		return psi * rhs;
+	}
+
+	/// Replace a conductor's load @p b by its divergence-free part within the
+	/// conductor (domain-attribute marker @p conductor), on which @p b must be
+	/// supported.
+	///
+	/// The same projection as Project(), with the Nedelec mass taken over the
+	/// conductor's elements only, M_c, and psi free on its DOFs except where
+	/// it touches an essential (n x A = 0) boundary:
+	///     (G^T M_c G) psi = G^T b,     b' = b - M_c G psi.
+	/// The correction -grad psi then lives in the conductor and the projected
+	/// current has no normal component on its surface (psi is free there: the
+	/// natural condition), so it stays inside instead of being made up through
+	/// the surroundings. G^T b' = 0 still holds for every gradient of the mesh:
+	/// b' is supported on the conductor's elements, so it sees a global
+	/// gradient only through the conductor's own DOFs, which the local problem
+	/// balances. A conductor part that touches no essential boundary has psi
+	/// fixed at one DOF, removing the constant.
+	///
+	/// @return The squared L2 norm of what was removed, as for Project().
+	double ProjectWithin(mfem::Vector& b, const mfem::Array<int>& conductor) const {
+		mfem::Mesh& mesh = *nd.GetMesh();
+		mfem::ConstantCoefficient one(1.0);
+		mfem::Array<int> marker(conductor);
+		mfem::BilinearForm mass(&nd);
+		mass.AddDomainIntegrator(new mfem::VectorFEMassIntegrator(one), marker);
+		mass.Assemble();
+		mass.Finalize();
+		const mfem::SparseMatrix& M_c = mass.SpMat();
+		std::unique_ptr<mfem::SparseMatrix> K_c(mfem::RAP(*G, M_c, *G));
+
+		// The conductor's H1 DOFs, grouped into connected parts.
+		std::vector<int> part(h1.GetVSize(), -1);
+		int parts = 0;
+		mfem::Array<int> dofs;
+		std::vector<std::vector<int>> dof_elements(h1.GetVSize());
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			const int a = mesh.GetAttribute(e);
+			if (a < 1 || a > conductor.Size() || !conductor[a - 1]) continue;
+			h1.GetElementDofs(e, dofs);
+			for (int d : dofs) { dof_elements[d].push_back(e); }
+		}
+		std::vector<int> free;
+		for (int start = 0; start < h1.GetVSize(); ++start) {
+			if (dof_elements[start].empty() || part[start] >= 0) continue;
+			std::vector<int> stack{ start }, members;
+			part[start] = parts;
+			bool grounded = false;
+			while (!stack.empty()) {
+				const int d = stack.back();
+				stack.pop_back();
+				members.push_back(d);
+				grounded |= essential.count(d) != 0;
+				for (int e : dof_elements[d]) {
+					h1.GetElementDofs(e, dofs);
+					for (int n : dofs) {
+						if (part[n] < 0) { part[n] = parts; stack.push_back(n); }
+					}
+				}
+			}
+			for (size_t m = 0; m < members.size(); ++m) {
+				const int d = members[m];
+				if (essential.count(d) || (!grounded && m == 0)) continue;
+				free.push_back(d);
+			}
+			++parts;
+		}
+
+		mfem::Vector rhs(G->Width()), psi(G->Width());
+		G->MultTranspose(b, rhs);
+		psi = 0.0;
+		SolveOnSubset(*K_c, rhs, free, psi, kTolerance, "The divergence-free projection");
+
+		mfem::Vector grad_psi(G->Height()), correction(M_c.Height());
+		G->Mult(psi, grad_psi);
+		M_c.Mult(grad_psi, correction);
+		b -= correction;
+		double removed = 0.0;
+		for (int d : free) { removed += psi(d) * rhs(d); }
+		return removed;
 	}
 
 	/// Remove the gradient part of a solved potential @p A, leaving it
@@ -137,11 +224,13 @@ private:
 		return psi;
 	}
 
+	mfem::FiniteElementSpace& nd;
 	mfem::H1_FECollection h1_fec;
 	mfem::FiniteElementSpace h1;
 	std::unique_ptr<mfem::SparseMatrix> G;  // H1 -> Nedelec discrete gradient
 	std::unique_ptr<mfem::SparseMatrix> M;  // Nedelec mass
 	std::unique_ptr<mfem::SparseMatrix> K;  // G^T M G, constrained
 	mfem::Array<int> fixed;                 // H1 DOFs held at psi = 0
+	std::set<int> essential;                // H1 DOFs on the essential boundary
 	std::unique_ptr<AmgPreconditioner> amg;
 };

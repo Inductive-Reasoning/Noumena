@@ -14,7 +14,7 @@
 #include "mfem.hpp"
 #include "../core/constants.hpp"
 #include "../core/problem_config.hpp"
-#include "../linalg/amg_preconditioner.hpp"
+#include "../linalg/subset_solve.hpp"
 
 /**
  * @brief Where current flows in a 3D conductor.
@@ -414,40 +414,14 @@ private:
 	}
 
 	// Solve K v = rhs for the DOFs not in @p fixed, which keep their values
-	// in v. Only the conductor's free DOFs enter the solve: pinning the (many)
-	// DOFs outside it as identity rows would leave them unconnected, which
-	// smoothed-aggregation AMG turns into empty aggregates.
+	// in v.
 	void SolveFree(const mfem::SparseMatrix& K, const mfem::Vector& rhs,
 				   const std::set<int>& fixed) {
-		std::vector<int> index(fes.GetVSize(), -1), free;
+		std::vector<int> free;
 		for (int i = 0; i < fes.GetVSize(); ++i) {
-			if (!fixed.count(i)) { index[i] = static_cast<int>(free.size()); free.push_back(i); }
+			if (!fixed.count(i)) free.push_back(i);
 		}
-		const int n = static_cast<int>(free.size());
-		mfem::SparseMatrix Kff(n, n);
-		mfem::Vector b(n), x(n);
-		for (int r = 0; r < n; ++r) {
-			const int row = free[r];
-			b(r) = rhs(row);
-			for (int p = K.GetI()[row]; p < K.GetI()[row + 1]; ++p) {
-				const int col = K.GetJ()[p];
-				const double a = K.GetData()[p];
-				if (index[col] >= 0) { Kff.Add(r, index[col], a); }
-				else { b(r) -= a * v(col); }  // lift the fixed values
-			}
-		}
-		Kff.Finalize();
-		AmgPreconditioner amg(Kff);
-		mfem::CGSolver cg;
-		cg.SetOperator(Kff);
-		cg.SetPreconditioner(amg);
-		cg.SetRelTol(1e-12);
-		cg.SetMaxIter(2000);
-		cg.SetPrintLevel(0);
-		x = 0.0;
-		cg.Mult(b, x);
-		MFEM_VERIFY(cg.GetConverged(), "The conduction potential did not converge.");
-		for (int r = 0; r < n; ++r) { v(free[r]) = x(r); }
+		SolveOnSubset(K, rhs, free, v, 1e-12, "The conduction potential");
 	}
 };
 

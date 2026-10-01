@@ -283,8 +283,15 @@ weighting for a massive conductor). A stranded conductor carries
 `∫ dV / (2πr)`, the meridional area); a massive one its DC distribution
 `J = σ w I / G` with `G = ∫σ|w|² dV` its conductance. Each unit-current
 load `b` is made discretely divergence-free before use: with `G` the discrete
-gradient from the matching H1 space and `M` the Nédélec mass matrix,
-`(GᵀMG) ψ = Gᵀ b` and `b' = b − M G ψ`, so `Gᵀ b' = 0`. The flux linkage of
+gradient from the matching H1 space and `M_c` the Nédélec mass matrix over the
+terminal's own conductor, `(GᵀM_cG) ψ = Gᵀ b` and `b' = b − M_c G ψ`, with `ψ`
+free on the conductor's DOFs except where it touches an `n × A = 0` wall. Then
+`Gᵀ b' = 0` for every gradient of the mesh (`b'` only sees a gradient through
+the conductor's DOFs), and the correction `−∇ψ` stays inside the conductor with
+no normal flux at its surface, so any imbalance is redistributed within it
+rather than made up by current in the surroundings. It carries no current
+along the path (`∫∇ψ·w = 0` for the harmonic path `w`). The fraction of the
+current density removed is reported when above 2%. The flux linkage of
 terminal `k` is `λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current
 density), and the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by
 construction.

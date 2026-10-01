@@ -23,6 +23,7 @@
 
 #include "annulus_fixture.hpp"
 #include "stderr_capture.hpp"
+#include "coefficients/conductor_path.hpp"
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
 #include "solvers/magnetostatic_solver_3d.hpp"
@@ -502,6 +503,59 @@ mfem::Mesh MakeBarMesh() {
 	return mesh;
 }
 } // namespace
+
+// Conductor loads are projected within their conductor, so whatever
+// imbalance the projection removes is made up inside it, not by current in
+// the air. An azimuthal direction about an axis 1 mm off the coil's (below
+// the warning threshold) leaves an imbalance of about 1%: the projected load
+// must stay on the coil's own DOFs and still be orthogonal to every gradient
+// of the mesh, while the global projection of the same load spreads into the
+// air.
+TEST_CASE("Conductor loads are projected within their conductor",
+		  "[solvers][magnetostatic][3d][conductor]") {
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+	json config = MakeAnnulusConfig(spec, true, 1, "magnetostatics", "field");
+	config["terminals"][0]["direction"]["origin"] = { 0.001, 0.0, 0.0 };
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+	solver.Setup();
+	const mfem::Vector& load = solver.TerminalLoads()[0];
+
+	// Nedelec DOFs of the coil's elements (same space, same numbering).
+	mfem::FiniteElementSpace nd(&mesh, solver.GetSolution().FESpace()->FEColl());
+	std::vector<bool> in_coil(nd.GetVSize(), false);
+	mfem::Array<int> dofs;
+	for (int e = 0; e < mesh.GetNE(); ++e) {
+		if (mesh.GetAttribute(e) != 2) continue;
+		nd.GetElementDofs(e, dofs);
+		for (int d : dofs) { in_coil[d >= 0 ? d : -1 - d] = true; }
+	}
+	auto outside = [&](const mfem::Vector& b) {
+		double norm = 0.0;
+		for (int i = 0; i < b.Size(); ++i) { if (!in_coil[i]) norm += b(i) * b(i); }
+		return std::sqrt(norm);
+	};
+
+	REQUIRE(outside(load) == 0.0);
+	REQUIRE(solver.Projector().GradientResidual(load) < 1e-9 * load.Norml2());
+
+	// The same raw load projected globally leaks into the air.
+	CurrentDirection d;
+	d.Origin = { 0.001, 0.0, 0.0 };
+	AzimuthalPath path(d);
+	mfem::Array<int> coil(mesh.attributes.Max());
+	coil = 0;
+	coil[1] = 1;
+	ConductorCurrentCoefficient J(path, nullptr, 1.0 / ConductorPathIntegral(mesh, coil, path, nullptr, 1));
+	mfem::LinearForm raw(&nd);
+	raw.AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(J), coil);
+	raw.Assemble();
+	mfem::Vector global(raw);
+	solver.Projector().Project(global);
+	INFO("global projection outside the coil " << outside(global) << " of " << global.Norml2());
+	REQUIRE(outside(global) > 1e-3 * global.Norml2());
+}
 
 // A current that does not balance in its conductor is reported, as the part
 // of it the divergence-free projection has to remove. Correct directions
