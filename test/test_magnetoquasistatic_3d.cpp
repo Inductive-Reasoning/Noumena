@@ -8,6 +8,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
@@ -72,9 +73,14 @@ ImpedanceSweep AxisymmetricImpedance(const AnnulusSpec& spec, const std::vector<
 	return SolveImpedance(solver, "mqs_axi.h5");
 }
 
+// 16 cells around the full ring, as many per radian in a sector.
+int CellsAround(const AnnulusSpec& spec) {
+	return static_cast<int>(std::lround(16 * spec.extent / Constants::TWO_PI));
+}
+
 ImpedanceSweep Impedance3D(const AnnulusSpec& spec, const std::vector<double>& f,
 						   const std::string& linear_solver = "direct") {
-	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+	mfem::Mesh mesh = MakeAnnulus3D(spec, CellsAround(spec));
 	json config = MakeAnnulusConfig(spec, true, 2, "magnetoquasistatics");
 	config["scenarios"] = FrequencyScenarios(f);
 	config["simulation"]["linear_solver"] = linear_solver;
@@ -94,6 +100,29 @@ AnnulusSpec EddyCurrentAnnulus() {
 		{ 0.05, 0.08, 0.06, 0.08, ConductorRole::Stranded },
 		{ 0.08, 0.09, 0.02, 0.08, ConductorRole::Passive } };
 	return spec;
+}
+
+// How a test describes the annulus's terminals in 3D.
+enum class Path { Azimuthal, Cut, SectorAzimuthal, SectorElectrodes };
+
+std::string Describe(Path path) {
+	switch (path) {
+	case Path::Azimuthal: return "azimuthal ring";
+	case Path::Cut: return "ring through a cut";
+	case Path::SectorAzimuthal: return "azimuthal quarter sector";
+	case Path::SectorElectrodes: return "quarter sector between electrodes";
+	}
+	return {};
+}
+
+// @p spec with its terminals described by @p path; returns the fraction of
+// the ring the 3D model spans.
+double Apply(Path path, AnnulusSpec& spec) {
+	spec.cut = path == Path::Cut;
+	spec.electrodes = path == Path::SectorElectrodes;
+	const bool sector = path == Path::SectorAzimuthal || path == Path::SectorElectrodes;
+	spec.extent = sector ? 0.25 * Constants::TWO_PI : Constants::TWO_PI;
+	return spec.extent / Constants::TWO_PI;
 }
 
 // Unit cube with a square bar (attribute 2, 0.25 < x, y < 0.75, sigma) from
@@ -145,13 +174,29 @@ mfem::Mesh MakeBarMesh(int n) {
 // (see AnnulusSpec), eddy currents included: the massive port's DC path is
 // azimuthal, so its drive field V w = V phi-hat / (2 pi r) is the 2D solver's
 // V / (2 pi r), and the passive shield's induced current is azimuthal too.
-// The coupling matrices must agree up to discretization.
+// The coupling matrices must agree up to discretization, for the full ring
+// and for a quarter sector bounded by n x A = 0 meridian planes, its paths
+// described analytically or between electrodes on those planes (then solved
+// on each conductor, the massive ring's with its own conductivity). A sector's
+// matrices are the ring's times its fraction of the full turn. (A cut path
+// is checked in the DC limit below: a massive path does not depend on
+// frequency, and the full ring is the expensive model.)
 TEST_CASE("3D MQS impedances match the axisymmetric solver",
-		  "[solvers][mqs][3d][coupling]") {
-	const AnnulusSpec spec = EddyCurrentAnnulus();
+		  "[solvers][mqs][3d][coupling][conductor]") {
+	const Path path = GENERATE(Path::Azimuthal, Path::SectorAzimuthal, Path::SectorElectrodes);
+	INFO(Describe(path));
+	AnnulusSpec spec = EddyCurrentAnnulus();
+	const double fraction = Apply(path, spec);
 	const std::vector<double> f = { 200.0, 2000.0 };
 	const ImpedanceSweep axi = AxisymmetricImpedance(spec, f);
-	const ImpedanceSweep z3d = Impedance3D(spec, f);
+	ImpedanceSweep z3d = Impedance3D(spec, f);
+	for (auto* matrices : { &z3d.R, &z3d.L }) {
+		for (Matrix& m : *matrices) {
+			for (auto& row : m) {
+				for (double& x : row) { x /= fraction; }
+			}
+		}
+	}
 
 	for (size_t p = 0; p < f.size(); ++p) {
 		for (int i = 0; i < 2; ++i) {
@@ -174,15 +219,21 @@ TEST_CASE("3D MQS impedances match the axisymmetric solver",
 
 // At low frequency the ring is a DC resistor, R = 1/G with the closed-form
 // conductance G = sigma h ln(r1/r0) / (2 pi) of an annular ring, and its
-// inductance is 3D magnetostatics' for the same DC current distribution.
-TEST_CASE("3D MQS approaches the DC limit", "[solvers][mqs][3d][coupling]") {
+// inductance is 3D magnetostatics' for the same DC current distribution --
+// for the analytic path and for the one solved through a cut, whose
+// discretization error leaves G a few parts in 1e5 off.
+TEST_CASE("3D MQS approaches the DC limit", "[solvers][mqs][3d][coupling][conductor]") {
+	const Path path = GENERATE(Path::Azimuthal, Path::Cut);
+	INFO(Describe(path));
 	AnnulusSpec spec;
 	spec.sigma = 1e6;
 	spec.conductors = { { 0.04, 0.06, 0.02, 0.04, ConductorRole::Massive } };
+	Apply(path, spec);
 	const ImpedanceSweep z = Impedance3D(spec, { 1e-3 });
 
 	const double G = spec.sigma * 0.02 * std::log(0.06 / 0.04) / Constants::TWO_PI;
-	REQUIRE(z.R[0][0][0] == Catch::Approx(1.0 / G).epsilon(1e-6));
+	const double tolerance = path == Path::Cut ? 1e-4 : 1e-6;
+	REQUIRE(z.R[0][0][0] == Catch::Approx(1.0 / G).epsilon(tolerance));
 
 	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
 	MagnetostaticSolver3D statics(mesh, DecodeConfig(MakeAnnulusConfig(spec, true, 2), "dc.h5"));

@@ -50,7 +50,21 @@ struct AnnulusSpec {
 	// of each conductor's cut sits one cell around (theta = 2 pi / n_theta),
 	// joined to the inner half by the constant-r faces between them.
 	bool staircase_cut = false;
+	// Angle the mesh spans about z. A sector (extent < 2 pi) is closed by the
+	// meridian planes theta = 0 (boundary attribute kStartPlane) and theta =
+	// extent (kEndPlane), n x A = 0 walls like the rest: for azimuthal fields
+	// that is exact, and every inductance and resistance is the full ring's
+	// times extent / (2 pi).
+	double extent = Constants::TWO_PI;
+	// Describe the terminals of a sector by electrodes on its two meridian
+	// planes (current from theta = 0 towards theta = extent) instead of
+	// analytically.
+	bool electrodes = false;
+
+	bool Sector() const { return extent < Constants::TWO_PI; }
 };
+
+constexpr int kStartPlane = 10, kEndPlane = 11;  // above every conductor's cut attribute
 
 inline int CellAttribute(const AnnulusSpec& spec, double r, double z) {
 	for (size_t c = 0; c < spec.conductors.size(); ++c) {
@@ -76,11 +90,15 @@ inline mfem::Mesh MakeAnnulus2D(const AnnulusSpec& spec, int refine) {
 // The same lattice revolved about z with n_theta cells around, as curved
 // (order-2 geometry) hexahedra whose nodes are snapped radially onto their
 // lattice circle, or with @p curved false as straight-sided hexahedra (a
-// faceted cylinder). Boundary attribute 1 on every wall.
+// faceted cylinder). Boundary attribute 1 on every wall but a sector's
+// meridian planes. n_theta is the number of cells across spec.extent.
 inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curved = true) {
+	REQUIRE(!(spec.cut && spec.Sector()));
+	REQUIRE(!(spec.electrodes && !spec.Sector()));
 	const int nr = spec.nr, nz = spec.nz;
 	const double dr = (spec.r_out - spec.r_in) / nr, dz = spec.height / nz;
-	auto id = [&](int i, int j, int k) { return (k * (nr + 1) + i) * n_theta + (j % n_theta); };
+	const int n_around = spec.Sector() ? n_theta + 1 : n_theta;  // vertices per circle
+	auto id = [&](int i, int j, int k) { return (k * (nr + 1) + i) * n_around + (j % n_around); };
 
 	// Cut quads of each conductor cell row (k): the cells i of conductor
 	// attribute a, and for a staircase the radial index where it steps.
@@ -102,12 +120,13 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curve
 			if (spec.staircase_cut && i == step_of(i, k) && attr_of(i - 1, k) == attr_of(i, k)) ++n_cut;
 		}
 	}
-	mfem::Mesh mesh(3, (nr + 1) * (nz + 1) * n_theta, nr * nz * n_theta,
-					2 * n_theta * (nr + nz) + n_cut, 3);
+	const int n_planes = spec.Sector() ? 2 * nr * nz : 0;
+	mfem::Mesh mesh(3, (nr + 1) * (nz + 1) * n_around, nr * nz * n_theta,
+					2 * n_theta * (nr + nz) + n_cut + n_planes, 3);
 	for (int k = 0; k <= nz; ++k) {
 		for (int i = 0; i <= nr; ++i) {
-			for (int j = 0; j < n_theta; ++j) {
-				const double r = spec.r_in + i * dr, t = Constants::TWO_PI * j / n_theta;
+			for (int j = 0; j < n_around; ++j) {
+				const double r = spec.r_in + i * dr, t = spec.extent * j / n_theta;
 				mesh.AddVertex(r * std::cos(t), r * std::sin(t), k * dz);
 			}
 		}
@@ -138,6 +157,14 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curve
 			}
 		}
 	}
+	for (int k = 0; spec.Sector() && k < nz; ++k) {
+		for (int i = 0; i < nr; ++i) {
+			for (int j : { 0, n_theta }) {
+				const int q[4] = { id(i, j, k), id(i + 1, j, k), id(i + 1, j, k + 1), id(i, j, k + 1) };
+				mesh.AddBdrQuad(q, j == 0 ? kStartPlane : kEndPlane);
+			}
+		}
+	}
 	for (int k = 0; spec.cut && k < nz; ++k) {
 		for (int i = 0; i < nr; ++i) {
 			const int attr = attr_of(i, k);
@@ -157,7 +184,7 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curve
 	// The radial snap below is unambiguous only while the chord sag of an
 	// angular edge stays under a quarter of the radial spacing; beyond that a
 	// node can snap to the wrong circle and fold its element.
-	const double sag = spec.r_out * (1.0 - std::cos(0.5 * Constants::TWO_PI / n_theta));
+	const double sag = spec.r_out * (1.0 - std::cos(0.5 * spec.extent / n_theta));
 	REQUIRE(sag < 0.25 * dr);
 
 	mesh.SetCurvature(2);
@@ -174,7 +201,8 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curve
 
 // Config for the annulus in either model. Conductor c is entity group
 // "C<c+1>"; the Stranded and Massive ones are current terminals of that name,
-// azimuthal (or through cut "Cut<c+1>") in 3D. Stranded conductors are air;
+// azimuthal (or through cut "Cut<c+1>", or between the electrodes "Start"
+// and "End" on a sector's meridian planes) in 3D. Stranded conductors are air;
 // Massive and Passive ones conduct with spec.sigma.
 inline json MakeAnnulusConfig(const AnnulusSpec& spec, bool three_d, int order,
 							  const std::string& physics = "magnetostatics",
@@ -183,8 +211,14 @@ inline json MakeAnnulusConfig(const AnnulusSpec& spec, bool three_d, int order,
 	json regions = json::array();
 	json terminals = json::array();
 	std::vector<int> air = { 1 };
-	groups.push_back({{"name", "Walls"}, {"dim", three_d ? 2 : 1},
-					  {"attribute_ids", three_d ? std::vector<int>{1} : std::vector<int>{1, 2, 3, 4}}});
+	std::vector<int> walls = three_d ? std::vector<int>{1} : std::vector<int>{1, 2, 3, 4};
+	if (three_d && spec.Sector()) {
+		walls.push_back(kStartPlane);
+		walls.push_back(kEndPlane);
+		groups.push_back({{"name", "Start"}, {"dim", 2}, {"attribute_ids", {kStartPlane}}});
+		groups.push_back({{"name", "End"}, {"dim", 2}, {"attribute_ids", {kEndPlane}}});
+	}
+	groups.push_back({{"name", "Walls"}, {"dim", three_d ? 2 : 1}, {"attribute_ids", walls}});
 	for (size_t c = 0; c < spec.conductors.size(); ++c) {
 		const ConductorRole role = spec.conductors[c].role;
 		const int attr = static_cast<int>(c) + 2;
@@ -203,6 +237,8 @@ inline json MakeAnnulusConfig(const AnnulusSpec& spec, bool three_d, int order,
 			const std::string cut = "Cut" + std::to_string(c + 1);
 			groups.push_back({{"name", cut}, {"dim", 2}, {"attribute_ids", {attr}}});
 			terminal["direction"] = {{"type", "cut"}, {"cut", cut}, {"normal", {0.0, 1.0, 0.0}}};
+		} else if (three_d && spec.electrodes) {
+			terminal["direction"] = {{"type", "electrodes"}, {"input", "Start"}, {"output", "End"}};
 		} else if (three_d) {
 			terminal["direction"] = {{"type", "azimuthal"}, {"origin", {0.0, 0.0, 0.0}},
 									 {"axis", {0.0, 0.0, 1.0}}};
