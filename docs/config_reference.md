@@ -321,11 +321,14 @@ geometry). It says where the conductor's current flows:
   conductor must not reach its own axis, and should be a body of
   revolution about it (see the balance check below).
 - `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
-  internal faces that crosses the conductor once and severs it completely
-  (its rim must lie on the conductor surface), and the current crosses it
-  along `normal`. `normal` must cross every face of the cut within 60° of
-  that face's own normal, so the cut should be close to planar; a normal
-  that runs along the cut is rejected.
+  internal faces forming a single surface that crosses the conductor once and
+  severs it completely (its rim must lie on the conductor surface). The cut
+  need not be planar: which side of it each element lies on follows from the
+  mesh's connectivity. Its faces may also extend beyond the conductor; only
+  those inside it count. `normal` says which way the current crosses the cut:
+  it must cross the cut squarely somewhere (within 60° of some face's normal)
+  and agree with the cut's orientation on balance, so a normal that runs
+  along the cut is rejected.
 - `electrodes`: an open conductor (a bus bar, a lead). Current enters through
   the `input` boundary group and leaves through `output`. Both must lie on a
   `dirichlet` (`n × A = 0`) boundary, the only place current can enter or

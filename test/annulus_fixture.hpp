@@ -46,6 +46,10 @@ struct AnnulusSpec {
 	// Describe terminal c by a cut (boundary attribute c + 2 on the theta = 0
 	// half-plane, current crossing it along +y) instead of analytically.
 	bool cut = false;
+	// Make that cut a staircase instead of a plane: the radially outer half
+	// of each conductor's cut sits one cell around (theta = 2 pi / n_theta),
+	// joined to the inner half by the constant-r faces between them.
+	bool staircase_cut = false;
 };
 
 inline int CellAttribute(const AnnulusSpec& spec, double r, double z) {
@@ -78,10 +82,24 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curve
 	const double dr = (spec.r_out - spec.r_in) / nr, dz = spec.height / nz;
 	auto id = [&](int i, int j, int k) { return (k * (nr + 1) + i) * n_theta + (j % n_theta); };
 
+	// Cut quads of each conductor cell row (k): the cells i of conductor
+	// attribute a, and for a staircase the radial index where it steps.
+	auto attr_of = [&](int i, int k) {
+		return CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz);
+	};
+	auto step_of = [&](int i, int k) {  // first cell of the row's outer half
+		const int a = attr_of(i, k);
+		int i0 = i, i1 = i;
+		while (i0 > 0 && attr_of(i0 - 1, k) == a) --i0;
+		while (i1 + 1 < nr && attr_of(i1 + 1, k) == a) ++i1;
+		return (i0 + i1 + 1) / 2 + (i1 == i0 ? 1 : 0);
+	};
 	int n_cut = 0;
 	for (int k = 0; spec.cut && k < nz; ++k) {
 		for (int i = 0; i < nr; ++i) {
-			n_cut += CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz) > 1;
+			if (attr_of(i, k) == 1) continue;
+			++n_cut;
+			if (spec.staircase_cut && i == step_of(i, k) && attr_of(i - 1, k) == attr_of(i, k)) ++n_cut;
 		}
 	}
 	mfem::Mesh mesh(3, (nr + 1) * (nz + 1) * n_theta, nr * nz * n_theta,
@@ -122,10 +140,15 @@ inline mfem::Mesh MakeAnnulus3D(const AnnulusSpec& spec, int n_theta, bool curve
 	}
 	for (int k = 0; spec.cut && k < nz; ++k) {
 		for (int i = 0; i < nr; ++i) {
-			const int attr = CellAttribute(spec, spec.r_in + (i + 0.5) * dr, (k + 0.5) * dz);
+			const int attr = attr_of(i, k);
 			if (attr == 1) continue;
-			const int q[4] = { id(i, 0, k), id(i + 1, 0, k), id(i + 1, 0, k + 1), id(i, 0, k + 1) };
+			const int j = spec.staircase_cut && i >= step_of(i, k) ? 1 : 0;
+			const int q[4] = { id(i, j, k), id(i + 1, j, k), id(i + 1, j, k + 1), id(i, j, k + 1) };
 			mesh.AddBdrQuad(q, attr);  // conductor c -> attribute c + 2
+			if (spec.staircase_cut && i == step_of(i, k) && attr_of(i - 1, k) == attr) {
+				const int riser[4] = { id(i, 0, k), id(i, 1, k), id(i, 1, k + 1), id(i, 0, k + 1) };
+				mesh.AddBdrQuad(riser, attr);
+			}
 		}
 	}
 	mesh.FinalizeHexMesh(1, 0, true);

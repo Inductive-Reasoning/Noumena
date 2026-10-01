@@ -426,6 +426,22 @@ TEST_CASE("The cut normal must cross the cut", "[solvers][magnetostatic][3d][con
 	REQUIRE_THROWS_WITH(solve({ 1.0, 0.5, 0.0 }), ContainsSubstring("must cross the cut"));
 }
 
+// Which side of a cut an element lies on is decided by connectivity, so a cut
+// need not be planar. A staircase cut -- the coil's outer radial half one cell
+// further around, joined to the inner half by constant-r faces, half of them
+// parallel to the normal -- describes the same circulation and gives the same
+// inductance as the planar cut.
+TEST_CASE("A staircase cut reproduces the planar cut", "[solvers][magnetostatic][3d][conductor]") {
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	spec.cut = true;
+	const double planar = Inductance3D(spec, 16, 2)[0][0];
+	spec.staircase_cut = true;
+	const double staircase = Inductance3D(spec, 16, 2)[0][0];
+	INFO("planar " << planar << ", staircase " << staircase);
+	REQUIRE(staircase == Catch::Approx(planar).epsilon(1e-6));
+}
+
 // A cut must sever its conductor. With the cut faces of the coil's outer
 // radial half moved to an unused attribute, the cut covers half the cross-
 // section and its rim runs through the conductor, so the jump would end

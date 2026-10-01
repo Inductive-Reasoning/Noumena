@@ -45,10 +45,11 @@
  *                cut on its downstream (+normal) side, H is the sum of the H1
  *                basis functions of the cut DOFs, and 0 elsewhere. H is
  *                continuous everywhere except across the cut, where it jumps
- *                by 1. Which side of the cut an element lies on is read from
- *                the cut's normal, so the normal must cross every cut face
- *                clearly (ConductionPath::kMinCutCrossing), and the cut must
- *                sever the conductor, its rim lying on the conductor surface.
+ *                by 1. Which side of the cut an element lies on follows from
+ *                the mesh's connectivity (ConductionPath::BuildCutLifting);
+ *                the normal only orients the cut. The cut must be a single
+ *                two-sided sheet that severs the conductor, its rim lying on
+ *                the conductor surface.
  */
 class ConductorPath {
 public:
@@ -120,18 +121,10 @@ private:
 /// element map) is needed.
 class ConductionPath : public ConductorPath {
 public:
-	/// Smallest |cos| allowed between the cut normal and any cut face's
-	/// normal (the angle between them at most 60 degrees).
-	///
-	/// The side of the cut an element lies on is the sign of its offset from
-	/// the nearest cut face along the normal, which is meaningful only where
-	/// the normal actually crosses that face: a normal tangent to part of the
-	/// cut classifies elements there arbitrarily, and a cut that folds back
-	/// on itself flips the side the normal calls "downstream". Either puts a
-	/// spurious unit jump inside the conductor. A connected cut can only fold
-	/// past 90 degrees by passing through faces nearly tangent to the normal,
-	/// so bounding the angle on every face rules out both, while allowing a
-	/// normal well off the cut's own (a tilted or gently curved cut).
+	/// Smallest |cos| between the cut normal and the normal of the cut face
+	/// it crosses most squarely. The normal only says which way the current
+	/// crosses the cut, so it must cross it clearly somewhere; which side of
+	/// the cut each element lies on is then found topologically.
 	static constexpr double kMinCutCrossing = 0.5;
 
 	/// @param conductor     Domain-attribute marker of the conductor.
@@ -234,43 +227,49 @@ private:
 
 	// The thick-cut lifting H and its load -integral(sigma grad H . grad w)
 	// over the downstream elements.
+	//
+	// H must be continuous across every face but the cut's, so the side of
+	// the cut each nearby element lies on is decided by connectivity, not
+	// geometry: over the conductor elements sharing a DOF with the cut,
+	// crossing an ordinary face keeps the side and crossing a cut face flips
+	// it. Around every cut vertex those elements form a ball (a half-ball on
+	// the conductor surface) that the cut splits in two, so an element
+	// touching the cut only at a vertex or an edge still gets its side
+	// through faces. One geometric decision seeds it: at the cut face the
+	// normal crosses most squarely, the element ahead along the normal is
+	// downstream. A conflict while propagating means the cut is not a
+	// two-sided sheet.
 	void BuildCutLifting(mfem::Mesh& mesh, const std::vector<bool>& inside,
-						 const std::vector<int>& cut_faces,
+						 const std::vector<int>& cut_group_faces,
 						 const std::array<double, 3>& normal, mfem::Coefficient& sigma,
 						 mfem::Vector& rhs) {
-		MFEM_VERIFY(!cut_faces.empty(), "The cut does not cross its conductor.");
 		mfem::Vector direction(3);
 		for (int k = 0; k < 3; ++k) { direction(k) = normal[k]; }
 		MFEM_VERIFY(direction.Norml2() > 0.0, "The cut normal must be a nonzero vector.");
 		direction /= direction.Norml2();
 
+		// The cut proper: faces of the cut group with the conductor on both
+		// sides. A cut surface drawn larger than the conductor also has faces
+		// on its surface and in the surroundings, which cut nothing.
+		std::set<int> cut;
+		for (int f : cut_group_faces) {
+			int e1, e2;
+			mesh.GetFaceElements(f, &e1, &e2);
+			if (e1 >= 0 && e2 >= 0 && inside[e1] && inside[e2]) cut.insert(f);
+		}
+		MFEM_VERIFY(!cut.empty(), "The cut does not cross its conductor.");
+		const std::vector<int> cut_faces(cut.begin(), cut.end());
+		RequireCutSpansConductor(mesh, inside, cut_faces);
+
 		std::set<int> cut_dofs;
-		std::vector<mfem::Vector> centers;
 		mfem::Array<int> dofs;
-		double worst = 1.0;
-		mfem::Vector face_normal(3);
 		for (int f : cut_faces) {
 			fes.GetFaceDofs(f, dofs);
 			cut_dofs.insert(dofs.begin(), dofs.end());
-			mfem::Vector c;
-			mfem::ElementTransformation* T = mesh.GetFaceTransformation(f);
-			const mfem::IntegrationPoint& center = mfem::Geometries.GetCenter(T->GetGeometryType());
-			T->SetIntPoint(&center);
-			T->Transform(center, c);
-			centers.push_back(c);
-			mfem::CalcOrtho(T->Jacobian(), face_normal);
-			worst = std::min(worst, std::abs(face_normal * direction) / face_normal.Norml2());
 		}
-		MFEM_VERIFY(worst >= kMinCutCrossing,
-			"The cut normal (" << normal[0] << ", " << normal[1] << ", " << normal[2]
-			<< ") is " << std::acos(worst) * 360.0 / Constants::TWO_PI << " degrees from the normal "
-			"of part of the cut, beyond the 60 allowed: it must cross the cut, not run "
-			"along it. Give the direction the current crosses the cut in, and keep the "
-			"cut close to planar.");
-		RequireCutSpansConductor(mesh, inside, cut_faces);
 
-		mfem::DiffusionIntegrator diffusion(sigma);
-		mfem::DenseMatrix ke;
+		// The elements near the cut and the cut DOFs each one carries.
+		std::map<int, std::vector<int>> near;
 		for (int e = 0; e < mesh.GetNE(); ++e) {
 			if (!inside[e]) continue;
 			fes.GetElementDofs(e, dofs);
@@ -278,33 +277,109 @@ private:
 			for (int j = 0; j < dofs.Size(); ++j) {
 				if (cut_dofs.count(dofs[j])) local.push_back(j);
 			}
-			if (local.empty()) continue;
+			if (!local.empty()) near[e] = std::move(local);
+		}
 
-			// Downstream side: centroid ahead of the nearest cut face.
+		// +1 downstream, -1 upstream, 0 not yet known.
+		std::map<int, int> side;
+		for (const auto& entry : near) { side[entry.first] = 0; }
+		auto centroid = [&](int e) {
 			mfem::Vector c;
 			mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
 			T->Transform(mfem::Geometries.GetCenter(T->GetGeometryType()), c);
-			double best = std::numeric_limits<double>::max(), side = 0.0;
-			for (const auto& fc : centers) {
-				double dist = 0.0, ahead = 0.0;
-				for (int k = 0; k < 3; ++k) {
-					dist += (c(k) - fc(k)) * (c(k) - fc(k));
-					ahead += (c(k) - fc(k)) * normal[k];
-				}
-				if (dist < best) { best = dist; side = ahead; }
-			}
-			if (side <= 0.0) continue;
+			return c;
+		};
+		// Unit normal of cut face f, pointing from element e1 into e2.
+		auto oriented_normal = [&](int f, int e1, int e2) {
+			mfem::ElementTransformation* T = mesh.GetFaceTransformation(f);
+			const mfem::IntegrationPoint& center = mfem::Geometries.GetCenter(T->GetGeometryType());
+			T->SetIntPoint(&center);
+			mfem::Vector n(3);
+			mfem::CalcOrtho(T->Jacobian(), n);
+			mfem::Vector across = centroid(e2);
+			across -= centroid(e1);
+			if (n * across < 0.0) n.Neg();
+			return n;  // scaled by the face's area element
+		};
 
+		// Seed: the cut face the normal crosses most squarely.
+		int seed_face = -1;
+		double best = -1.0;
+		for (int f : cut_faces) {
+			int e1, e2;
+			mesh.GetFaceElements(f, &e1, &e2);
+			const mfem::Vector n = oriented_normal(f, e1, e2);
+			const double alignment = std::abs(n * direction) / n.Norml2();
+			if (alignment > best) { best = alignment; seed_face = f; }
+		}
+		MFEM_VERIFY(best >= kMinCutCrossing,
+			"The cut normal (" << normal[0] << ", " << normal[1] << ", " << normal[2]
+			<< ") runs along the cut instead of crossing it: it is at least "
+			<< std::acos(best) * 360.0 / Constants::TWO_PI << " degrees from every cut "
+			"face's normal, beyond the 60 allowed. Give the direction the current "
+			"crosses the cut in; it must cross the cut.");
+		{
+			int e1, e2;
+			mesh.GetFaceElements(seed_face, &e1, &e2);
+			const bool forward = oriented_normal(seed_face, e1, e2) * direction > 0.0;
+			side[e1] = forward ? -1 : 1;
+		}
+
+		// Propagate through faces between near elements.
+		std::vector<int> queue;
+		for (const auto& [e, s] : side) { if (s != 0) queue.push_back(e); }
+		mfem::Array<int> faces, orientation;
+		while (!queue.empty()) {
+			const int e = queue.back();
+			queue.pop_back();
+			mesh.GetElementFaces(e, faces, orientation);
+			for (int f : faces) {
+				int e1, e2;
+				mesh.GetFaceElements(f, &e1, &e2);
+				const int other = e1 == e ? e2 : e1;
+				const auto it = side.find(other);
+				if (other < 0 || it == side.end()) continue;
+				const int expected = cut.count(f) ? -side[e] : side[e];
+				if (it->second == 0) {
+					it->second = expected;
+					queue.push_back(other);
+				}
+				MFEM_VERIFY(it->second == expected, "The cut is not a two-sided sheet: "
+					"going around it reaches the same element from both sides. It must "
+					"cross the conductor once, without folding through itself.");
+			}
+		}
+		for (const auto& [e, s] : side) {
+			MFEM_VERIFY(s != 0, "The cut has separate pieces; it must be a single "
+				"connected surface crossing its conductor once.");
+		}
+
+		// The normal must agree with the cut's orientation on balance, not
+		// just at the seed.
+		double agreement = 0.0;
+		for (int f : cut_faces) {
+			int e1, e2;
+			mesh.GetFaceElements(f, &e1, &e2);
+			const int up = side[e1] < 0 ? e1 : e2, down = up == e1 ? e2 : e1;
+			const mfem::Vector n = oriented_normal(f, up, down);
+			agreement += n * direction;  // area-weighted: n carries the area element
+		}
+		MFEM_VERIFY(agreement > 0.0, "The cut normal disagrees with most of the cut: "
+			"on balance it points against the direction the cut is crossed in.");
+
+		mfem::DiffusionIntegrator diffusion(sigma);
+		mfem::DenseMatrix ke;
+		for (const auto& [e, local] : near) {
+			if (side[e] < 0) continue;
 			lifted[e] = local;
-			diffusion.AssembleElementMatrix(*fes.GetFE(e), *T, ke);
+			fes.GetElementDofs(e, dofs);
+			diffusion.AssembleElementMatrix(*fes.GetFE(e), *mesh.GetElementTransformation(e), ke);
 			mfem::Vector h(dofs.Size()), load(dofs.Size());
 			h = 0.0;
 			for (int j : local) { h(j) = 1.0; }
 			ke.Mult(h, load);
 			for (int j = 0; j < dofs.Size(); ++j) { rhs(dofs[j]) -= load(j); }
 		}
-		MFEM_VERIFY(!lifted.empty(), "No element lies downstream of the cut; "
-			"check the cut normal.");
 	}
 
 	// A cut must sever the conductor: every edge on its rim (an edge of just
