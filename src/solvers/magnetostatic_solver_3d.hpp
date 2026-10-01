@@ -126,13 +126,9 @@ public:
 #endif
 		}
 
-		// 1 A through each conductor: J = w / (|w| A_cs) stranded, or the DC
-		// distribution sigma w / G massive.
 		terminal_loads.clear();
 		for (const TerminalConductor& c : conductors) {
-			mfem::Vector load = AssembleConductorLoad(c, 1.0 / c.PathIntegral);
-			projector->Project(load);
-			terminal_loads.push_back(std::move(load));
+			terminal_loads.push_back(ProjectedUnitCurrentLoad(c));
 		}
 	}
 

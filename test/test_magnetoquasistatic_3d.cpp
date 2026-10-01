@@ -22,6 +22,7 @@
 #include <highfive/H5File.hpp>
 
 #include "annulus_fixture.hpp"
+#include "stderr_capture.hpp"
 #include "config/input_parser.hpp"
 #include "solvers/magnetoquasistatic_solver.hpp"
 #include "solvers/magnetoquasistatic_solver_3d.hpp"
@@ -125,19 +126,6 @@ json MakeBarConfig(double sigma, const std::string& analysis) {
 		{"scenarios", json::array()}
 	};
 }
-
-// Redirects std::cerr (where the status reporter writes warnings) for its
-// lifetime.
-class CerrCapture {
-public:
-	CerrCapture() : previous(std::cerr.rdbuf(text.rdbuf())) {}
-	~CerrCapture() { std::cerr.rdbuf(previous); }
-	std::string Text() const { return text.str(); }
-
-private:
-	std::ostringstream text;
-	std::streambuf* previous;
-};
 
 mfem::Mesh MakeBarMesh(int n) {
 	mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(n, n, n, mfem::Element::HEXAHEDRON);
@@ -284,7 +272,7 @@ TEST_CASE("3D MQS routing, exports and rejections", "[solvers][mqs][3d]") {
 	// no terminal the same faces short it to the box.
 	SECTION("a conductor touching an n x A = 0 wall is reported") {
 		auto warnings = [&](const json& c) {
-			CerrCapture capture;
+			StderrCapture capture;
 			MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(c));
 			solver.Setup();
 			return capture.Text();
@@ -392,6 +380,27 @@ TEST_CASE("3D MQS loss in a weak conductor scales with sigma", "[solvers][mqs][3
 	const double weak = sector_loss(1.0), stronger = sector_loss(100.0);
 	REQUIRE(weak > 0.0);
 	REQUIRE(100.0 * weak == Catch::Approx(stronger).epsilon(1e-6));
+}
+
+// A massive port's load is not projected, so its DC current is checked on
+// its own: an azimuthal direction about an axis 5 mm off the ring's leaves
+// part of the current unbalanced, which is reported.
+TEST_CASE("3D MQS reports a massive current that does not balance", "[solvers][mqs][3d]") {
+	AnnulusSpec spec;
+	spec.sigma = 1e6;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06, ConductorRole::Massive } };
+	auto warnings = [&](double origin_x) {
+		mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+		json config = MakeAnnulusConfig(spec, true, 1, "magnetoquasistatics", "field");
+		config["terminals"][0]["direction"]["origin"] = { origin_x, 0.0, 0.0 };
+		config["scenarios"] = FrequencyScenarios({ 50.0 });
+		StderrCapture capture;
+		MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config));
+		solver.Setup();
+		return capture.Text();
+	};
+	REQUIRE(warnings(0.0).find("does not stay balanced") == std::string::npos);
+	REQUIRE(warnings(0.005).find("'azimuthal' direction fits only") != std::string::npos);
 }
 
 #ifdef MFEM_USE_MPI

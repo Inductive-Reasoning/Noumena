@@ -318,10 +318,8 @@ geometry). It says where the conductor's current flows:
 - `azimuthal`: around the axis through `origin` (default `[0, 0, 0]`) along
   `axis` (right-hand rule: positive current makes flux along `+axis` inside
   the loop). For conductors of revolution; needs no extra mesh features. The
-  conductor must not reach its own axis, and must be a body of revolution
-  about it: a direction whose current would cross the conductor's surface
-  (a misplaced `origin` or `axis`, or a shape that is not revolved) is
-  rejected.
+  conductor must not reach its own axis, and should be a body of
+  revolution about it (see the balance check below).
 - `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
   internal faces that crosses the conductor once and severs it completely
   (its rim must lie on the conductor surface), and the current crosses it
@@ -333,9 +331,17 @@ geometry). It says where the conductor's current flows:
   `dirichlet` (`n × A = 0`) boundary, the only place current can enter or
   leave the model consistently.
 
-Whatever the type, a terminal's current may leave its conductor only through
-its electrodes: setup rejects a direction for which more than 1% of the
-current would cross the conductor's surface.
+Whatever the type, a terminal's current must balance in its conductor: be
+divergence-free, and leave it only through its electrodes. Setup measures how
+much of the current density (in L2 norm) the divergence-free projection has to
+remove and warns above 2%; the effect on energies and inductances is about
+that fraction squared. Correct directions lose only discretization noise. The
+warning catches an `azimuthal` direction about the wrong axis (about 1% per mm
+of offset on a 5 cm coil) or on a shape that is not revolved, a coarsely
+faceted round conductor (a few percent at 16 straight segments), and a
+`stranded` current in a conductor whose cross-section varies along its path or
+that has a dead-end branch (a stranded current is uniform along its path; a
+`massive` one follows the conduction current and always balances).
 
 For `cut` and `electrodes` the direction comes from a unit conduction
 potential solved on the conductor, weighted by its `sigma` if it is

@@ -160,10 +160,10 @@ public:
 		for (size_t k = 0; k < conductors.size(); ++k) {
 			const TerminalConductor& c = conductors[k];
 			if (c.Type == ConductorType::Stranded) {
-				stranded_loads[k] = AssembleConductorLoad(c, 1.0 / c.PathIntegral);
-				projector->Project(stranded_loads[k]);
+				stranded_loads[k] = ProjectedUnitCurrentLoad(c);
 				continue;
 			}
+			ProjectedUnitCurrentLoad(c);  // only to check that its DC current balances
 			port_of[k] = static_cast<int>(port_loads.size());
 			port_loads.push_back(std::make_unique<mfem::Vector>(AssembleConductorLoad(c, 1.0)));
 			conductances.push_back(c.PathIntegral);

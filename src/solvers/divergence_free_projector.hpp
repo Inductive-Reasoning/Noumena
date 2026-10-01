@@ -73,15 +73,21 @@ public:
 	}
 
 	/// Replace @p b by its divergence-free part (G^T b = 0 afterwards).
-	void Project(mfem::Vector& b) const {
+	///
+	/// @return The squared L2 norm of what was removed, |grad psi|^2 =
+	///         psi . G^T b: for a load b of a current density J, the part of
+	///         J that was not divergence-free, to compare with |J|^2.
+	double Project(mfem::Vector& b) const {
 		mfem::Vector rhs(G->Width());
 		G->MultTranspose(b, rhs);
+		for (int i = 0; i < fixed.Size(); ++i) { rhs(fixed[i]) = 0.0; }
 		const mfem::Vector psi = SolvePotential(rhs);
 
 		mfem::Vector grad_psi(G->Height()), correction(M->Height());
 		G->Mult(psi, grad_psi);
 		M->Mult(grad_psi, correction);
 		b -= correction;
+		return psi * rhs;
 	}
 
 	/// Remove the gradient part of a solved potential @p A, leaving it

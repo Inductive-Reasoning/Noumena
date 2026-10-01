@@ -71,12 +71,13 @@ public:
 	/// Relative size of the regularizing mass term; see the class comment.
 	static constexpr double kRegularization = 1e-6;
 
-	/// Largest current, as a fraction of the terminal's, allowed to cross its
-	/// conductor's surface in and out (ConductorSurfaceLeakage). A correct
-	/// direction leaks only discretization noise, far below this; a wrong
-	/// one -- an azimuthal direction about the wrong axis, or on a conductor
-	/// that is not a body of revolution about it -- leaks a sizable part.
-	static constexpr double kMaxSurfaceLeakage = 0.01;
+
+	/// Largest fraction of a conductor's current density (L2 norm) the
+	/// divergence-free projection may remove before it is reported; see
+	/// ProjectedUnitCurrentLoad. The removed part is orthogonal to the kept
+	/// one, so its effect on energies and inductances is about the fraction
+	/// squared.
+	static constexpr double kMaxProjectedFraction = 0.02;
 
 	const DivergenceFreeProjector& Projector() const { return *projector; }
 
@@ -85,6 +86,7 @@ protected:
 	struct TerminalConductor {
 		std::string Name;
 		ConductorType Type = ConductorType::Stranded;
+		CurrentDirection::Kind Direction = CurrentDirection::Kind::Azimuthal;
 		mfem::Array<int> Marker;              // domain attributes
 		std::unique_ptr<ConductorPath> Path;
 		/// Stranded: the cross-section A_cs = integral |w|. Massive: the DC
@@ -175,6 +177,54 @@ protected:
 		return mfem::Vector(load);
 	}
 
+	/// The divergence-free load of 1 A through @p c: J = w / (|w| A_cs)
+	/// stranded, the DC distribution sigma w / G massive.
+	///
+	/// A well-posed current is divergence-free in the continuum and has no
+	/// normal component on its conductor's surface (except at electrodes),
+	/// so the projection removes only discretization-level imbalance from
+	/// it. A sizable removal means the current as given does not balance in
+	/// its conductor, and the projection supplies the difference through the
+	/// surroundings instead. That happens with an azimuthal direction about
+	/// the wrong axis, or on a conductor that is not a body of revolution
+	/// about it (including, to a few percent, a coarsely faceted round one),
+	/// and with a stranded current -- uniform along its path -- in a
+	/// conductor whose cross-section varies along it or that has a dead-end
+	/// branch. It is reported as the fraction |grad psi| / |J| of the
+	/// current's L2 norm that was removed.
+	mfem::Vector ProjectedUnitCurrentLoad(const TerminalConductor& c) {
+		const double scale = 1.0 / c.PathIntegral;
+		mfem::Vector load = AssembleConductorLoad(c, scale);
+		const double removed = projector->Project(load);
+		ConductorCurrentCoefficient J(*c.Path, ConductivityOf(c), scale);
+		const double fraction = std::sqrt(std::max(removed, 0.0) /
+			ConductorCurrentNormSquared(mesh, c.Marker, J, config.Order));
+		std::ostringstream msg;
+		msg << std::setprecision(3) << "Terminal '" << c.Name << "': the divergence-free "
+			"projection removed " << 100.0 * fraction << "% of its current density";
+		if (fraction <= kMaxProjectedFraction) {
+			Reporter().Diagnostic(msg.str() + ".");
+			return load;
+		}
+		msg << ", so the current as given does not stay balanced in its conductor and "
+			"part of it is carried by the surroundings instead. ";
+		if (c.Direction == CurrentDirection::Kind::Azimuthal) {
+			msg << "An 'azimuthal' direction fits only a conductor that is a body of "
+				"revolution about 'origin' and 'axis': check both, refine a coarsely "
+				"faceted round conductor (or use curved elements), or describe the path "
+				"with a 'cut' or 'electrodes'.";
+		} else if (c.Type == ConductorType::Stranded) {
+			msg << "A stranded current is uniform along its path, which balances only "
+				"where the conductor's cross-section is constant along it and it has no "
+				"dead-end branches; use a massive conductor, whose current follows its "
+				"conduction path, or check the geometry.";
+		} else {
+			msg << "Check the conductor's mesh resolution.";
+		}
+		Reporter().Warning(msg.str());
+		return load;
+	}
+
 	double RegularizationWeight() const {
 		mfem::Vector lo, hi;
 		mesh.GetBoundingBox(lo, hi);
@@ -224,6 +274,7 @@ private:
 		TerminalConductor c;
 		c.Name = name;
 		c.Type = term.Conductor;
+		c.Direction = term.Direction->Type;
 		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
 		c.Marker = DomainMarkerFromAttrs(group.AttributeIds, "terminal '" + name + "'");
 		if (c.Type == ConductorType::Massive) {
@@ -234,39 +285,7 @@ private:
 											   config.Order);
 		MFEM_VERIFY(c.PathIntegral > 0.0, "Terminal '" + name + "' has zero " +
 			(c.Type == ConductorType::Massive ? "conductance." : "cross-section."));
-		ValidateCurrentConfinement(c, *term.Direction);
 		return c;
-	}
-
-	// The current imposed in a conductor must stay in it: J . n = 0 on its
-	// surface except at its electrodes. A direction from a conduction solve
-	// (electrodes, cut) satisfies that by construction; an azimuthal one
-	// only if the conductor is a body of revolution about the given axis.
-	// Anything else would be quietly rerouted through the surroundings by the
-	// divergence-free projection, which is meant for discretization-level
-	// imbalance, not a misplaced current.
-	void ValidateCurrentConfinement(const TerminalConductor& c, const CurrentDirection& d) {
-		const int n_bdr = mesh.bdr_attributes.Size() ? mesh.bdr_attributes.Max() : 0;
-		mfem::Array<int> openings(n_bdr);
-		openings = 0;
-		if (d.Type == CurrentDirection::Kind::Electrodes) {
-			openings = MarkerFromGroup(d.Input);
-			const mfem::Array<int> output = MarkerFromGroup(d.Output);
-			for (int a = 0; a < n_bdr; ++a) { openings[a] |= output[a]; }
-		}
-		ConductorCurrentCoefficient unit_current(*c.Path, ConductivityOf(c), 1.0 / c.PathIntegral);
-		const double leakage =
-			ConductorSurfaceLeakage(mesh, c.Marker, openings, unit_current, config.Order);
-		std::ostringstream msg;
-		msg << "Terminal '" << c.Name << "': current crossing its conductor's surface, "
-			"in and out, is " << std::setprecision(3) << 100.0 * leakage << "% of the "
-			"terminal current";
-		MFEM_VERIFY(leakage <= kMaxSurfaceLeakage, msg.str() + ", which must be at most " +
-			std::to_string(static_cast<int>(100 * kMaxSurfaceLeakage)) + "%. The current "
-			"direction does not follow the conductor: for an 'azimuthal' direction check "
-			"'origin' and 'axis' (the conductor must be a body of revolution about them); "
-			"otherwise describe the path with a 'cut' or 'electrodes'.");
-		Reporter().Diagnostic(msg.str() + ".");
 	}
 
 	std::unique_ptr<ConductorPath> MakeConductorPath(
