@@ -34,9 +34,12 @@
  *
  * The potential comes from the terminal's direction (CurrentDirection):
  *
- *   Azimuthal  - v = -theta / (2 pi) about an axis: w = phi-hat / (2 pi r),
- *                analytic. It is the exact DC potential of any conductor of
- *                revolution, whatever its (axisymmetric) conductivity.
+ *   Azimuthal  - v = -theta / extent about an axis: w = phi-hat / (extent r),
+ *                analytic, with extent the conductor's angular extent: 2 pi
+ *                for a full ring, less for a sector whose ends lie on
+ *                n x A = 0 symmetry planes. It is the exact DC potential of
+ *                any conductor of revolution, whatever its (axisymmetric)
+ *                conductivity.
  *   Electrodes - v = 1 on the input faces, 0 on the output faces, harmonic in
  *                the conductor.
  *   Cut        - a closed conductor: v jumps by 1 across an internal cut
@@ -62,7 +65,12 @@ public:
 /// Analytic azimuthal path about an axis (right-hand rule).
 class AzimuthalPath : public ConductorPath {
 public:
-	explicit AzimuthalPath(const CurrentDirection& d) {
+	/// @param extent  Angular extent of the conductor [rad], over which v falls
+	///                by 1: 2 pi for a full ring.
+	explicit AzimuthalPath(const CurrentDirection& d, double extent = Constants::TWO_PI)
+		: extent(extent) {
+		MFEM_VERIFY(extent > 0.0 && extent <= Constants::TWO_PI,
+			"An azimuthal path's angular extent must lie in (0, 2 pi].");
 		double norm = 0.0;
 		for (int c = 0; c < 3; ++c) {
 			origin[c] = d.Origin[c];
@@ -72,6 +80,37 @@ public:
 		norm = std::sqrt(norm);
 		MFEM_VERIFY(norm > 0.0, "Current direction axis must be a nonzero vector.");
 		for (double& c : axis) { c /= norm; }
+		// An orthonormal pair across the axis, for Angle().
+		const int k = std::abs(axis[0]) < 0.9 ? 0 : 1;
+		double t[3] = { 0.0, 0.0, 0.0 };
+		t[k] = 1.0;
+		const double along = t[0] * axis[0] + t[1] * axis[1] + t[2] * axis[2];
+		double n2 = 0.0;
+		for (int c = 0; c < 3; ++c) { e1[c] = t[c] - along * axis[c]; n2 += e1[c] * e1[c]; }
+		for (double& c : e1) { c /= std::sqrt(n2); }
+		e2[0] = axis[1] * e1[2] - axis[2] * e1[1];
+		e2[1] = axis[2] * e1[0] - axis[0] * e1[2];
+		e2[2] = axis[0] * e1[1] - axis[1] * e1[0];
+	}
+
+	/// Azimuthal angle of @p x about the axis, in [0, 2 pi), increasing
+	/// along phi-hat.
+	double Angle(const mfem::Vector& x) const {
+		double d[3];
+		Perpendicular(x, d);
+		const double angle = std::atan2(d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2],
+										d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2]);
+		return angle < 0.0 ? angle + Constants::TWO_PI : angle;
+	}
+
+	/// The unit azimuthal direction phi-hat at @p x.
+	void Tangent(const mfem::Vector& x, mfem::Vector& t) const {
+		double d[3];
+		const double r = Perpendicular(x, d);
+		t.SetSize(3);
+		t(0) = (axis[1] * d[2] - axis[2] * d[1]) / r;
+		t(1) = (axis[2] * d[0] - axis[0] * d[2]) / r;
+		t(2) = (axis[0] * d[1] - axis[1] * d[0]) / r;
 	}
 
 	/// Distance of @p x from the axis.
@@ -87,8 +126,8 @@ public:
 		double d[3];
 		const double r = Perpendicular(x, d);
 		MFEM_VERIFY(r > 0.0, "The azimuthal current direction is undefined on its axis.");
-		// phi-hat / (2 pi r) = (e x d) / (2 pi r^2)
-		const double s = 1.0 / (Constants::TWO_PI * r * r);
+		// phi-hat / (extent r) = (e x d) / (extent r^2)
+		const double s = 1.0 / (extent * r * r);
 		w.SetSize(3);
 		w(0) = s * (axis[1] * d[2] - axis[2] * d[1]);
 		w(1) = s * (axis[2] * d[0] - axis[0] * d[2]);
@@ -96,8 +135,10 @@ public:
 	}
 
 private:
+	double extent;
 	double origin[3]{};
 	double axis[3]{};  // unit
+	double e1[3]{}, e2[3]{};  // unit, across the axis: e1 x e2 = axis
 
 	double Perpendicular(const mfem::Vector& x, double* d) const {
 		double along = 0.0;

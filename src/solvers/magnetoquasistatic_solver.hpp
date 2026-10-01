@@ -161,38 +161,30 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         return min_r;
     }
 
-    // Function to compute G_dc for a specific port. The L2(order 0) space is
-    // supplied by the caller because it depends only on the mesh: building it here
-    // would repeat an O(mesh) construction for every port.
-    double ComputePortConductance(mfem::FiniteElementSpace& l2_fes,
-                                  const std::vector<int>& port_attributes,
-                                  mfem::Coefficient& conductivity,
-                                  const std::string& port_name)
+    // DC conductance of a massive port: the integral of sigma over its
+    // elements in 3D, of sigma/(2*pi*r) in axisymmetry. The rule is sized for
+    // the 1/r factor as well as for sigma: a one-point rule, the default for a
+    // piecewise-constant test space, under-reports a ring's conductance by
+    // a part in (h/r)^2.
+    double ComputePortConductance(const std::vector<int>& port_attributes,
+                                  mfem::Coefficient& conductivity) const
     {
-        // Create the restriction array for the port attributes
-        mfem::Array<int> port_marker =
-            DomainMarkerFromAttrs(port_attributes, "massive port '" + port_name + "'");
-
-        // Define the appropriate coefficient
-        std::unique_ptr<mfem::Coefficient> geometry_coeff;
-        mfem::Coefficient* base_coeff = &conductivity;
-        if (geometry == GeometryType::Axisymmetric)
-        {
-            geometry_coeff = std::make_unique<AxisymmetricConductanceCoeff>(conductivity);
-            base_coeff = geometry_coeff.get();
+        std::set<int> attrs(port_attributes.begin(), port_attributes.end());
+        AxisymmetricConductanceCoeff axisymmetric(conductivity);
+        mfem::Coefficient& integrand = geometry == GeometryType::Axisymmetric
+            ? static_cast<mfem::Coefficient&>(axisymmetric) : conductivity;
+        double G_dc = 0.0;
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            if (!attrs.count(mesh.GetAttribute(e))) { continue; }
+            mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
+            const mfem::IntegrationRule& ir = mfem::IntRules.Get(
+                mesh.GetElementBaseGeometry(e), 2 * config.Order + T->OrderW() + 2);
+            for (int i = 0; i < ir.GetNPoints(); ++i) {
+                const mfem::IntegrationPoint& ip = ir.IntPoint(i);
+                T->SetIntPoint(&ip);
+                G_dc += ip.weight * T->Weight() * integrand.Eval(*T, ip);
+            }
         }
-
-        mfem::RestrictedCoefficient restricted_coeff(*base_coeff, port_marker);
-
-        // Assemble the LinearForm to perform the spatial integration, restricted
-        // to this port's elements by the attribute marker.
-        mfem::LinearForm g_form(&l2_fes);
-        g_form.AddDomainIntegrator(new mfem::DomainLFIntegrator(restricted_coeff), port_marker);
-        g_form.Assemble();
-
-        // The total integral is the sum of the piecewise constant values
-        double G_dc = g_form.Sum();
-
         return G_dc;
     }
 
@@ -390,11 +382,6 @@ public:
         {
         auto operation = Reporter().Start(
             "massive port assembly (" + std::to_string(massive_ports.size()) + " ports)");
-        // One L2(order 0) space shared by every port's conductance integral. It
-        // depends only on the mesh, so building it per port made this loop cost
-        // mesh_size * port_count instead of mesh_size + port_count.
-        mfem::L2_FECollection l2_fec(0, mesh.Dimension());
-        mfem::FiniteElementSpace l2_fes(&mesh, &l2_fec);
         size_t port_index = 0;
         for (const MassivePortDefinition& port : massive_ports) {
             // Winding models declare one port per turn, so report periodically
@@ -416,8 +403,7 @@ public:
             port_loads.push_back(
                 BuildPortVector(fespace.get(), port.AttributeIds, *sigma_coeff,
                                 port.Name));
-            double G_dc = ComputePortConductance(l2_fes, port.AttributeIds,
-                                                 *sigma_coeff, port.Name);
+            const double G_dc = ComputePortConductance(port.AttributeIds, *sigma_coeff);
             MFEM_VERIFY(G_dc > 0.0,
                 "Massive port '" + port.Name + "' has zero conductance.");
             port_conductances.push_back(G_dc);

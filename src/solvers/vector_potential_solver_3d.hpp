@@ -294,11 +294,74 @@ private:
 		return c;
 	}
 
+	// The angular extent of an azimuthal conductor, over which its
+	// conduction potential falls by 1: 2 pi for a full ring, less for a
+	// sector whose ends lie on n x A = 0 walls -- a symmetry model, cut by
+	// meridian planes the current crosses normally. The ends are the
+	// conductor's faces on such walls that phi-hat crosses (|n . phi-hat| >
+	// 1/2; a ring merely lying against a wall is crossed by none), current
+	// entering where phi-hat points in and leaving where it points out. The
+	// extent is the arc from the one to the other along phi-hat.
+	double AzimuthalExtent(const std::string& name, const AzimuthalPath& frame,
+						   const mfem::Array<int>& conductor) const {
+		auto inside = [&](int e) {
+			return e >= 0 && conductor[mesh.GetAttribute(e) - 1] != 0;
+		};
+		double in_sin = 0.0, in_cos = 0.0, out_sin = 0.0, out_cos = 0.0;
+		bool entries = false, exits = false;
+		mfem::Vector x, n(3), t, c;
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			const int a = mesh.GetBdrAttribute(be);
+			if (a < 1 || a > ess_bdr.Size() || !ess_bdr[a - 1]) continue;
+			const int f = mesh.GetBdrElementFaceIndex(be);
+			int e1, e2;
+			mesh.GetFaceElements(f, &e1, &e2);
+			const int e = inside(e1) ? e1 : (inside(e2) ? e2 : -1);
+			if (e < 0) continue;
+
+			mfem::ElementTransformation* T = mesh.GetFaceTransformation(f);
+			const mfem::IntegrationPoint& center = mfem::Geometries.GetCenter(T->GetGeometryType());
+			T->SetIntPoint(&center);
+			T->Transform(center, x);
+			mfem::CalcOrtho(T->Jacobian(), n);
+			mesh.GetElementTransformation(e)->Transform(
+				mfem::Geometries.GetCenter(mesh.GetElementBaseGeometry(e)), c);
+			mfem::Vector outward(x);
+			outward -= c;
+			if (outward * n < 0.0) n.Neg();  // out of the conductor
+			frame.Tangent(x, t);
+			const double area = n.Norml2(), crossing = (n * t) / area;
+			if (std::abs(crossing) < 0.5) continue;
+			const double angle = frame.Angle(x);
+			if (crossing > 0.0) {
+				exits = true;
+				out_sin += area * std::sin(angle);
+				out_cos += area * std::cos(angle);
+			} else {
+				entries = true;
+				in_sin += area * std::sin(angle);
+				in_cos += area * std::cos(angle);
+			}
+		}
+		if (!entries && !exits) return Constants::TWO_PI;
+		MFEM_VERIFY(entries && exits, "Terminal '" + name + "' is an azimuthal sector "
+			"with only one end on an n x A = 0 ('dirichlet') boundary; both ends must "
+			"lie on one for its current to enter and leave.");
+		double extent = std::atan2(out_sin, out_cos) - std::atan2(in_sin, in_cos);
+		if (extent <= 0.0) extent += Constants::TWO_PI;
+		std::ostringstream msg;
+		msg << std::setprecision(4) << "Terminal '" << name << "' is an azimuthal sector of "
+			<< extent * 360.0 / Constants::TWO_PI << " degrees.";
+		Reporter().Diagnostic(msg.str());
+		return extent;
+	}
+
 	std::unique_ptr<ConductorPath> MakeConductorPath(
 		const std::string& name, const CurrentDirection& d,
 		const mfem::Array<int>& conductor, mfem::Coefficient* conductivity) {
 		if (d.Type == CurrentDirection::Kind::Azimuthal) {
-			auto path = std::make_unique<AzimuthalPath>(d);
+			auto path = std::make_unique<AzimuthalPath>(
+				d, AzimuthalExtent(name, AzimuthalPath(d), conductor));
 			// The direction is undefined on the axis; a vertex there means the
 			// conductor reaches it (quadrature points alone could miss that).
 			mfem::Vector lo, hi;

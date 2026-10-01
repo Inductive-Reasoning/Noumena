@@ -321,7 +321,12 @@ geometry). It says where the conductor's current flows:
   `axis` (right-hand rule: positive current makes flux along `+axis` inside
   the loop). For conductors of revolution; needs no extra mesh features. The
   conductor must not reach its own axis, and should be a body of
-  revolution about it (see the balance check below).
+  revolution about it (see the balance check below). In a symmetry model the
+  conductor may be a sector whose two ends lie on `dirichlet` (n x A = 0)
+  planes through the axis: its angular extent is read from those ends, the
+  terminal current is the current through its cross-section, and the reported
+  inductances and resistances are the sector's (a quarter model's are a
+  quarter of the full ring's).
 - `cut`: a closed loop of any shape. `cut` names a boundary group (dim 2) of
   internal faces forming a single surface that crosses the conductor once and
   severs it completely (its rim must lie on the conductor surface). The cut
