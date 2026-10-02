@@ -291,7 +291,18 @@ the conductor's DOFs), and the correction `−∇ψ` stays inside the conductor 
 no normal flux at its surface, so any imbalance is redistributed within it
 rather than made up by current in the surroundings. It carries no current
 along the path (`∫∇ψ·w = 0` for the harmonic path `w`). The fraction of the
-current density removed is reported when above 2%. The flux linkage of
+current density removed is reported when above 2%.
+
+The stranded direction `w/|w|` is not divergence-free in general, even though
+`w` is: `∇·(w/|w|) = −(w/|w|)·∇ln|w|`, which vanishes only where `|w|` is
+constant along each field line (an azimuthal path, a straight bar). On a
+solved path through a cut or between electrodes `|w|` varies along the field
+lines wherever the conductor turns at different radii across its section --
+a racetrack's corners, where it grows like `1/r` inwards -- and the projection
+then removes that part, so the source is the projected field rather than a
+uniform winding current. In TEAM 7's racetrack coil this is 2.6% on any mesh
+(see `examples/team7/README.md` for the measurements); a construction that
+avoids it is an open issue. The flux linkage of
 terminal `k` is `λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current
 density), and the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by
 construction.

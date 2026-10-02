@@ -383,7 +383,12 @@ of offset on a 5 cm coil) or on a shape that is not revolved, a coarsely
 faceted round conductor (a few percent at 16 straight segments), and a
 `stranded` current in a conductor whose cross-section varies along its path or
 that has a dead-end branch (a stranded current is uniform along its path; a
-`massive` one follows the conduction current and always balances).
+`massive` one follows the conduction current and always balances). A
+`stranded` current on a `cut` or `electrodes` path also loses a little where
+the conductor turns at different radii across its section, because the
+uniform current along a solved path is not exactly divergence-free there:
+2.6% in TEAM 7's racetrack coil, whatever the mesh (see
+[the formulation](math_formulation.md) and `examples/team7/README.md`).
 
 For `cut` and `electrodes` the direction comes from a unit conduction
 potential solved on the conductor, weighted by its `sigma` if it is

@@ -73,14 +73,46 @@ What remains is the comparison with the measurements:
   differences are 30-77%. NGSolve's TEAM 7 solution makes the same exchange
   ([TEAM-problems](https://github.com/NGSolve/TEAM-problems), `TEAM-7/team7.ipynb`).
   The bottom surface at 50 Hz still disagrees by about half its peak.
-- The solver reports that the divergence-free projection removed 2.6% of the
-  coil's current density. This is not faceting: it is the same on a mesh of
-  second-order (curved) tetrahedra, and on refinement. A stranded current
-  runs along the direction of the path solved through the cut, with uniform
-  magnitude; in a racetrack the solved path strengthens towards the inside
-  of the corners but not along the straight sides, so the normalized
-  direction is not quite current-conserving where they meet, and the
-  projection removes the difference. A winding's current -- uniform, along
-  the straight sides and around arcs at the corners -- would need no
-  correction. On the curved mesh no probe value changed by more than 0.2% of
-  its column's peak, so the example keeps the straight-sided mesh.
+- The solver warns that the divergence-free projection removed 2.6% of the
+  coil's current density; see the next section.
+
+## The coil's current (an open issue)
+
+The coil is `stranded`: its current density has magnitude `I / A_cs`
+everywhere, along the direction `w / |w|` of the path `w = -grad v` solved on
+the coil through the cut. `w` is divergence-free, but its direction is not
+in general:
+
+    div(w / |w|) = -(w / |w|) . grad ln|w|,
+
+which vanishes only where `|w|` is constant along each field line, as on an
+azimuthal path or a straight bar. In a racetrack the solved path is
+potential flow: `|w|` grows like `1/r` towards the inside of each corner and
+is uniform across the straight sides, so it changes along the field lines
+where the two meet. The winding's actual current -- uniform, straight along
+the sides and on circular arcs around the corners -- is divergence-free but
+is not the direction of any such potential. The projection then removes the
+non-conserving part, and the source used is the projected field, not the
+winding's.
+
+Two measurements separate this from the geometry, with the projection
+`ProjectWithin` of the order-2 load and the removed fraction in the L2 norm:
+
+| Coil current | straight tetrahedra | second-order (curved) tetrahedra |
+|---|---|---|
+| The solver's: uniform along the solved path | 2.63% | 2.67% |
+| The winding's: uniform along straights and arcs (exact) | 0.73% | 0.024% |
+
+The second-order mesh (`gmsh -order 2`) is loaded and used throughout: its
+coil volume integrates to the exact rounded-racetrack volume within 3.5e-6
+(-3.1e-4 straight-sided), its corner faces lie on the arcs within 0.6 um
+(0.48 mm), and with the exact winding current the projection's removal falls
+from 0.73% to 0.024%. With the solver's own direction it stays at 2.65%, as
+it does on refinement (2.64% at 4 mm), so the 2.6% is the stranded path
+model's, not the mesh's. On the curved mesh no probe value moves by more than
+0.2% of its column's peak, so the example keeps the straight-sided mesh.
+
+The effect on the comparison is small (Bz agrees to 1.4-2.6%), but the
+projected source is not the winding's current. A better construction of
+stranded currents on solved paths, one that stays uniform and conserves
+current without a winding-specific direction, is still to be found.
