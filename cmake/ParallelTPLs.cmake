@@ -24,9 +24,20 @@ set(ELECTROMAG_HYPRE_VERSION "v3.0.0" CACHE STRING "HYPRE release built when HYP
 
 find_package(MPI REQUIRED COMPONENTS C CXX)
 
-if(NOT HYPRE_DIR)
-    set(_hypre_prefix "${CMAKE_BINARY_DIR}/tpl/hypre")
-    set(_hypre_stamp "${_hypre_prefix}/.built-${ELECTROMAG_HYPRE_VERSION}")
+# HYPRE is threaded with OpenMP along with the rest of the build (USE_OPENMP).
+if(USE_OPENMP)
+    set(_hypre_openmp ON)
+else()
+    set(_hypre_openmp OFF)
+endif()
+
+# The bundled build is re-checked on every configure (HYPRE_DIR is cached
+# pointing at it after the first), so changing its version or USE_OPENMP
+# rebuilds it; a HYPRE_DIR set to anything else is used as given.
+set(_hypre_bundled "${CMAKE_BINARY_DIR}/tpl/hypre")
+if(NOT HYPRE_DIR OR HYPRE_DIR STREQUAL _hypre_bundled)
+    set(_hypre_prefix "${_hypre_bundled}")
+    set(_hypre_stamp "${_hypre_prefix}/.built-${ELECTROMAG_HYPRE_VERSION}-openmp-${_hypre_openmp}")
     if(NOT EXISTS "${_hypre_stamp}")
         message(STATUS "Building HYPRE ${ELECTROMAG_HYPRE_VERSION} (one-time, at configure)...")
         FetchContent_Declare(
@@ -54,7 +65,7 @@ if(NOT HYPRE_DIR)
                 -DCMAKE_POSITION_INDEPENDENT_CODE=ON
                 -DBUILD_SHARED_LIBS=OFF
                 -DHYPRE_ENABLE_MPI=ON
-                -DHYPRE_ENABLE_OPENMP=OFF
+                -DHYPRE_ENABLE_OPENMP=${_hypre_openmp}
                 -DHYPRE_ENABLE_FORTRAN=OFF
                 -DHYPRE_BUILD_TESTS=OFF
                 -DHYPRE_BUILD_EXAMPLES=OFF

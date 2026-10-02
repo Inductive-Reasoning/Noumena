@@ -12,7 +12,10 @@ endif()
 # Build options
 option(BUILD_TESTING "Build tests" ON)
 option(ENABLE_NATIVE_ARCH "Enable -march=native for Release builds" OFF)
-option(USE_OPENMP "Enable OpenMP for parallel assembly" ON)
+# OpenMP threads the linear algebra: AMGCL, MFEM's sparse matrix-vector
+# products and vector operations (the Krylov solvers' own work), and, in the
+# MPI build, HYPRE. OMP_NUM_THREADS sets the thread count.
+option(USE_OPENMP "Thread the linear algebra with OpenMP" ON)
 # MPI build: MFEM with MPI and HYPRE (BoomerAMG, AMS, ...). Off by default;
 # the serial build needs no MPI installation. HYPRE is built automatically
 # unless HYPRE_DIR points at an existing install; see cmake/ParallelTPLs.cmake.
@@ -66,6 +69,11 @@ set(MFEM_USE_EXCEPTIONS ON CACHE BOOL "Throw mfem::ErrorException on MFEM errors
 # -DMFEM_DEBUG=OFF on the cmake command line if you need to match a release
 # build's looser behavior. Must be set before FetchContent_MakeAvailable(mfem).
 # set(MFEM_DEBUG ON CACHE BOOL "Enable MFEM internal debug checks" FORCE)
+
+# MFEM's OpenMP backend, used once an "omp" Device is configured (see
+# parallel::Initialize). The deprecated MFEM_USE_LEGACY_OPENMP is not used:
+# it requires MFEM_THREAD_SAFE and gave wrong results here.
+set(MFEM_USE_OPENMP ${USE_OPENMP} CACHE BOOL "MFEM OpenMP backend" FORCE)
 
 # Automatically download and build MFEM
 FetchContent_Declare(

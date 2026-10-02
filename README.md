@@ -43,7 +43,7 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 - **HYPRE** (v3.0.0): built automatically in the MPI build, or supplied via `HYPRE_DIR`
 - **METIS** (5.x): optional in the MPI build, supplied via `METIS_DIR`; only
   needed for multi-rank partitioning, which is not implemented yet
-- **OpenMP**: For parallel assembly (usually included with compiler)
+- **OpenMP**: threads the linear algebra (usually included with the compiler); see [Threads](#threads)
 - **Doxygen**: For generating API documentation
 - **Catch2**: For running tests (automatically downloaded)
 
@@ -146,6 +146,19 @@ An MPI build currently runs on **one rank**: run the executable directly or
 with `mpirun -np 1`. Starting more ranks is rejected, since the solvers and
 result writers are not distributed yet. `--version` reports whether a binary
 is a `serial` or `MPI/HYPRE` build.
+
+### Threads
+
+With `USE_OPENMP` (on by default) the linear algebra is threaded over
+`OMP_NUM_THREADS` threads (default: every core): the Krylov solvers' matrix
+and vector operations (MFEM's OpenMP backend), AMGCL's multigrid and, in the
+MPI build, HYPRE's AMS and BoomerAMG. Assembly and the rest stay serial. On
+four cores the TEAM 7 eddy-current solve (0.9M complex unknowns) runs 2.5x
+faster than on one (168 s against 428 s).
+
+Under `mpirun`, Open MPI binds a rank to one core, which leaves every thread
+sharing it. Run the executable directly, or pass `--bind-to none`
+(`mpirun --bind-to none -np 1 ./mfem-electromag config.json`).
 
 ## Usage
 

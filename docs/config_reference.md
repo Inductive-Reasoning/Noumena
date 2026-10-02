@@ -111,7 +111,9 @@ hierarchy is built once per mesh and reused for every scenario. The MQS solver
 uses unpreconditioned GMRES. 3D magnetostatics uses CG preconditioned by
 hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
 constant under refinement; 3D MQS uses GMRES preconditioned block-diagonally
-by AMS on `K + ωM_σ` (MPI/HYPRE build only). The 3D MQS `direct` solver is a
+by AMS on `K + ωM_σ` (MPI/HYPRE build only). AMS smooths with hybrid
+Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
+loses strength; the iteration counts differ accordingly. The 3D MQS `direct` solver is a
 sparse LU of the complex system, refactored per frequency; no MUMPS or other
 parallel direct solver is included. In every solver `solver_tolerance` is the relative
 residual `||b - Ax|| / ||b||`; a run that does not reach it within
