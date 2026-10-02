@@ -1,7 +1,8 @@
 # TEAM Workshop Problem 7, measured values (from the problem's tables).
 # Bz [gauss] along A1-B1 (y = 72, z = 34 mm) and A2-B2 (y = 144, z = 34 mm);
 # Jy [1e6 A/m^2] on the plate's surfaces along A3-B3 (y = 72, z = 19 mm) and
-# A4-B4 (y = 72, z = 0). Columns: instantaneous values at omega t = 0 and 90
+# A4-B4 (y = 72, z = 0), as the tables label them (but see README.md: the two
+# appear exchanged). Columns: instantaneous values at omega t = 0 and 90
 # degrees, the coil current peaking at omega t = 0.
 line,x_mm,f50_wt0,f50_wt90,f200_wt0,f200_wt90
 A1B1,0,-4.90,-1.16,-3.63,-1.38

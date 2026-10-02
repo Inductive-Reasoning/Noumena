@@ -284,6 +284,7 @@ if(BUILD_TESTING)
         test/test_probes.cpp
         test/test_solvers.cpp
         test/test_status_reporter.cpp
+        test/test_team7.cpp
         test/test_hypre.cpp
     )
 

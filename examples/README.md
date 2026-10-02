@@ -1,8 +1,8 @@
 # MFEM-ElectroMag Examples
 
 This directory contains example problems demonstrating electromagnetic field simulations
-using MFEM-ElectroMag. All examples use the axisymmetric (r-z) formulation with second
-order (`"order": 2`) elements.
+using MFEM-ElectroMag. All use second order (`"order": 2`) elements; all but `team7/` use
+the axisymmetric (r-z) formulation.
 
 **Units: SI, with mesh coordinates in metres.** Every `.geo` here is written in metres,
 and every config value is SI (`sigma` in S/m, `frequency` in Hz, excitations in V or A).
@@ -18,10 +18,11 @@ by powers of 1000. See [Units](../docs/config_reference.md#units).
 | `solenoid/` | Magnetostatics | `solenoid.mesh` | Axisymmetric solenoid, inductance |
 | `current_loop/` | Magnetostatics + MQS | `loop.mesh` | Single current loop with an analytical hand calculation notebook, plus a low-frequency MQS cross-check |
 | `eddy_current/` | Magnetoquasistatics | `eddy_current.mesh` | Conducting cylinder in an AC field, skin effect, losses |
+| `team7/` | Magnetoquasistatics (3D) | `team7.msh` | TEAM benchmark 7: plate with a hole under a racetrack coil, compared with measurements; needs the MPI build |
 
 Each directory contains a `config.json` and its `.geo` source geometry. The generated
 `.mesh` files are committed, so the examples run without installing Gmsh.
-`simple_capacitor/`, `solenoid/`, and `eddy_current/` also include a `README.md` with the
+`simple_capacitor/`, `solenoid/`, `eddy_current/` and `team7/` also include a `README.md` with the
 detailed problem description; `current_loop/` includes `hand_calc.ipynb` instead.
 
 `current_loop/` additionally ships `config_mqs_lowfreq.json`, which solves the same mesh
