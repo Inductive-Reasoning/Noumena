@@ -74,5 +74,13 @@ What remains is the comparison with the measurements:
   ([TEAM-problems](https://github.com/NGSolve/TEAM-problems), `TEAM-7/team7.ipynb`).
   The bottom surface at 50 Hz still disagrees by about half its peak.
 - The solver reports that the divergence-free projection removed 2.6% of the
-  coil's current density: the stranded coil's curved corners are faceted, so
-  its uniform current is not exactly balanced on the mesh.
+  coil's current density. This is not faceting: it is the same on a mesh of
+  second-order (curved) tetrahedra, and on refinement. A stranded current
+  runs along the direction of the path solved through the cut, with uniform
+  magnitude; in a racetrack the solved path strengthens towards the inside
+  of the corners but not along the straight sides, so the normalized
+  direction is not quite current-conserving where they meet, and the
+  projection removes the difference. A winding's current -- uniform, along
+  the straight sides and around arcs at the corners -- would need no
+  correction. On the curved mesh no probe value changed by more than 0.2% of
+  its column's peak, so the example keeps the straight-sided mesh.
