@@ -18,7 +18,7 @@
 #include "vector_potential_solver_3d.hpp"
 #include "mqs_massive_port_operator.hpp"
 #include "../coefficients/complex_vector_magnitude_coefficient.hpp"
-#include "../coefficients/mqs_vector_loss_density_coefficient.hpp"
+#include "../coefficients/mqs_vector_electric_field.hpp"
 #include "../core/constants.hpp"
 #include "../linalg/serial_ams.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
@@ -109,8 +109,8 @@ public:
 	/// Time-averaged dissipation of every region that can dissipate.
 	std::vector<RegionLoss> ComputeRegionLosses() const {
 		if (!A) { return {}; }
-		std::unique_ptr<mfem::Coefficient> density = MakeLossDensity();
-		return IntegrateRegionLosses(*density);
+		MqsVectorLossDensityCoefficient density(*sigma_coeff, MakeElectricField());
+		return IntegrateRegionLosses(density);
 	}
 
 	void Setup() override {
@@ -247,7 +247,11 @@ public:
 			std::make_unique<mfem::CurlGridFunctionCoefficient>(&A->imag()));
 		fields.AddScalar("B_Magnitude",
 			std::make_unique<ComplexVectorMagnitudeCoefficient>(b_re, b_im));
-		fields.AddScalar("P_Loss", MakeLossDensity());
+		const auto e = MakeElectricField();
+		using J = MqsVectorCurrentDensityCoefficient;
+		fields.AddVector("J_Real", std::make_unique<J>(*sigma_coeff, e, J::Part::Real));
+		fields.AddVector("J_Imag", std::make_unique<J>(*sigma_coeff, e, J::Part::Imag));
+		fields.AddScalar("P_Loss", std::make_unique<MqsVectorLossDensityCoefficient>(*sigma_coeff, e));
 		return fields;
 	}
 
@@ -521,8 +525,8 @@ private:
 #endif
 	}
 
-	std::unique_ptr<mfem::Coefficient> MakeLossDensity() const {
-		std::vector<MqsVectorLossDensityCoefficient::Drive> drives;
+	std::shared_ptr<const MqsVectorElectricField> MakeElectricField() const {
+		std::vector<MqsVectorElectricField::Drive> drives;
 		std::vector<int> drive_of_attribute(mesh.attributes.Max(), -1);
 		for (size_t k = 0; k < conductors.size(); ++k) {
 			if (port_of[k] < 0) continue;
@@ -532,8 +536,7 @@ private:
 				if (conductors[k].Marker[a]) drive_of_attribute[a] = index;
 			}
 		}
-		return std::make_unique<MqsVectorLossDensityCoefficient>(
-			*sigma_coeff, A->real(), A->imag(), omega, std::move(drives),
-			std::move(drive_of_attribute));
+		return std::make_shared<const MqsVectorElectricField>(
+			A->real(), A->imag(), omega, std::move(drives), std::move(drive_of_attribute));
 	}
 };

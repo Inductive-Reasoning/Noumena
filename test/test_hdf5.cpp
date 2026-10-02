@@ -192,8 +192,8 @@ TEST_CASE("Field HDF5 writes numeric primary and projected derived data", "[hdf5
 	Hdf5ResultsWriter writer(temporary.path, mesh, config);
 	Scenario scenario;
 	scenario.Frequency = 50.0;
-	writer.WriteScenario("scenario_000000", "Drive/A", scenario, fields);
-	writer.WriteScenario("scenario_000001", "Drive/A", scenario, fields);
+	writer.WriteScenario("scenario_000000", "Drive/A", scenario, fields, {});
+	writer.WriteScenario("scenario_000001", "Drive/A", scenario, fields, {});
 	mfem::DenseMatrix matrix(1);
 	matrix = 2.5;
 	matrix_io::CouplingMatrixWriter coupling(writer.File(), {"Drive"}, "electrostatics", "planar");

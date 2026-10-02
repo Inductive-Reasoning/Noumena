@@ -134,7 +134,11 @@ written; coupling matrices are still printed to the console.
   "export_fields_for_coupling_matrix": false,
   "paraview": { "directory": "paraview" },
   "gmsh": { "directory": "gmsh", "version": "2.2" },
-  "hdf5": { "file": "results.h5" }
+  "hdf5": { "file": "results.h5" },
+  "probes": [
+    { "name": "axis", "line": { "from": [0, 0, 0], "to": [0, 0, 0.1], "count": 11 } },
+    { "name": "surface", "points": [[0.02, 0, 0.019]], "entity_group": "Plate" }
+  ]
 }
 ```
 
@@ -149,6 +153,7 @@ written; coupling matrices are still printed to the console.
 | `gmsh.version` | string | `2.2` | `2.2` or `4.1` |
 | `hdf5` | object | omitted | Enable one archive for the entire run |
 | `hdf5.file` | string | `results.h5` | Archive filename/path beneath the root |
+| `probes` | array | omitted | Points at which every exported field is sampled; see below |
 
 Absolute paths are preserved. Relative format destinations resolve beneath
 `output.directory`, not beside the config file. Paths must be nonempty; use
@@ -172,6 +177,33 @@ run leaves only the final mesh and its scenario data in the archive.
 
 See [the HDF5 schema](coupling_hdf5.md) for mesh reconstruction, fields, matrix
 units, frequency indexing, and C# dictionary assembly.
+
+### `output.probes`
+
+Each probe is a named set of points at which every field the solver exports
+(the same fields the other formats write: potentials, B, E, J, loss density,
+...) is evaluated exactly, for each scenario whose fields are written.
+
+| Key | Type | Required | Meaning |
+|-----|------|----------|---------|
+| `name` | string | yes | Unique; letters, digits, `_` and `-` |
+| `points` | array | one of | Coordinate arrays, of the model's space dimension (2, or 3 for `3d`) |
+| `line` | object | one of | `from` and `to` (coordinates) and `count` >= 2: points evenly spaced, both ends included |
+| `entity_group` | string | no | A domain group; points are located only in its elements |
+
+Fields jump across material interfaces (E across a permittivity change, J at
+a conductor's surface), so a point on an interface takes whichever adjacent
+element is found first. Give the probe the `entity_group` of the side it
+should be sampled from; a point outside that group is an error, as is a point
+outside the mesh.
+
+Each probe writes `probes/<artifact>_<probe>.csv` beneath `output.directory`
+(`<artifact>` as for the visualization files): a header row, then per point
+its coordinates and every field's components, named `<field>_x`, `_y`, `_z`
+(`_r`, `_z` in an axisymmetric model). With `hdf5` enabled the same samples
+are stored under each scenario's `probes` group. Probes follow the other
+formats in coupling analyses: they are written only with
+`export_fields_for_coupling_matrix`.
 
 ## `simulation.amr`
 

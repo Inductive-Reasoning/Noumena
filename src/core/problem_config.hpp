@@ -163,11 +163,23 @@ struct GmshOutputSettings {
 	std::string Version = "2.2";
 };
 
+// A named set of points at which every exported field is sampled, per
+// scenario. Coordinates have the mesh's space dimension. A probe restricted to
+// a domain entity group locates its points only in that group's elements, so
+// a point on a material interface is sampled from the chosen side.
+struct Probe {
+	std::string Name;
+	std::vector<std::vector<double>> Points;
+	std::string EntityGroupName;  // empty: any element
+};
+
 struct OutputSettings {
 	std::filesystem::path Directory = "results";
 	std::optional<std::filesystem::path> ParaviewDirectory;
 	std::optional<GmshOutputSettings> Gmsh;
 	std::optional<std::filesystem::path> Hdf5File;
+	std::filesystem::path ProbeDirectory;  // CSV files; beneath Directory
+	std::vector<Probe> Probes;
 	bool ExportFieldsForCouplingMatrix = false;
 };
 

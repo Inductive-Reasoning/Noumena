@@ -281,6 +281,7 @@ if(BUILD_TESTING)
         test/test_magnetostatic_3d.cpp
         test/test_magnetoquasistatic_3d.cpp
         test/test_mqs_port_operator.cpp
+        test/test_probes.cpp
         test/test_solvers.cpp
         test/test_status_reporter.cpp
         test/test_hypre.cpp

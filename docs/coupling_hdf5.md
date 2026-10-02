@@ -49,6 +49,9 @@ display names cannot collide. Each scenario group has:
 - `driven_terminal`: the unit-excited terminal for coupling scenarios.
 - `excitations/terminal_names` and `excitations/values`: aligned drive arrays.
 - `fields/<field>/values`: a one-dimensional double array of FE coefficients.
+- `probes/<probe>/points` and `probes/<probe>/<field>`, when `output.probes` is
+  configured: the probe's points (count x space dimension) and every field
+  sampled exactly at them (count x components).
 
 Each field group has `kind` (`primary`, `scalar`, or `vector`). Each `values`
 dataset has `finite_element_collection`, `vector_dimension`, and `ordering`
@@ -58,8 +61,13 @@ and load the array into a `GridFunction`. These are native DOFs, not values on
 the corner-vertex array. Derived fields are projected into L2 order
 `max(0, solution_order - 1)`; primary fields retain their native space.
 
-MQS stores `A_Real`, `A_Imag`, `B_Real`, `B_Imag`, `B_Magnitude`, and `P_Loss`.
-Phasors use the peak-amplitude convention; `P_Loss` is time-averaged loss density.
+MQS stores `A_Real`, `A_Imag`, `B_Real`, `B_Imag`, `B_Magnitude`, and `P_Loss`;
+3D MQS also stores `J_Real` and `J_Imag`, the conduction current density
+`sigma E` (eddy currents, plus the driven current of massive conductors; zero
+in stranded ones). Phasors use the peak-amplitude convention, with time
+dependence `Re(X exp(j omega t))`: the instantaneous value at `omega t = 0` is
+the real part, at 90 degrees minus the imaginary part. `P_Loss` is the
+time-averaged loss density.
 
 ### Coupling matrices
 

@@ -9,6 +9,7 @@
 #include <vector>
 #include <highfive/H5File.hpp>
 #include "field_export.hpp"
+#include "probe_sampler.hpp"
 #include "../core/problem_config.hpp"
 
 class Hdf5ResultsWriter {
@@ -45,7 +46,7 @@ public:
 
 	void WriteScenario(const std::string& id, const std::string& name,
 		const Scenario& scenario, const FieldExportSet& fields,
-		const std::string& driven_terminal = {}) {
+		const std::vector<ProbeSamples>& probes, const std::string& driven_terminal = {}) {
 		if (!file_.exist("scenarios")) file_.createGroup("scenarios");
 		auto group = file_.getGroup("scenarios").createGroup(id);
 		group.createAttribute("name", name);
@@ -75,6 +76,7 @@ public:
 				WriteField(field_group, field.name, vector ? "vector" : "scalar", projected);
 			}
 		}
+		if (!probes.empty()) WriteProbes(group.createGroup("probes"), probes);
 		file_.flush();
 	}
 
@@ -105,6 +107,24 @@ private:
 		group.createDataSet("vertices", vertices);
 		group.createDataSet("attributes", attributes);
 		group.createDataSet("geometry", geometry);
+	}
+
+	// Per probe: "points" (count x space dimension) and one dataset per field
+	// (count x components), sampled exactly at the points.
+	static void WriteProbes(HighFive::Group parent, const std::vector<ProbeSamples>& probes) {
+		for (const ProbeSamples& probe : probes) {
+			auto group = parent.createGroup(probe.Name);
+			const std::size_t count = probe.Points.size();
+			std::vector<double> points;
+			for (const auto& point : probe.Points) points.insert(points.end(), point.begin(), point.end());
+			group.createDataSet<double>("points",
+				HighFive::DataSpace({count, probe.Points.front().size()})).write_raw(points.data());
+			for (const ProbeSamples::Field& field : probe.Fields) {
+				group.createDataSet<double>(field.Name,
+					HighFive::DataSpace({count, static_cast<std::size_t>(field.VDim)}))
+					.write_raw(field.Values.data());
+			}
+		}
 	}
 
 	static void WriteField(HighFive::Group parent, const std::string& name,

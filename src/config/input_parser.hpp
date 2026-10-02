@@ -280,7 +280,37 @@ private:
                     Get(*target, "file", std::string("results.h5")));
             }
         }
+        output.ProbeDirectory = resolve(output.Directory, "probes");
+        if (const auto probes = settings.find("probes"); probes != settings.end()) {
+            for (const json& entry : *probes) { output.Probes.push_back(GetProbe(entry)); }
+        }
         return output;
+    }
+
+    // {"name", "points": [[x, y(, z)], ...]} or {"name", "line": {"from", "to",
+    // "count"}} (count points evenly spaced, both ends included), with an
+    // optional "entity_group". Shapes are checked by ConfigValidator.
+    [[nodiscard]] static Probe GetProbe(const json& entry) {
+        Probe probe;
+        probe.Name = entry.at("name").get<std::string>();
+        probe.EntityGroupName = Get(entry, "entity_group", std::string{});
+        if (const auto points = entry.find("points"); points != entry.end()) {
+            for (const json& point : *points) {
+                probe.Points.push_back(point.get<std::vector<double>>());
+            }
+        } else {
+            const json& line = entry.at("line");
+            const auto from = line.at("from").get<std::vector<double>>();
+            const auto to = line.at("to").get<std::vector<double>>();
+            const int count = line.at("count").get<int>();
+            for (int i = 0; i < count; ++i) {
+                const double t = static_cast<double>(i) / (count - 1);
+                std::vector<double> point(from.size());
+                for (size_t c = 0; c < from.size(); ++c) { point[c] = from[c] + t * (to[c] - from[c]); }
+                probe.Points.push_back(point);
+            }
+        }
+        return probe;
     }
 
     // Parse the optional "simulation.amr" block. Missing keys fall back to the

@@ -107,7 +107,8 @@ private:
         }
         for (const auto& item : output.items()) {
             if (item.key() != "directory" && item.key() != "export_fields_for_coupling_matrix" &&
-                item.key() != "paraview" && item.key() != "gmsh" && item.key() != "hdf5") {
+                item.key() != "paraview" && item.key() != "gmsh" && item.key() != "hdf5" &&
+                item.key() != "probes") {
                 AddError("output." + item.key(), "Unknown output setting");
             }
         }
@@ -415,6 +416,91 @@ private:
             }
             if (amr.contains("error_tolerance") && amr["error_tolerance"].get<double>() < 0.0) {
                 AddError("simulation.amr.error_tolerance", "Error tolerance cannot be negative");
+            }
+        }
+    }
+
+    // output.probes: named point sets, each "points" (coordinate arrays) or a
+    // "line" {"from", "to", "count" >= 2}, optionally restricted to a domain
+    // entity group. Coordinates have the model's space dimension. Names become
+    // file names, so they are restricted to [A-Za-z0-9_-].
+    void ValidateProbes(const json& config, const mfem::Mesh* mesh) {
+        if (!config.contains("output") || !config["output"].contains("probes")) return;
+        const auto& probes = config["output"]["probes"];
+        if (!probes.is_array()) {
+            AddError("output.probes", "Must be an array of probes");
+            return;
+        }
+        int dim = 2;
+        if (mesh) {
+            dim = mesh->SpaceDimension();
+        } else if (config.contains("simulation") && config["simulation"].value("geometry_type", "") == "3d") {
+            dim = 3;
+        }
+        const auto check_point = [&](const json& point, const std::string& field) {
+            if (!point.is_array() || static_cast<int>(point.size()) != dim ||
+                !std::all_of(point.begin(), point.end(), [](const json& x) { return x.is_number(); })) {
+                AddError(field, "Must be an array of " + std::to_string(dim) + " coordinates");
+            }
+        };
+        std::set<std::string> names;
+        for (size_t i = 0; i < probes.size(); ++i) {
+            const auto& probe = probes[i];
+            const std::string prefix = "output.probes[" + std::to_string(i) + "]";
+            if (!probe.is_object()) {
+                AddError(prefix, "Must be an object");
+                continue;
+            }
+            for (const auto& item : probe.items()) {
+                if (item.key() != "name" && item.key() != "points" && item.key() != "line" &&
+                    item.key() != "entity_group") {
+                    AddError(prefix + "." + item.key(), "Unknown probe setting");
+                }
+            }
+            const std::string name = probe.contains("name") && probe["name"].is_string()
+                ? probe["name"].get<std::string>() : std::string{};
+            if (name.empty() || !std::all_of(name.begin(), name.end(), [](char c) {
+                    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-'; })) {
+                AddError(prefix + ".name", "Required: a nonempty name of letters, digits, '_' and '-'");
+            } else if (!names.insert(name).second) {
+                AddError(prefix + ".name", "Duplicate probe name '" + name + "'");
+            }
+            if (probe.contains("points") == probe.contains("line")) {
+                AddError(prefix, "Give exactly one of 'points' or 'line'");
+            } else if (probe.contains("points")) {
+                const auto& points = probe["points"];
+                if (!points.is_array() || points.empty()) {
+                    AddError(prefix + ".points", "Must be a nonempty array of points");
+                } else {
+                    for (size_t k = 0; k < points.size(); ++k) {
+                        check_point(points[k], prefix + ".points[" + std::to_string(k) + "]");
+                    }
+                }
+            } else {
+                const auto& line = probe["line"];
+                if (!line.is_object()) {
+                    AddError(prefix + ".line", "Must be an object with 'from', 'to' and 'count'");
+                } else {
+                    for (const auto& item : line.items()) {
+                        if (item.key() != "from" && item.key() != "to" && item.key() != "count") {
+                            AddError(prefix + ".line." + item.key(), "Unknown line setting");
+                        }
+                    }
+                    check_point(line.value("from", json()), prefix + ".line.from");
+                    check_point(line.value("to", json()), prefix + ".line.to");
+                    if (!line.contains("count") || !line["count"].is_number_integer() ||
+                        line["count"].get<int>() < 2) {
+                        AddError(prefix + ".line.count", "Must be an integer of at least 2");
+                    }
+                }
+            }
+            if (probe.contains("entity_group")) {
+                if (!probe["entity_group"].is_string()) {
+                    AddError(prefix + ".entity_group", "Must be a string");
+                } else if (!domain_group_names_.count(probe["entity_group"].get<std::string>())) {
+                    AddError(prefix + ".entity_group",
+                        "Must name a domain entity group (of the mesh's dimension)");
+                }
             }
         }
     }
@@ -1199,6 +1285,7 @@ public:
         ValidateSimulation(config);
         ValidateGeometryCompatibility(config, mesh);
         ValidateEntityGroups(config, mesh);
+        ValidateProbes(config, mesh);
         ValidateMaterials(config, mesh);
         ValidateRegions(config, mesh);
         ValidateBoundaries(config, mesh);
