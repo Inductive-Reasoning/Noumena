@@ -15,8 +15,13 @@
 
 SetFactory("OpenCASCADE");
 
-h_plate = DefineNumber[0.006, Name "Parameters/h_plate"];
-h_coil = DefineNumber[0.012, Name "Parameters/h_coil"];
+// Override with gmsh -setnumber h_plate <size> (and h_coil).
+If (!Exists(h_plate))
+  h_plate = 0.006;
+EndIf
+If (!Exists(h_coil))
+  h_coil = 0.012;
+EndIf
 
 // Air box (Fig. 2 of the problem).
 box = newv;
