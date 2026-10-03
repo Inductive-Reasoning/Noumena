@@ -16,6 +16,7 @@
 #include "physics_solver.hpp"
 #include "../axisym/axisymmetric_curl_curl_integrator.hpp"
 #include "../axisym/magnetic_axis_boundary.hpp"
+#include "../io/region_loss.hpp"
 
 /**
  * @brief What every magnetic vector-potential solver shares, in 2D or 3D.
@@ -31,10 +32,7 @@ class MagneticSolverBase : public PhysicsSolver {
 public:
 	/// One conductive region's time-averaged dissipation [W], and the label
 	/// under which it reports.
-	struct RegionLoss {
-		std::string Name;
-		double Power = 0.0;
-	};
+	using RegionLoss = ::RegionLoss;
 
 protected:
 	// nu = 1/mu (reluctivity) and the field-solve conductivity sigma, keyed

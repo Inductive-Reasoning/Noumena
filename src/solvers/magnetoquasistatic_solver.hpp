@@ -514,8 +514,9 @@ public:
                 ImprintScenario(scenario, ImprintMode::Field);
                 SolveSystem();
                 AccumulateScenarioError();
-                ReportRegionLosses(ComputeRegionLosses());
-                SaveScenario(name, scenario);
+                const std::vector<RegionLoss> losses = ComputeRegionLosses();
+                ReportRegionLosses(losses);
+                SaveScenario(name, scenario, {}, losses);
             }
             return;
         }

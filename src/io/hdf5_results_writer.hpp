@@ -10,6 +10,7 @@
 #include <highfive/H5File.hpp>
 #include "field_export.hpp"
 #include "probe_sampler.hpp"
+#include "region_loss.hpp"
 #include "../core/problem_config.hpp"
 
 class Hdf5ResultsWriter {
@@ -46,7 +47,8 @@ public:
 
 	void WriteScenario(const std::string& id, const std::string& name,
 		const Scenario& scenario, const FieldExportSet& fields,
-		const std::vector<ProbeSamples>& probes, const std::string& driven_terminal = {}) {
+		const std::vector<ProbeSamples>& probes, const std::string& driven_terminal = {},
+		const std::vector<RegionLoss>& losses = {}) {
 		if (!file_.exist("scenarios")) file_.createGroup("scenarios");
 		auto group = file_.getGroup("scenarios").createGroup(id);
 		group.createAttribute("name", name);
@@ -77,6 +79,18 @@ public:
 			}
 		}
 		if (!probes.empty()) WriteProbes(group.createGroup("probes"), probes);
+		if (!losses.empty()) {
+			// Time-averaged Joule loss of every conducting region [W].
+			std::vector<std::string> names;
+			std::vector<double> power;
+			for (const RegionLoss& loss : losses) {
+				names.push_back(loss.Name);
+				power.push_back(loss.Power);
+			}
+			auto loss_group = group.createGroup("losses");
+			loss_group.createDataSet("region_names", names);
+			loss_group.createDataSet("power_w", power);
+		}
 		file_.flush();
 	}
 

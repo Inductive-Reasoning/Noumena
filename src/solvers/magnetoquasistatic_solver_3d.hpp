@@ -195,8 +195,9 @@ public:
 				auto operation = Reporter().Start("scenario '" + name + "'");
 				ActivateFrequency(scenario.Frequency);
 				Solve(scenario);
-				ReportRegionLosses(ComputeRegionLosses());
-				SaveScenario(name, scenario);
+				const std::vector<RegionLoss> losses = ComputeRegionLosses();
+				ReportRegionLosses(losses);
+				SaveScenario(name, scenario, {}, losses);
 			}
 			return;
 		}

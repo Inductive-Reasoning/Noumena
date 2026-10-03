@@ -31,7 +31,8 @@ public:
 	}
 
 	void WriteScenario(const std::string& name, const Scenario& scenario,
-		const FieldExportSet& fields, const std::string& driven_terminal = {}) {
+		const FieldExportSet& fields, const std::string& driven_terminal = {},
+		const std::vector<RegionLoss>& losses = {}) {
 		if (!WantsFields()) return;
 		std::ostringstream identifier;
 		identifier << "scenario_" << std::setfill('0') << std::setw(6) << next_scenario_++;
@@ -59,7 +60,7 @@ public:
 			ProbeSampler::WriteCsv(config_.Output.ProbeDirectory, artifact_name, probes,
 				config_.GeometryType == GeometryType::Axisymmetric);
 		}
-		if (hdf5_) hdf5_->WriteScenario(id, name, scenario, fields, probes, driven_terminal);
+		if (hdf5_) hdf5_->WriteScenario(id, name, scenario, fields, probes, driven_terminal, losses);
 		StatusReporter::Global().Diagnostic("Wrote " + id + " for scenario '" + name + "'"
 			+ (driven_terminal.empty() ? "" : ", terminal '" + driven_terminal + "'"));
 	}

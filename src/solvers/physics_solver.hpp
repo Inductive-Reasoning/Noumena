@@ -485,9 +485,10 @@ protected:
     // out to whichever formats are enabled. The writer owns the format details;
     // solvers only declare WHAT to export via CollectExportFields().
     void SaveScenario(const std::string& scenario_name, const Scenario& scenario,
-        const std::string& driven_terminal = {}) {
+        const std::string& driven_terminal = {}, const std::vector<RegionLoss>& losses = {}) {
         if (!result_writer || !result_writer->WantsFields()) return;
-        result_writer->WriteScenario(scenario_name, scenario, CollectExportFields(), driven_terminal);
+        result_writer->WriteScenario(scenario_name, scenario, CollectExportFields(), driven_terminal,
+            losses);
     }
 
     // Unit label for an extracted coupling quantity: absolute for the

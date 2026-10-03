@@ -91,3 +91,7 @@ examples/simple_capacitor/results_electrostatic/*
 
 # Python bytecode caches (examples/*/compare.py and similar scripts)
 __pycache__/
+
+# TEAM 21a meshes are generated with Gmsh (see examples/team21a/README.md)
+examples/team21a/*.msh
+examples/team21a/results-*/

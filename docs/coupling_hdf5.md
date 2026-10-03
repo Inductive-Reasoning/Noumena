@@ -52,6 +52,10 @@ display names cannot collide. Each scenario group has:
 - `probes/<probe>/points` and `probes/<probe>/<field>`, when `output.probes` is
   configured: the probe's points (count x space dimension) and every field
   sampled exactly at them (count x components).
+- `losses/region_names` and `losses/power_w`, for MQS field scenarios: the
+  time-averaged Joule loss [W] of every conducting region, as printed after
+  each solve (a massive terminal, a material region, or an unnamed conducting
+  attribute).
 
 Each field group has `kind` (`primary`, `scalar`, or `vector`). Each `values`
 dataset has `finite_element_collection`, `vector_dimension`, and `ordering`

@@ -270,9 +270,10 @@ TEST_CASE("3D MQS electrode bar: DC resistance and power balance",
 	json config = MakeBarConfig(sigma, "field");
 	config["scenarios"] = json::array({{{"name", "AC"}, {"frequency", 1000.0},
 		{"excitations", json::array({{{"terminal", "Bar"}, {"value", 2.0}}})}}});
-	MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config));
+	MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config, "bar_field.h5"));
 	solver.Setup();
 	solver.Run();
+	solver.SaveAnalysis();
 	const std::complex<double> V = solver.GetPortVoltage("Bar");
 	const auto losses = solver.ComputeRegionLosses();
 	REQUIRE(losses.size() == 1);
@@ -280,6 +281,18 @@ TEST_CASE("3D MQS electrode bar: DC resistance and power balance",
 	// Skin effect raises R above its DC value.
 	REQUIRE(V.real() / 2.0 > 1.0001 / (sigma * 0.25));
 	REQUIRE(losses[0].Power == Catch::Approx(0.5 * V.real() * 2.0).epsilon(1e-8));
+
+	// The archive records the same losses with the scenario.
+	std::vector<std::string> names;
+	std::vector<double> power;
+	{
+		HighFive::File file("bar_field.h5", HighFive::File::ReadOnly);
+		file.getDataSet("/scenarios/scenario_000000/losses/region_names").read(names);
+		file.getDataSet("/scenarios/scenario_000000/losses/power_w").read(power);
+	}
+	fs::remove("bar_field.h5");
+	REQUIRE(names == std::vector<std::string>{ "Bar" });
+	REQUIRE(power == std::vector<double>{ losses[0].Power });
 }
 
 TEST_CASE("3D MQS routing, exports and rejections", "[solvers][mqs][3d]") {

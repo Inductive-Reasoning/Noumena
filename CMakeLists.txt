@@ -293,6 +293,7 @@ if(BUILD_TESTING)
         test/test_solvers.cpp
         test/test_status_reporter.cpp
         test/test_team7.cpp
+        test/test_team21a.cpp
         test/test_hypre.cpp
     )
 
@@ -309,7 +310,14 @@ if(BUILD_TESTING)
     target_include_directories(mfem_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     # Committed test inputs (meshes and the Gmsh scripts that generate them).
     target_compile_definitions(mfem_tests PRIVATE
-        MFEM_ELECTROMAG_TEST_DATA="${CMAKE_SOURCE_DIR}/test/data")
+        MFEM_ELECTROMAG_TEST_DATA="${CMAKE_SOURCE_DIR}/test/data"
+        MFEM_ELECTROMAG_EXAMPLES="${CMAKE_SOURCE_DIR}/examples")
+    # Gmsh, for the on-demand benchmarks whose meshes are generated rather
+    # than committed (they skip without it).
+    find_program(GMSH_EXECUTABLE gmsh)
+    if(GMSH_EXECUTABLE)
+        target_compile_definitions(mfem_tests PRIVATE MFEM_ELECTROMAG_GMSH="${GMSH_EXECUTABLE}")
+    endif()
 
     # Same COFF section limit as mfem-electromag: the solver test translation
     # units instantiate the full solver/writer stack.
