@@ -301,8 +301,10 @@ lines wherever the conductor turns at different radii across its section --
 a racetrack's corners, where it grows like `1/r` inwards -- and the projection
 then removes that part, so the source is the projected field rather than a
 uniform winding current. In TEAM 7's racetrack coil this is 2.6% on any mesh
-(see `examples/team7/README.md` for the measurements); a construction that
-avoids it is an open issue. The flux linkage of
+(see `examples/team7/README.md` for the measurements), 4.7% in TEAM 21a's.
+Its effect on the results is about the square of that fraction: solving with
+the exact winding current instead moves TEAM 7's fields by 0.12-0.17% and the
+TEAM 21a losses by 0.3-0.4%. A construction that avoids it is an open issue. The flux linkage of
 terminal `k` is `λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current
 density), and the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by
 construction.

@@ -112,7 +112,12 @@ it does on refinement (2.64% at 4 mm), so the 2.6% is the stranded path
 model's, not the mesh's. On the curved mesh no probe value moves by more than
 0.2% of its column's peak, so the example keeps the straight-sided mesh.
 
-The effect on the comparison is small (Bz agrees to 1.4-2.6%), but the
-projected source is not the winding's current. A better construction of
+The effect on the results is measured by solving with the exact winding
+current in place of the solver's (an experiment, not an option of the
+solver): every probe value moves by 0.12-0.17% of its column's peak, almost
+uniformly, and the plate loss by 0.3%. The projection mostly reduces the
+current's amplitude a little rather than misplacing it, and none of the
+differences from the measurements above comes from it. The projected source
+is still not the winding's current. A better construction of
 stranded currents on solved paths, one that stays uniform and conserves
 current without a winding-specific direction, is still to be found.

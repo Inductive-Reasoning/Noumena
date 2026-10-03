@@ -92,4 +92,7 @@ slit positions here are those of the dimensioned drawing.
 As in TEAM 7, the solver reports that the divergence-free projection removed
 4.7% of each coil's current density: the uniform stranded current along a
 solved path is not exactly current-conserving in a racetrack's corners (see
-`docs/math_formulation.md`), an open issue of the stranded-path model.
+`docs/math_formulation.md`), an open issue of the stranded-path model. Its
+effect is small: with the exact winding current (straight sides and circular
+corners, as an experiment) the four losses rise by 0.3-0.4%, the P21a-3 gap
+included.
