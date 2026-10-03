@@ -1,0 +1,115 @@
+{
+  "simulation": {
+    "physics_type": "magnetoquasistatics",
+    "mesh": "team15-1.msh",
+    "order": 2,
+    "geometry_type": "3d",
+    "analysis_type": "coupling_matrix",
+    "linear_solver": "iterative",
+    "solver_tolerance": 1e-08,
+    "solver_max_iter": 3000,
+    "solver_print_level": 0
+  },
+  "output": {
+    "directory": "results-1",
+    "hdf5": {}
+  },
+  "entity_groups": [
+    {
+      "name": "Air",
+      "dim": 3,
+      "attribute_ids": [1]
+    },
+    {
+      "name": "Plate",
+      "dim": 3,
+      "attribute_ids": [2]
+    },
+    {
+      "name": "Slot",
+      "dim": 3,
+      "attribute_ids": [3]
+    },
+    {
+      "name": "Coil",
+      "dim": 3,
+      "attribute_ids": [4]
+    },
+    {
+      "name": "Outer",
+      "dim": 2,
+      "attribute_ids": [1]
+    }
+  ],
+  "regions": [
+    {
+      "name": "Air",
+      "entity_group": "Air",
+      "material": "Air"
+    },
+    {
+      "name": "Plate",
+      "entity_group": "Plate",
+      "material": "Aluminium"
+    },
+    {
+      "name": "Slot",
+      "entity_group": "Slot",
+      "material": "Air"
+    },
+    {
+      "name": "Coil",
+      "entity_group": "Coil",
+      "material": "Air"
+    }
+  ],
+  "materials": [
+    {
+      "name": "Air",
+      "properties": {
+        "mu_r": 1.0,
+        "sigma": 0.0
+      }
+    },
+    {
+      "name": "Aluminium",
+      "properties": {
+        "mu_r": 1.0,
+        "sigma": 30600000.0
+      }
+    }
+  ],
+  "terminals": [
+    {
+      "name": "Coil",
+      "quantity": "current",
+      "entity_group": "Coil",
+      "conductor_type": "stranded",
+      "direction": {
+        "type": "azimuthal",
+        "origin": [0.0, 0.0, 0.0],
+        "axis": [0.0, 0.0, 1.0]
+      }
+    }
+  ],
+  "boundary_conditions": [
+    {
+      "name": "Outer",
+      "type": "dirichlet",
+      "entity_group": "Outer",
+      "value": 0.0
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "900Hz",
+      "frequency": 900.0,
+      "excitations": [
+        {
+          "terminal": "Coil",
+          "value": 1.0
+        }
+      ]
+    }
+  ]
+}

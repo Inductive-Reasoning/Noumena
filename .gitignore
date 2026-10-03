@@ -95,3 +95,5 @@ __pycache__/
 # TEAM 21a meshes are generated with Gmsh (see examples/team21a/README.md)
 examples/team21a/*.msh
 examples/team21a/results-*/
+examples/team15/*.msh
+examples/team15/results-*/
