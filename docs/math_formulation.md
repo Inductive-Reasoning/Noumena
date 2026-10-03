@@ -276,11 +276,12 @@ The curl-curl operator is singular: it annihilates every gradient.
   by about 10⁻⁶ relative.
 
 Every current terminal is a conductor with a direction field `w = −∇v`,
-from a unit conduction potential `v` (analytic `w = φ̂ / (2πr)` for
-`azimuthal`; solved on the conductor for `electrodes` and `cut`, with `σ`
+from a unit conduction potential `v` (analytic `w = φ̂ / (Θr)` for
+`azimuthal`, `Θ` the conductor's angular extent: `2π` for a full ring, less
+for a sector bounded by symmetry planes; solved on the conductor for `electrodes` and `cut`, with `σ`
 weighting for a massive conductor). A stranded conductor carries
 `J = (I / A_cs) w / |w|` with `A_cs = ∫|w| dV` (for azimuthal,
-`∫ dV / (2πr)`, the meridional area); a massive one its DC distribution
+`∫ dV / (Θr)`, the meridional area); a massive one its DC distribution
 `J = σ w I / G` with `G = ∫σ|w|² dV` its conductance. Each unit-current
 load `b` is made discretely divergence-free before use: with `G` the discrete
 gradient from the matching H1 space and `M_c` the Nédélec mass matrix over the
@@ -373,10 +374,13 @@ The real and imaginary parts of `A_φ` represent:
 B⃗ = B⃗_real + j B⃗_imag = ∇ × A⃗
 ```
 
-**RMS magnitude:**
+**Magnitude (`B_Magnitude`):**
 ```
 |B⃗| = √(|B⃗_real|² + |B⃗_imag|²)
 ```
+With peak phasors this is √2 times the RMS of `B(t)`; for a field whose
+direction rotates in time (elliptical polarization) it is not the time peak
+of `|B(t)|` either.
 
 **Time-domain fields:**
 ```
