@@ -69,7 +69,9 @@ problem's calculation equally well.
 The losses are converged: refining the plate to 7 mm and the coils to 15 mm
 (1.7-1.9 million unknowns) changes them by at most 0.2%. P21a-3 is the
 exception to the agreement, and not for want of resolution: the refined mesh
-gives the same 1.01 W.
+gives the same 1.01 W, and so does refining the plate alone to 5 mm (two
+elements through its thickness, 16 across each strip; 1.012 W against
+1.013 W).
 
 The problem's authors solved P21a-3 with two formulations and got 1.14 W
 (Ar-V-Ar) and 1.15 W (T-Omega-Omega) (Cheng et al., IEEE Trans. Magn.
