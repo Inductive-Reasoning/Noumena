@@ -1,0 +1,313 @@
+{
+  "simulation": {
+    "physics_type": "magnetoquasistatics",
+    "mesh": "team21a-2.msh",
+    "order": 2,
+    "geometry_type": "3d",
+    "analysis_type": "field",
+    "linear_solver": "iterative",
+    "solver_tolerance": 1e-06,
+    "solver_max_iter": 2000,
+    "solver_print_level": 0
+  },
+  "output": {
+    "directory": "results-2",
+    "probes": [
+      {
+        "name": "Bx_coil_side",
+        "points": [
+          [
+            0.00576,
+            0.0,
+            0.006
+          ],
+          [
+            0.00576,
+            0.0,
+            0.03
+          ],
+          [
+            0.00576,
+            0.0,
+            0.066
+          ],
+          [
+            0.00576,
+            0.0,
+            0.102
+          ],
+          [
+            0.00576,
+            0.0,
+            0.139
+          ],
+          [
+            0.00576,
+            0.0,
+            0.175
+          ],
+          [
+            0.00576,
+            0.0,
+            0.211
+          ],
+          [
+            0.00576,
+            0.0,
+            0.23
+          ],
+          [
+            0.00576,
+            0.0,
+            0.246
+          ],
+          [
+            0.00576,
+            0.0,
+            0.28
+          ],
+          [
+            0.00576,
+            0.0,
+            0.313
+          ],
+          [
+            0.00576,
+            0.0,
+            0.344
+          ],
+          [
+            0.00576,
+            0.0,
+            0.372
+          ],
+          [
+            0.00576,
+            0.0,
+            0.398
+          ]
+        ]
+      },
+      {
+        "name": "Bx_far_side",
+        "points": [
+          [
+            -0.00576,
+            0.0,
+            0.006
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.03
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.066
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.102
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.139
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.175
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.211
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.23
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.246
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.28
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.313
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.344
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.372
+          ],
+          [
+            -0.00576,
+            0.0,
+            0.398
+          ]
+        ]
+      }
+    ]
+  },
+  "entity_groups": [
+    {
+      "name": "Air",
+      "dim": 3,
+      "attribute_ids": [
+        1
+      ]
+    },
+    {
+      "name": "Plate",
+      "dim": 3,
+      "attribute_ids": [
+        2
+      ]
+    },
+    {
+      "name": "Coil1",
+      "dim": 3,
+      "attribute_ids": [
+        3
+      ]
+    },
+    {
+      "name": "Coil2",
+      "dim": 3,
+      "attribute_ids": [
+        4
+      ]
+    },
+    {
+      "name": "Outer",
+      "dim": 2,
+      "attribute_ids": [
+        1
+      ]
+    },
+    {
+      "name": "Cut1",
+      "dim": 2,
+      "attribute_ids": [
+        2
+      ]
+    },
+    {
+      "name": "Cut2",
+      "dim": 2,
+      "attribute_ids": [
+        3
+      ]
+    }
+  ],
+  "regions": [
+    {
+      "name": "Air",
+      "entity_group": "Air",
+      "material": "Air"
+    },
+    {
+      "name": "Plate",
+      "entity_group": "Plate",
+      "material": "NonMagneticSteel"
+    },
+    {
+      "name": "Coil1",
+      "entity_group": "Coil1",
+      "material": "Air"
+    },
+    {
+      "name": "Coil2",
+      "entity_group": "Coil2",
+      "material": "Air"
+    }
+  ],
+  "materials": [
+    {
+      "name": "Air",
+      "properties": {
+        "mu_r": 1.0,
+        "sigma": 0.0
+      }
+    },
+    {
+      "name": "NonMagneticSteel",
+      "properties": {
+        "mu_r": 1.0,
+        "sigma": 1388900.0
+      }
+    }
+  ],
+  "terminals": [
+    {
+      "name": "Coil1",
+      "quantity": "current",
+      "entity_group": "Coil1",
+      "conductor_type": "stranded",
+      "direction": {
+        "type": "cut",
+        "cut": "Cut1",
+        "normal": [
+          0.0,
+          -1.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "name": "Coil2",
+      "quantity": "current",
+      "entity_group": "Coil2",
+      "conductor_type": "stranded",
+      "direction": {
+        "type": "cut",
+        "cut": "Cut2",
+        "normal": [
+          0.0,
+          1.0,
+          0.0
+        ]
+      }
+    }
+  ],
+  "boundary_conditions": [
+    {
+      "name": "Outer",
+      "type": "dirichlet",
+      "entity_group": "Outer",
+      "value": 0.0
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "50Hz",
+      "frequency": 50.0,
+      "excitations": [
+        {
+          "terminal": "Coil1",
+          "value": 4242.640687119286
+        },
+        {
+          "terminal": "Coil2",
+          "value": 4242.640687119286
+        }
+      ]
+    }
+  ]
+}
