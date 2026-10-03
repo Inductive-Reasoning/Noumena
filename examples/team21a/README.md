@@ -71,25 +71,21 @@ The losses are converged: refining the plate to 7 mm and the coils to 15 mm
 exception to the agreement, and not for want of resolution: the refined mesh
 gives the same 1.01 W.
 
-The difference is in the model, not the solution. The problem's authors
-solved P21a-3 with two formulations (Ar-V-Ar 1.14 W, T-Omega-Omega 1.15 W;
-Cheng et al., IEEE Trans. Magn. 40(2), 2004, Table II), but the eddy-current
-plot of that solution (its Fig. 2) has the middle slit at about y = +20 mm,
-not at the centre the drawing shows; the outer slits are at about +-90 mm,
-as drawn, and the two slits of P21a-2 at +-60. With the middle slit at
-y = +20 mm, this solver gives 1.13 W, within 1-2% of both of theirs, the same
-agreement as for the other three models. That geometry is not used here: the
-specification's drawing is the definition of the problem.
+The problem's authors solved P21a-3 with two formulations and got 1.14 W
+(Ar-V-Ar) and 1.15 W (T-Omega-Omega) (Cheng et al., IEEE Trans. Magn.
+40(2), 2004, Table II). Their other three models agree with this solver to
+within 1-2%, but this one is 11% below theirs, and the reason is not known.
+The measurement is above both calculations: by 9% over theirs and 19% over
+this one, where the other three agree to 2.4%. It also breaks the trend of
+the others: going from two slits to three, the measured loss falls to 0.74
+of its value, against 0.69 in their calculation and 0.59 here (from one slit
+to two, measurement and both calculations give 0.49-0.51).
 
-The measurement is above all of these calculations, by 9-10% even with the
-off-centre slit, where the other three agree to 2.4%. It also breaks the
-trend of the others: going from two slits to three, the measured loss falls
-to 0.74 of its value, against 0.59 here and 0.69 in the problem's
-calculation (from one slit to two, both measurement and calculation give
-0.49-0.51). The three-slit loss is sensitive to the slit geometry (the outer
-slits 5 mm further out raise it by 7%; slits 30 mm shorter at each end, by
-14%), so the as-built plate probably differs from its drawing in more than
-the middle slit.
+The three-slit loss is sensitive to the slit geometry. Moving the outer slits
+5 mm outward (to y = +-95, which is how the drawing's "90 90 90" chain would
+read if it were dimensioned to slit edges) raises it by 7%, to 1.09 W.
+Shortening every slit by 30 mm at each end raises it by 14%, to 1.15 W. The
+slit positions here are those of the dimensioned drawing.
 
 As in TEAM 7, the solver reports that the divergence-free projection removed
 4.7% of each coil's current density: the uniform stranded current along a
