@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -356,6 +357,35 @@ private:
 		return extent;
 	}
 
+	// The connected pieces of the n x A = 0 boundary: a piece number for each
+	// boundary element on it (-1 elsewhere). Elements sharing a vertex are in
+	// one piece, since a continuous potential cannot differ between them.
+	std::vector<int> WallPieces() const {
+		std::vector<int> root(mesh.GetNV());
+		for (int v = 0; v < mesh.GetNV(); ++v) { root[v] = v; }
+		auto find = [&](int v) {
+			while (root[v] != v) { v = root[v] = root[root[v]]; }
+			return v;
+		};
+		auto on_wall = [&](int be) {
+			const int a = mesh.GetBdrAttribute(be);
+			return a >= 1 && a <= ess_bdr.Size() && ess_bdr[a - 1];
+		};
+		mfem::Array<int> vertices;
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			if (!on_wall(be)) continue;
+			mesh.GetBdrElementVertices(be, vertices);
+			for (int v : vertices) { root[find(v)] = find(vertices[0]); }
+		}
+		std::vector<int> piece(mesh.GetNBE(), -1);
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			if (!on_wall(be)) continue;
+			mesh.GetBdrElementVertices(be, vertices);
+			piece[be] = find(vertices[0]);
+		}
+		return piece;
+	}
+
 	std::unique_ptr<ConductorPath> MakeConductorPath(
 		const std::string& name, const CurrentDirection& d,
 		const mfem::Array<int>& conductor, mfem::Coefficient* conductivity) {
@@ -395,6 +425,28 @@ private:
 					"The electrodes of terminal '" + name + "' must lie on a "
 					"'dirichlet' (n x A = 0) boundary; for a closed loop use a 'cut'.");
 			}
+			// The current returns between the electrodes along that wall, so
+			// they must share one connected piece of it. A potential that is 1
+			// on one piece and 0 on the others has a gradient the n x A = 0
+			// space contains, and testing the field equation with it demands
+			// zero net current into the piece: with the electrodes apart, the
+			// solve would contradict the imposed current without failing.
+			const std::vector<int> pieces = WallPieces();
+			std::set<int> touched;
+			for (int be = 0; be < mesh.GetNBE(); ++be) {
+				const int a = mesh.GetBdrAttribute(be) - 1;
+				if (a < 0 || a >= n_bdr || !(input[a] || output[a])) continue;
+				int e1, e2;
+				mesh.GetFaceElements(mesh.GetBdrElementFaceIndex(be), &e1, &e2);
+				const bool borders = (e1 >= 0 && conductor[mesh.GetAttribute(e1) - 1])
+					|| (e2 >= 0 && conductor[mesh.GetAttribute(e2) - 1]);
+				if (borders) touched.insert(pieces[be]);
+			}
+			MFEM_VERIFY(touched.size() <= 1,
+				"The electrodes of terminal '" + name + "' lie on separate pieces of the "
+				"'dirichlet' (n x A = 0) boundary that do not touch. The current returns "
+				"between its electrodes along that boundary, so both must lie on one "
+				"connected piece of it.");
 			return std::make_unique<ConductionPath>(mesh, config.Order, conductor,
 													conductivity, d, input, output, none);
 		}

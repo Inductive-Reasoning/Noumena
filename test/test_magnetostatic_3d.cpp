@@ -670,6 +670,17 @@ TEST_CASE("3D current terminals are validated", "[solvers][magnetostatic][3d]") 
 		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("must lie on a 'dirichlet'"));
 	}
 
+	SECTION("electrodes on unconnected pieces of the n x A = 0 wall are rejected") {
+		// Only the bottom and top faces are n x A = 0: no path along the wall
+		// joins the electrodes for the current to return by.
+		mfem::Mesh mesh = MakeBarMesh();
+		json config = MakeBarConfig();
+		config["entity_groups"].push_back({{"name", "Ends"}, {"dim", 2}, {"attribute_ids", {1, 6}}});
+		config["boundary_conditions"][0]["entity_group"] = "Ends";
+		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("separate pieces"));
+	}
+
 	SECTION("a terminal without a direction is rejected") {
 		mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(1, 1, 1, mfem::Element::TETRAHEDRON);
 		json config = MakeCubeConfig(1.0);
