@@ -38,13 +38,15 @@ const fs::path kExample = fs::path(MFEM_ELECTROMAG_EXAMPLES) / "team15";
 // one ampere-turn.
 constexpr double kScale = 2.0 * 3790.0 * 3790.0;
 
-// The positions checked: the slot's centre, the peak of dL and the peak of the
-// positive dR beyond the slot's end.
-const std::vector<double> kPositionsMm = { 0.0, 9.0, 17.5 };
+// The positions checked: the slot's centre, the peak of dL, and the tail
+// beyond the slot's end near the peak of the positive dR.
+const std::vector<double> kPositionsMm = { 0.0, 9.0, 17.0 };
 
-// Bounds on |computed - measured| (see examples/team15/README.md).
+// Bounds on |computed - measured|: the solution is 47, 73 and 67 uH and
+// 0.02, 0.11 and 0.16 ohm from the measurements there (see
+// examples/team15/README.md).
 constexpr double kDlBoundUh = 100.0;
-constexpr double kDrBoundOhm = 0.3;
+constexpr double kDrBoundOhm = 0.25;
 
 // L and R of the coil's half model per ampere-turn squared, with the slot of
 // the given material.
