@@ -70,9 +70,19 @@ The losses are converged: refining the plate to 7 mm and the coils to 15 mm
 (1.7-1.9 million unknowns) changes them by at most 0.2%. P21a-3 is the
 exception to the agreement, and not for want of resolution: the refined mesh
 gives the same 1.01 W. The problem's own calculation is low for it too (by
-9%, against at most 2% for the other three), so the as-built three-slit
-plate appears to differ from its drawing in a way the specification does not
-record; the slit positions here are those of the drawing.
+9%, against at most 2% for the other three), and an independent
+higher-order T-Omega solution (arXiv:1704.03694) gets 0.95 W at first order
+and 1.04 W at second. The measured value goes against the trend of the
+others: going from two slits to three, the loss falls to 0.74 of its value
+in the measurements but to 0.59 here (from one slit to two, the
+measurements give 0.49 and this solution 0.51).
+
+The three-slit loss is sensitive to the slit geometry, and the as-built
+plate may not match its drawing exactly. Moving the outer slits 5 mm outward
+(to y = +-95, which is how the drawing's "90 90 90" chain would read if
+dimensioned to slit edges) raises the loss by 7%, to 1.09 W. Shortening
+every slit by 30 mm at each end (600 mm long) raises it by 14%, to 1.15 W.
+The slit positions here are those of the drawing.
 
 As in TEAM 7, the solver reports that the divergence-free projection removed
 4.7% of each coil's current density: the uniform stranded current along a
