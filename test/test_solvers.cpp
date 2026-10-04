@@ -163,6 +163,7 @@ TEST_CASE("Electrostatic solver applies Robin data and coefficient",
     fs::remove(mesh_file);
 }
 
+
 TEST_CASE("Boundary closures and voltage terminals have distinct ownership",
           "[solvers][boundaries][overlap]") {
     const std::string mesh_file = "test_boundary_ownership.mesh";
@@ -1837,6 +1838,61 @@ TEST_CASE("Electrostatic capacitance matrix is analytic and reciprocal",
 
     fs::remove(matrix_file);
     fs::remove_all(results_directory);
+    fs::remove(mesh_file);
+}
+
+// Terminals at both ends of a strip whose long sides are Robin, so each
+// terminal's corner basis functions reach onto the Robin boundary. With the
+// other terminal grounded and no load, a terminal's capacitance is the energy
+// of its unit-drive solution under the whole operator, x^T (K0 + R) x: its
+// charge is the full residual of its DOFs, Robin terms included. A charge
+// taken from the domain stiffness K0 alone fails this.
+TEST_CASE("Robin boundaries next to a terminal enter its charge",
+          "[solvers][electrostatic][robin][coupling]") {
+    const std::string mesh_file = "test_robin_terminal.mesh";
+    const std::string matrix_file = "test_robin_terminal.h5";
+    constexpr double length = 0.2, height = 0.05;
+    const double alpha = 4.0 * Constants::EPSILON_0 / height;
+    CreatePlanarStripMesh(mesh_file, length, height, 4, 2);
+
+    json config = MakePlanarStripConfig(
+        "electrostatics", mesh_file, 2, {{"epsilon_r", 1.0}}, 0.0, 0.0);
+    config["simulation"]["analysis_type"] = "coupling_matrix";
+    config["entity_groups"].push_back({{"name", "Sides"}, {"dim", 1}, {"attribute_ids", {3}}});
+    config["boundary_conditions"] = json::array({
+        {{"name", "Sides"}, {"type", "robin"}, {"entity_group", "Sides"},
+         {"value", 0.0}, {"robin_coefficient", alpha}}});
+    config["terminals"] = json::array({
+        {{"name", "Left"}, {"quantity", "voltage"}, {"entity_group", "Left"}},
+        {{"name", "Right"}, {"quantity", "voltage"}, {"entity_group", "Right"}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    // The last coupling column drives Right at 1 V with Left grounded.
+    const mfem::GridFunction& x = *FindField(solver.CollectExportFields(), "V").primary;
+    solver.SaveAnalysis();
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+
+    mfem::ConstantCoefficient eps(Constants::EPSILON_0), robin(alpha);
+    mfem::Array<int> sides(mesh.bdr_attributes.Max());
+    sides = 0;
+    sides[3 - 1] = 1;
+    mfem::H1_FECollection collection(2, 2);
+    mfem::FiniteElementSpace space(&mesh, &collection);
+    mfem::BilinearForm K(&space);
+    K.AddDomainIntegrator(new mfem::DiffusionIntegrator(eps));
+    K.AddBoundaryIntegrator(new mfem::MassIntegrator(robin), sides);
+    K.Assemble();
+    K.Finalize();
+    mfem::Vector Kx(x.Size());
+    K.SpMat().Mult(x, Kx);
+
+    REQUIRE(matrix.values[1][1] == Catch::Approx(x * Kx).epsilon(1e-10));
+    REQUIRE(matrix.values[0][1] == Catch::Approx(matrix.values[1][0]).epsilon(1e-10));
+
+    fs::remove(matrix_file);
     fs::remove(mesh_file);
 }
 

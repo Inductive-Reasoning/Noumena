@@ -122,8 +122,11 @@ u = ½ ε |E⃗|²
   A zero value is the implicit natural condition and requires no assembled term.
 - **Robin:** `n̂ · (ε ∇V) + α V = g` on `∂Ω_R`, with `α = robin_coefficient`
   ≥ 0 and `g = value`. It adds `∫ α V v dS` to the operator (under the
-  geometry's measure) and `∫ g v dS` to the RHS. Charge extraction uses the
-  domain stiffness alone, so the Robin term never enters `Q = K₀ V`.
+  geometry's measure) and `∫ g v dS` to the RHS. A terminal's charge is the
+  residual of its DOFs under the whole operator, `Q = (K₀ + R) V` (coupling
+  runs have no load): the basis functions of a terminal's edge DOFs reach onto
+  any Robin boundary next to it, and leaving `R` out would count the flux
+  through those Robin faces as terminal charge.
 
 For axisymmetric problems, a nonzero Neumann load is integrated with the
 meridional boundary measure `2πr ds`, the same full measure carried by the
