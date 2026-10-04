@@ -214,7 +214,16 @@ directions. The `B_z → 2 ∂A_φ/∂r` limit is applied only during field reco
 constrained solution where the limit is valid.
 
 Quadrature order for the `1/r` term is chosen from element geometry rather than
-basis degree; see `AxisymmetricCurlCurlIntegrator::RadialExtraOrder`.
+basis degree (`src/axisym/radial_quadrature.hpp`): mapped to the reference
+interval, `1/r` has a pole at `−(1 + 2s)` with `s = r_min/h`, and the order that
+reaches a relative accuracy of `10⁻¹⁰` grows like `ln(10¹⁰)/ln ρ` as the element
+nears the axis. The same rule serves every axisymmetric integrand with a `1/r`
+factor: the curl-curl term, a massive conductor's DC conductance
+`G = ∫σ/(2πr) dA` (exactly `σh ln(b/a)/(2π)` for a rectangular ring) and the loss
+of its drive field `V/(2πr)`. Its weights are positive and its points interior
+at every order: on triangles past MFEM's highest positive-weight table (order
+25) it is a collapsed Gauss rule. The added order is capped at 120, which binds
+only where `r_min/h < 10⁻²`; the solver warns about such elements.
 
 ### Derived Quantities
 
@@ -517,8 +526,9 @@ stranded terminal) by the Galerkin energy identity, but only as exactly as the
 quadratures agree: `G`, the port columns `c` and the loss integral use their own
 rules. Those are exact only for polynomial integrands, and many are not: an
 azimuthal path `w = φ̂/(Θr)` makes `G` and the loss rational even on affine
-elements, and curved elements add rational Jacobian factors, so the balance
-holds to quadrature error. Stranded regions do not conduct in the field solve,
+elements, and curved elements add rational Jacobian factors, so in 3D the
+balance holds to quadrature error. (Axisymmetric 2D runs integrate `G` and the
+loss with the geometry-aware radial rule, and their balance holds to round-off.) Stranded regions do not conduct in the field solve,
 so they add nothing to either side.
 
 **Conductors touching an `n × A = 0` wall.** `n × A = 0` makes the tangential

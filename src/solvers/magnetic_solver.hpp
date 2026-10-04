@@ -16,6 +16,7 @@
 #include "physics_solver.hpp"
 #include "../axisym/axisymmetric_curl_curl_integrator.hpp"
 #include "../axisym/magnetic_axis_boundary.hpp"
+#include "../axisym/radial_quadrature.hpp"
 #include "../io/region_loss.hpp"
 
 /**
@@ -213,8 +214,8 @@ protected:
 private:
 	// Element-wise integral of @p density over the given attributes, with the
 	// geometric measure (2 pi r in axisymmetry). The rule is sized for a
-	// density quadratic in the solution; the axisymmetric drive field's 1/r
-	// factors are why it is not borrowed from a source integrator.
+	// density quadratic in the solution and, in axisymmetry, for the 1/r of a
+	// massive conductor's drive field V / (2 pi r) (radial_quadrature.hpp).
 	double IntegrateOverAttributes(mfem::Coefficient& density,
 								   const std::set<int>& attrs) const {
 		double total = 0.0;
@@ -224,7 +225,9 @@ private:
 			mfem::ElementTransformation& T = *mesh.GetElementTransformation(e);
 			const mfem::FiniteElement& fe = *fespace->GetFE(e);
 			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
-			const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(), order);
+			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+				? axisym::RadialRule(fe.GetGeomType(), order, T)
+				: mfem::IntRules.Get(fe.GetGeomType(), order);
 			for (int q = 0; q < ir.GetNPoints(); ++q) {
 				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
 				T.SetIntPoint(&ip);
@@ -306,15 +309,15 @@ protected:
 		WarnOnUnderResolvedRadialQuadrature();
 	}
 
-	// The curl-curl 1/r term is integrated by a geometry-aware rule whose cost
-	// is set by s = r_min/h per element (see
-	// AxisymmetricCurlCurlIntegrator::RadialExtraOrder). 1/r is rational, so no
-	// polynomial rule integrates it exactly and the rule must be capped; an
-	// element that is both very thin radially and very close to the axis can
-	// therefore fall outside the accuracy target. Such an element is rare and
-	// always a meshing choice, but the resulting error is silent, so report it
-	// once. The electrostatic r-weighted diffusion integrand is polynomial and
-	// is integrated exactly, so no equivalent concern exists there.
+	// The 1/r integrands (curl-curl, a massive conductor's conductance and
+	// drive-field loss) are integrated by a geometry-aware rule whose order is
+	// set by s = r_min/h per element (radial_quadrature.hpp). 1/r is rational,
+	// so the added order is capped, and an element that is both very thin
+	// radially and very close to the axis falls outside the accuracy target.
+	// Such an element is rare and always a meshing choice, but the resulting
+	// error is silent, so report it once. The electrostatic r-weighted
+	// diffusion integrand is polynomial and is integrated exactly, so no
+	// equivalent concern exists there.
 	void WarnOnUnderResolvedRadialQuadrature() {
 		int worst_element = -1;
 		double worst_ratio = std::numeric_limits<double>::max();
@@ -322,8 +325,7 @@ protected:
 		for (int e = 0; e < mesh.GetNE(); ++e) {
 			double min_radius = 0.0;
 			double radial_width = 0.0;
-			AxisymmetricCurlCurlIntegrator::RadialExtent(
-				*mesh.GetElementTransformation(e), min_radius, radial_width);
+			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
 
 			// Elements meeting the axis are excluded by design: there the
 			// divergent directions are removed by the A_phi = 0 constraint.
@@ -338,18 +340,18 @@ protected:
 		}
 
 		if (worst_element < 0) { return; }
-		if (worst_ratio >= AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio) {
+		if (worst_ratio >= axisym::kResolvedRadiusRatio) {
 			return;
 		}
 
 		std::ostringstream msg;
 		msg << std::setprecision(3)
 			<< "Element " << worst_element << " has r_min/width = " << worst_ratio
-			<< ", below the ratio " << AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio
-			<< " at which the curl-curl 1/r quadrature reaches its accuracy "
-			   "target. The capped rule integrates such elements approximately; "
-			   "widen the innermost radial band or move it away from the axis if "
-			   "near-axis accuracy matters.";
+			<< ", below the ratio " << axisym::kResolvedRadiusRatio
+			<< " at which the 1/r quadrature reaches its accuracy target. The "
+			   "capped rule integrates such elements approximately; widen the "
+			   "innermost radial band or move it away from the axis if near-axis "
+			   "accuracy matters.";
 		Reporter().Warning(msg.str());
 	}
 

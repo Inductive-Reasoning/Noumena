@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
@@ -3901,6 +3902,55 @@ TEST_CASE("MQS loss excludes non-conducting and stranded regions",
 // quantity, the other reads a solved port unknown - so they agree only to
 // discretization error rather than to round-off. The tolerance below was
 // measured on this mesh, not assumed.
+// The DC conductance of a massive axisymmetric ring of rectangular section,
+// a <= r <= b and height h, is G = sigma h ln(b/a) / (2 pi), which grows
+// without bound as a -> 0: its 1/r integrand needs a rule sized by each
+// element's distance from the axis, not by the basis degree. At a very low
+// frequency the port resistance is 1/G. The rings range down to an innermost
+// element whose inner radius is 1% of its width, the resolved limit, on
+// quadrilaterals and on triangles.
+TEST_CASE("MQS massive ring conductance matches the exact value near the axis",
+          "[solvers][analytic][mqs][axisymmetric][quadrature]") {
+    constexpr double sigma = 5.8e7, width = 0.04, height = 0.02;
+    constexpr int nr = 4;
+    const std::string matrix_file = "test_ring_conductance.h5";
+    const mfem::Element::Type type = GENERATE(mfem::Element::QUADRILATERAL,
+                                              mfem::Element::TRIANGLE);
+    const json config = {
+        {"simulation", {{"physics_type", "magnetoquasistatics"}, {"mesh", "unused"},
+            {"order", 2}, {"geometry_type", "axisymmetric"},
+            {"analysis_type", "coupling_matrix"}, {"solver_print_level", 0}}},
+        {"entity_groups", json::array({
+            {{"name", "Ring"}, {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Walls"}, {"dim", 1}, {"attribute_ids", {1, 2, 3, 4}}}})},
+        {"regions", json::array({{{"name", "Ring"}, {"entity_group", "Ring"}, {"material", "Copper"}}})},
+        {"materials", json::array({
+            {{"name", "Copper"}, {"properties", {{"mu_r", 1.0}, {"sigma", sigma}}}}})},
+        {"boundary_conditions", json::array({
+            {{"name", "Walls"}, {"type", "dirichlet"}, {"entity_group", "Walls"}, {"value", 0.0}}})},
+        {"terminals", json::array({
+            {{"name", "Ring"}, {"quantity", "current"}, {"conductor_type", "massive"},
+             {"entity_group", "Ring"}}})},
+        {"scenarios", json::array({
+            {{"name", "dc"}, {"frequency", 1e-6}, {"excitations", json::array()}}})}};
+
+    for (double ratio : {1.0, 0.1, 0.01, 0.0025}) {  // a / (b - a)
+        const double a = ratio * width;
+        mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(nr, 2, type, true, width, height);
+        for (int v = 0; v < mesh.GetNV(); ++v) { mesh.GetVertex(v)[0] += a; }
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+        const double resistance = ReadHdf5Matrix(matrix_file, "Resistance").values[0][0];
+        const double exact = sigma * height * std::log((a + width) / a) / Constants::TWO_PI;
+        INFO((type == mfem::Element::TRIANGLE ? "triangles" : "quadrilaterals")
+             << ", a/(b-a) = " << ratio);
+        REQUIRE(1.0 / resistance == Catch::Approx(exact).epsilon(1e-8));
+        fs::remove(matrix_file);
+    }
+}
+
 TEST_CASE("MQS total Joule loss balances the delivered port power",
           "[solvers][mqs][loss][balance][axisymmetric]") {
     const std::string mesh_file = "test_mqs_power_balance.mesh";
@@ -3937,13 +3987,12 @@ TEST_CASE("MQS total Joule loss balances the delivered port power",
     const auto [v_re, v_im] = solver.GetPortVoltage("TurnA");
     const double delivered = 0.5 * v_re * current;
 
-    // Measured: the relative gap is 3.0e-3 on this mesh, falling to 7.4e-4 when
-    // the radial resolution is doubled - a factor of 4.0 for a 2x refinement,
-    // i.e. clean second-order convergence to exact balance. That convergence is
-    // what establishes the identity actually holds; the coarser mesh is kept
-    // here because the finer one costs about two minutes to solve. The bound
-    // sits just above the measured value so a real regression cannot hide in it.
-    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(4.0e-3));
+    // The balance is an identity of the discrete solution (testing the field
+    // equation with the solution itself), so it holds as exactly as the port
+    // conductance and the loss integral are integrated. Both carry the drive
+    // field's 1/r and use the geometry-aware radial rule; with a fixed-order
+    // rule this gap was 3e-3 here and shrank only with mesh refinement.
+    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(1e-8));
 
     // The scope decision is load-bearing, not cosmetic. The shield and the
     // undriven turn own no net port current, so restricting the total to the

@@ -162,10 +162,10 @@ class MagnetoquasistaticSolver : public MagneticSolver {
     }
 
     // DC conductance of a massive port: the integral of sigma over its
-    // elements in 3D, of sigma/(2*pi*r) in axisymmetry. The rule is sized for
-    // the 1/r factor as well as for sigma: a one-point rule, the default for a
-    // piecewise-constant test space, under-reports a ring's conductance by
-    // a part in (h/r)^2.
+    // elements in the plane, of sigma/(2*pi*r) in axisymmetry, where the rule
+    // also resolves the 1/r factor by the element's distance from the axis
+    // (radial_quadrature.hpp). A rule of fixed order cannot: a ring's
+    // conductance sigma h ln(b/a) / (2 pi) grows without bound as a -> 0.
     double ComputePortConductance(const std::vector<int>& port_attributes,
                                   mfem::Coefficient& conductivity) const
     {
@@ -177,8 +177,11 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         for (int e = 0; e < mesh.GetNE(); ++e) {
             if (!attrs.count(mesh.GetAttribute(e))) { continue; }
             mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-            const mfem::IntegrationRule& ir = mfem::IntRules.Get(
-                mesh.GetElementBaseGeometry(e), 2 * config.Order + T->OrderW() + 2);
+            const mfem::Geometry::Type shape = mesh.GetElementBaseGeometry(e);
+            const int order = 2 * config.Order + T->OrderW() + 2;
+            const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+                ? axisym::RadialRule(shape, order, *T)
+                : mfem::IntRules.Get(shape, order);
             for (int i = 0; i < ir.GetNPoints(); ++i) {
                 const mfem::IntegrationPoint& ip = ir.IntPoint(i);
                 T->SetIntPoint(&ip);
