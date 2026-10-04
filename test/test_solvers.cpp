@@ -4069,6 +4069,113 @@ TEST_CASE("MQS total Joule loss balances the delivered port power",
     fs::remove(mesh_file);
 }
 
+// With both turns driven at once, the delivered power includes their mutual
+// terms, (1/2) Re sum_k V_k I_k*, and must still equal the total loss of every
+// conducting region: the identity holds for any combination of drives.
+TEST_CASE("MQS loss balances the power of several terminals driven together",
+          "[solvers][mqs][loss][balance][axisymmetric]") {
+    const std::string mesh_file = "test_mqs_multiport_balance.mesh";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+    config["simulation"]["analysis_type"] = "field";
+    config["simulation"]["order"] = 2;
+    const std::map<std::string, double> currents = {{"TurnA", 1.0}, {"TurnB", -0.6}};
+    json excitations = json::array();
+    for (const auto& [name, current] : currents) {
+        excitations.push_back({{"terminal", name}, {"value", current}});
+    }
+    config["scenarios"] = json::array({
+        {{"name", "drive"}, {"frequency", 1000.0}, {"excitations", excitations}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+    solver.Setup();
+    solver.Run();
+
+    double total_loss = 0.0;
+    for (const auto& loss : solver.ComputeRegionLosses()) { total_loss += loss.Power; }
+    double delivered = 0.0;
+    for (const auto& [name, current] : currents) {
+        delivered += 0.5 * solver.GetPortVoltage(name).first * current;
+    }
+    REQUIRE(total_loss > 0.0);
+    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(1e-8));
+    fs::remove(mesh_file);
+}
+
+// A passive network's impedance matrix is reciprocal (R and L symmetric) and
+// dissipative: R is positive semidefinite (no drive extracts net power) and
+// L positive definite (every drive stores energy).
+TEST_CASE("MQS coupling matrices are reciprocal and passive",
+          "[solvers][mqs][coupling][axisymmetric]") {
+    const std::string mesh_file = "test_mqs_passivity.mesh";
+    const std::string matrix_file = "test_mqs_passivity.h5";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+    config["simulation"]["order"] = 2;
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    for (const std::string quantity : {"Resistance", "Inductance"}) {
+        const auto m = ReadHdf5Matrix(matrix_file, quantity).values;
+        INFO(quantity);
+        REQUIRE(m[0][1] == Catch::Approx(m[1][0]).epsilon(1e-8));
+        // A symmetric 2 x 2 matrix is semidefinite when its diagonal and
+        // determinant are; positive definite when they are positive.
+        const double det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+        REQUIRE(m[0][0] > 0.0);
+        REQUIRE(m[1][1] > 0.0);
+        REQUIRE(det > 0.0);
+    }
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// At a permeability jump the tangential H and the normal B are continuous. In
+// a planar strip whose layers are side by side (interface x = const), with A_z
+// dropping by A0 across them, B = -dA/dx y-hat is tangential to the interface,
+// so H_y = B_y / mu must be one value in both layers: H = A0 / (mu_l w_l +
+// mu_r w_r). P1 reproduces the piecewise-linear A exactly. (Normal B, here
+// B_x = dA/dy, is the tangential derivative of the continuous A along the
+// interface, continuous by construction.)
+TEST_CASE("Magnetostatic field satisfies the permeability interface conditions",
+          "[solvers][analytic][magnetostatic][materials][interface]") {
+    const std::string mesh_file = "test_permeability_interface.mesh";
+    constexpr double length = 0.2, height = 0.05, a0 = 1e-3;
+    constexpr double mu_r_left = 1.0, mu_r_right = 50.0;
+    constexpr int nx = 8, ny = 2, interface_column = nx / 2;
+    CreateLayeredStripMesh(mesh_file, length, height, nx, ny, interface_column);
+
+    json config = MakePlanarStripConfig("magnetostatics", mesh_file, 1, {{"mu_r", mu_r_left}}, a0, 0.0);
+    config["entity_groups"].push_back({{"name", "RightLayer"}, {"dim", 2}, {"attribute_ids", {2}}});
+    config["regions"].push_back({{"name", "RightLayer"}, {"entity_group", "RightLayer"}, {"material", "Iron"}});
+    config["materials"].push_back({{"name", "Iron"}, {"properties", {{"mu_r", mu_r_right}}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    MagnetostaticSolver solver(mesh, DecodeConfig(config));
+    solver.Setup();
+    solver.Run();
+
+    const FieldExportSet fields = solver.CollectExportFields();
+    const mfem::IntegrationPoint center = TriangleCenter();
+    const mfem::Vector left = SampleDerivedVector(fields, "B", 2 * (interface_column - 1), center);
+    const mfem::Vector right = SampleDerivedVector(fields, "B", 2 * interface_column, center);
+    const double mu_left = Constants::MU_0 * mu_r_left, mu_right = Constants::MU_0 * mu_r_right;
+    const double width_left = length * interface_column / nx, width_right = length - width_left;
+    const double H = a0 / (mu_left * width_left + mu_right * width_right);
+
+    REQUIRE(left(1) / mu_left == Catch::Approx(H).epsilon(1e-8));
+    REQUIRE(right(1) / mu_right == Catch::Approx(H).epsilon(1e-8));
+    REQUIRE(std::abs(left(0)) < 1e-8 * std::abs(left(1)));
+    REQUIRE(std::abs(right(0)) < 1e-8 * std::abs(right(1)));
+    fs::remove(mesh_file);
+}
+
 // Cross-check on the shielding mechanism: a short-circuited closed shield
 // excludes flux more strongly as frequency rises, because the induced opposing
 // net current grows with the rate of change of flux. A zero-net-current (open)
