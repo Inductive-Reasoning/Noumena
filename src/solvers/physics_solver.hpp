@@ -3,6 +3,7 @@
 
 #pragma once
 #include <cmath>
+#include <complex>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -342,18 +343,24 @@ protected:
         return v;
     }
 
-    // The drive a scenario applies to a terminal, or 0.0 when the scenario does
-    // not mention it. Excitations are prescribed as a list rather than a map, so
-    // this is the single place that resolves one against a terminal name.
+    // The phasor Value * exp(j Phase) a scenario applies to a terminal, or 0
+    // when the scenario does not mention it. Excitations are prescribed as a
+    // list rather than a map, so this is the single place that resolves one
+    // against a terminal name. Static solvers take its real part: their phase
+    // is zero (validated).
     //
-    // The value is returned unscaled. For time-harmonic solvers it is a PEAK
-    // (amplitude) phasor by convention; this function is convention-agnostic
-    // and performs no rms/peak conversion. See Excitation in problem_config.hpp.
-    static double ExcitationFor(const Scenario& sc,
-                                const std::string& terminal_name) {
-        double value = 0.0;
+    // The amplitude is returned unscaled. For time-harmonic solvers it is a
+    // PEAK amplitude by convention; this function performs no rms/peak
+    // conversion. See Excitation in problem_config.hpp.
+    static std::complex<double> ExcitationFor(const Scenario& sc,
+                                              const std::string& terminal_name) {
+        std::complex<double> value = 0.0;
         for (const auto& exc : sc.Excitations) {
-            if (exc.TerminalName == terminal_name) { value = exc.Value; }
+            if (exc.TerminalName == terminal_name) {
+                // Not std::polar, which needs a nonnegative amplitude.
+                const double radians = exc.Phase * Constants::TWO_PI / 360.0;
+                value = exc.Value * std::complex<double>(std::cos(radians), std::sin(radians));
+            }
         }
         return value;
     }

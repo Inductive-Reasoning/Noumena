@@ -34,9 +34,8 @@ namespace {
 
 const fs::path kExample = fs::path(MFEM_ELECTROMAG_EXAMPLES) / "team15";
 
-// Problem 1's coil has 3790 turns; the model is its y >= 0 half driven with
-// one ampere-turn.
-constexpr double kScale = 2.0 * 3790.0 * 3790.0;
+// The model is the y >= 0 half of problem 1's winding.
+constexpr double kScale = 2.0;
 
 // The positions checked: the slot's centre, the peak of dL, and the tail
 // beyond the slot's end near the peak of the positive dR.
@@ -48,8 +47,7 @@ const std::vector<double> kPositionsMm = { 0.0, 9.0, 17.0 };
 constexpr double kDlBoundUh = 100.0;
 constexpr double kDrBoundOhm = 0.25;
 
-// L and R of the coil's half model per ampere-turn squared, with the slot of
-// the given material.
+// L and R of the coil's half model, with the slot of the given material.
 std::pair<double, double> Impedance(const fs::path& work, const fs::path& mesh_file, double x,
 									const std::string& slot_material) {
 	std::ifstream file(kExample / "config-1.json");

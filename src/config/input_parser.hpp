@@ -423,6 +423,7 @@ private:
 											   {{"massive",  ConductorType::Massive},
 												{"stranded", ConductorType::Stranded}});
 				terminal.EntityGroupName = Get(t, "entity_group", std::string{});
+				terminal.Turns = t.value("turns", 1);
 				if (t.contains("direction")) {
 					terminal.Direction = GetCurrentDirection(t["direction"]);
 				}
@@ -545,9 +546,9 @@ private:
     }
 
     // Excitation values are taken verbatim. For time-harmonic runs they are
-    // PEAK (amplitude) phasors; there is deliberately no rms/peak selector, so
-    // an RMS value prescribed here propagates unconverted. See Excitation in
-    // problem_config.hpp.
+    // PEAK amplitudes, with a phase in degrees; there is deliberately no
+    // rms/peak selector, so an RMS value prescribed here propagates
+    // unconverted. See Excitation in problem_config.hpp.
     static Scenario ParseScenarioExcitations(const json& source) {
         Scenario scenario;
         if (source.contains("excitations")) {
@@ -557,6 +558,7 @@ private:
                     excitation.TerminalName = d["terminal"];
                 }
                 excitation.Value = d.value("value", 0.0);
+                excitation.Phase = d.value("phase", 0.0);
                 scenario.Excitations.push_back(excitation);
             }
         }

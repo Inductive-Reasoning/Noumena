@@ -244,7 +244,7 @@ public:
 		b->AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
 		b->Assemble();
 		for (const auto& [term_name, source] : massive_sources) {
-			const double I = ExcitationFor(sc, term_name);
+			const double I = ExcitationFor(sc, term_name).real();
 			if (I != 0.0) { b->Add(I / source.conductance, source.load); }
 		}
 		if (mode == ImprintMode::Field) {
@@ -394,10 +394,13 @@ private:
 
 	// Stranded conductors' uniform source current density for a scenario.
 	// Massive conductors carry their DC distribution instead, loaded from
-	// massive_sources in ImprintScenario().
+	// massive_sources in ImprintScenario(). Static excitations have no phase
+	// (validated), so the density is real.
 	mfem::Vector BuildCurrentDensity(const Scenario& sc) const {
-		return MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
+		mfem::Vector j_re, j_im;
+		MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
 			return term.Conductor == ConductorType::Stranded;
-		});
+		}, j_re, j_im);
+		return j_re;
 	}
 };

@@ -85,6 +85,7 @@
       "quantity": "current",
       "entity_group": "Coil",
       "conductor_type": "stranded",
+      "turns": 408,
       "direction": {
         "type": "azimuthal",
         "origin": [0.0, 0.0, 0.0],

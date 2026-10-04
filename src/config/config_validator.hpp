@@ -252,6 +252,7 @@ private:
             CheckFieldType(terminal, "conductor_type", prefix + ".conductor_type", ExpectedType::String);
             CheckFieldType(terminal, "entity_group", prefix + ".entity_group", ExpectedType::String);
             CheckFieldType(terminal, "direction", prefix + ".direction", ExpectedType::Object);
+            CheckFieldType(terminal, "turns", prefix + ".turns", ExpectedType::Integer);
         });
 
         CheckObjectArrayTypes(config, "boundary_conditions", [&](const json& boundary, const std::string& prefix) {
@@ -293,6 +294,7 @@ private:
                     }
                     CheckFieldType(excitation, "terminal", eprefix + ".terminal", ExpectedType::String);
                     CheckFieldType(excitation, "value", eprefix + ".value", ExpectedType::Number);
+                    CheckFieldType(excitation, "phase", eprefix + ".phase", ExpectedType::Number);
                 }
             }
         });
@@ -1068,6 +1070,20 @@ private:
 
             ValidateCurrentDirection(config, t, prefix, type, excitation);
 
+            // A massive conductor is a single turn: its current is sigma E
+            // over the whole cross-section.
+            if (t.contains("turns") && t["turns"].is_number_integer()) {
+                const bool magnetic = type == "magnetostatics" || type == "magnetoquasistatics";
+                if (t["turns"].get<long long>() < 1) {
+                    AddError(prefix + ".turns", "Must be at least 1");
+                } else if (t["turns"].get<long long>() != 1 &&
+                           (!magnetic || conductor != "stranded")) {
+                    AddError(prefix + ".turns",
+                        "Turns apply only to stranded magnetic terminals; a massive "
+                        "conductor is a single turn");
+                }
+            }
+
             // Voltage terminals bind to boundary groups; current terminals to domain groups.
             const bool is_current = (excitation == "current");
             if (!t.contains("entity_group")) {
@@ -1211,6 +1227,17 @@ private:
                 if (terminal_names.find(tname) == terminal_names.end()) {
                     AddError(dprefix + ".terminal", "Unknown terminal '" + tname +
                             "'. No terminal with that name is declared");
+                }
+
+                if (d.contains("phase") && d["phase"].is_number()) {
+                    const double phase = d["phase"].get<double>();
+                    if (!std::isfinite(phase)) {
+                        AddError(dprefix + ".phase", "Must be finite");
+                    } else if (!is_mqs && phase != 0.0) {
+                        AddError(dprefix + ".phase",
+                            "A phase applies only to time-harmonic (magnetoquasistatic) "
+                            "excitations");
+                    }
                 }
             }
         }

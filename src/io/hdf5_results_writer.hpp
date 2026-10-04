@@ -56,14 +56,16 @@ public:
 		if (scenario.Frequency > 0.0) group.createAttribute("frequency_hz", scenario.Frequency);
 		if (!driven_terminal.empty()) group.createAttribute("driven_terminal", driven_terminal);
 		std::vector<std::string> terminals;
-		std::vector<double> values;
+		std::vector<double> values, phases;
 		for (const auto& excitation : scenario.Excitations) {
 			terminals.push_back(excitation.TerminalName);
 			values.push_back(excitation.Value);
+			phases.push_back(excitation.Phase);
 		}
 		auto excitations = group.createGroup("excitations");
 		excitations.createDataSet("terminal_names", terminals);
 		excitations.createDataSet("values", values);
+		excitations.createDataSet("phases_deg", phases);
 		auto field_group = group.createGroup("fields");
 		mfem::L2_FECollection collection(std::max(0, order_ - 1), mesh_.Dimension());
 		for (const auto& field : fields.Fields()) {

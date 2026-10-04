@@ -149,6 +149,7 @@
       "quantity": "current",
       "entity_group": "Coil1",
       "conductor_type": "stranded",
+      "turns": 300,
       "direction": {
         "type": "cut",
         "cut": "Cut1",
@@ -160,6 +161,7 @@
       "quantity": "current",
       "entity_group": "Coil2",
       "conductor_type": "stranded",
+      "turns": 300,
       "direction": {
         "type": "cut",
         "cut": "Cut2",
@@ -182,11 +184,11 @@
       "excitations": [
         {
           "terminal": "Coil1",
-          "value": 4242.640687119286
+          "value": 14.142135623730951
         },
         {
           "terminal": "Coil2",
-          "value": 4242.640687119286
+          "value": 14.142135623730951
         }
       ]
     }

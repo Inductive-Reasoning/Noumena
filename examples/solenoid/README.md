@@ -46,10 +46,10 @@ The long-solenoid value μ₀NI/L = 6.28 mT does not apply: this coil is only
 
 The terminal is `stranded`, a winding of many turns that carries a uniform
 current density (a `massive` conductor would carry its DC conduction
-distribution instead, which around the axis falls off as 1/r). The input file
-specifies the excitation as a **total current** in amperes (here the full
-ampere-turns, N I = 1000 A); the solver divides by the coil cross-section to
-obtain the source current density:
+distribution instead, which around the axis falls off as 1/r). The terminal
+has `"turns": 1000` and its excitation is the current in each turn, I = 1 A;
+the solver divides the ampere-turns N I by the coil cross-section to obtain
+the source current density:
 
 ```
 J = N I / A_coil
@@ -158,7 +158,7 @@ Try:
 ## Advanced: Inductance Calculation
 
 Set `"analysis_type": "coupling_matrix"` to get the inductance from the
-stored magnetic energy, `L = 2U / I²`. The terminal's current is the total
-current through the coil's cross-section, here ampere-turns, so the reported
-value is per ampere-turn squared: the winding's inductance is N² times it
-(10⁶ times it for N = 1000).
+stored magnetic energy, `L = 2U / I²`. With the terminal's `turns` set, I is
+the current in each turn and the reported value is the inductance of the
+whole winding. (Without `turns`, the excitation is the ampere-turns and the
+reported value is per ampere-turn squared, 1/N² of the winding's.)

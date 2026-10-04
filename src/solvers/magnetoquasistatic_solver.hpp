@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cctype>
+#include <complex>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -51,7 +52,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	mfem::real_t factored_omega = 0.0;
 
     // Coefficients
-    std::unique_ptr<mfem::PWConstCoefficient> j_coeff;     
     mfem::Vector neumann_rhs;
     std::vector<mfem::real_t> port_conductances;
     
@@ -373,34 +373,38 @@ public:
         *b_combined = 0.0;
         auto b = port_operator->View(*b_combined);
 
-        // Source
-        auto j_src = BuildCurrentDensity(sc);
-        j_coeff = std::make_unique<mfem::PWConstCoefficient>(j_src);
-
-        // Assemble the source term (J is assumed real) into the Re_Mesh block.
-        mfem::LinearForm b_source(fespace.get());
-        b_source.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
-        b_source.Assemble();
-        const mfem::real_t* b_source_data = b_source.GetData();   // bypass LinearForm::operator()
+        // Stranded source, its real and imaginary parts into the Re_Mesh and
+        // Im_Mesh blocks.
+        mfem::Vector j_re, j_im;
+        BuildCurrentDensity(sc, j_re, j_im);
+        mfem::PWConstCoefficient j_re_coeff(j_re), j_im_coeff(j_im);
+        mfem::LinearForm b_re(fespace.get()), b_im(fespace.get());
+        b_re.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(j_re_coeff));
+        b_im.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(j_im_coeff));
+        b_re.Assemble();
+        b_im.Assemble();
         for (int d = 0; d < port_operator->Layout().NDofs(); ++d) {
-            b.ReMesh(d) += b_source_data[d];
+            b.ReMesh(d) += b_re[d];
+            b.ImMesh(d) += b_im[d];
             if (mode == ImprintMode::Field) {
                 b.ReMesh(d) += neumann_rhs[d];
             }
         }
 
-        // Drive the active port(s) via the imaginary port block Im_Port.
+        // Drive the massive ports.
         //
         // The prescribed excitation IS the current phasor I, and the RHS entry
-        // that produces it is I/(j*omega) in this block ordering (which equals
-        // -j*I/omega for a real in-phase current, hence the sign and 1/omega).
+        // that produces it is I/(j*omega) = -j*I/omega in this block ordering.
         // It is used unscaled, so the PEAK-phasor convention enters the solve
         // here and every downstream quantity -- solved port voltages, the
         // coupling matrix, and the 1/2 in the loss density -- inherits it.
         int p = 0;
         for (const auto& [term_name, term] : config.Terminals) {
             if (term.Conductor != ConductorType::Massive) continue;   // keep p aligned
-            b.ImPort(p) = -ExcitationFor(sc, term_name) / omega;
+            const std::complex<double> port_rhs =
+                ExcitationFor(sc, term_name) / std::complex<double>(0.0, omega);
+            b.RePort(p) = port_rhs.real();
+            b.ImPort(p) = port_rhs.imag();
             ++p;
         }
 
@@ -732,9 +736,10 @@ public:
     // Stranded-conductor source current density for a scenario. Massive
     // conductors are driven through the port block instead, so they are
     // excluded here.
-    mfem::Vector BuildCurrentDensity(const Scenario& sc) const {
-        return MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
+    void BuildCurrentDensity(const Scenario& sc, mfem::Vector& j_re,
+                             mfem::Vector& j_im) const {
+        MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
             return term.Conductor == ConductorType::Stranded;
-        });
+        }, j_re, j_im);
     }
 };

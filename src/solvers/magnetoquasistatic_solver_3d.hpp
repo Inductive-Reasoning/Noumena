@@ -424,17 +424,20 @@ private:
 		x = 0.0;
 		auto b = port_operator->View(rhs);
 		for (size_t k = 0; k < conductors.size(); ++k) {
-			const double current = ExcitationFor(scenario, conductors[k].Name);
+			const std::complex<double> current = ExcitationFor(scenario, conductors[k].Name);
 			if (current == 0.0) continue;
 			if (port_of[k] < 0) {
 				for (int i = 0; i < layout.NDofs(); ++i) {
-					b.ReMesh(i) += current * stranded_loads[k](i);
+					b.ReMesh(i) += current.real() * stranded_loads[k](i);
+					b.ImMesh(i) += current.imag() * stranded_loads[k](i);
 				}
 			}
 			else {
 				// The port row carries I / (j omega) = -j I / omega (see
 				// MqsMassivePortOperator); I is a peak phasor.
-				b.ImPort(port_of[k]) = -current / omega;
+				const std::complex<double> port_rhs = current / std::complex<double>(0.0, omega);
+				b.RePort(port_of[k]) = port_rhs.real();
+				b.ImPort(port_of[k]) = port_rhs.imag();
 			}
 		}
 		for (int i = 0; i < ess_packed_tdofs.Size(); ++i) { rhs(ess_packed_tdofs[i]) = 0.0; }

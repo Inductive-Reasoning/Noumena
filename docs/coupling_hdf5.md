@@ -47,7 +47,7 @@ display names cannot collide. Each scenario group has:
 - `mesh`: `/mesh`.
 - `frequency_hz`: numeric frequency for MQS scenarios.
 - `driven_terminal`: the unit-excited terminal for coupling scenarios.
-- `excitations/terminal_names` and `excitations/values`: aligned drive arrays.
+- `excitations/terminal_names`, `excitations/values` and `excitations/phases_deg`: aligned drive arrays (peak amplitude and phase in degrees).
 - `fields/<field>/values`: a one-dimensional double array of FE coefficients.
 - `probes/<probe>/points` and `probes/<probe>/<field>`, when `output.probes` is
   configured: the probe's points (count x space dimension) and every field

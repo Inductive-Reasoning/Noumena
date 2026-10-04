@@ -316,7 +316,7 @@ public:
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.DriveQuantity == Quantity::Voltage) {
 				mfem::Array<int> marker(terminal_markers.at(term_name));
-				mfem::ConstantCoefficient c(ExcitationFor(sc, term_name));
+				mfem::ConstantCoefficient c(ExcitationFor(sc, term_name).real());
 				x->ProjectBdrCoefficient(c, marker);
 			}
 			else

@@ -208,7 +208,7 @@ private:
 		if (source) { projector->Project(*b); }
 
 		for (size_t k = 0; k < conductors.size(); ++k) {
-			const double current = ExcitationFor(scenario, conductors[k].Name);
+			const double current = ExcitationFor(scenario, conductors[k].Name).real();
 			if (current != 0.0) { b->Add(current, terminal_loads[k]); }
 		}
 	}

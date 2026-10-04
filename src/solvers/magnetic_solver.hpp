@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <complex>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -422,8 +423,9 @@ protected:
 		}
 	}
 
-	// Uniform current density I/area over the terminal's domain attributes,
-	// laid out per mesh attribute for a PWConstCoefficient.
+	// Uniform current density N I/area over the terminal's domain attributes,
+	// for a winding of N turns each carrying I, laid out per mesh attribute
+	// for a PWConstCoefficient.
 	//
 	// This is a 2D-reduction relation. The terminal region is a conductor
 	// CROSS-SECTION here, so its measure is an area and I/area is a current
@@ -438,7 +440,7 @@ protected:
 		MFEM_VERIFY(area > 0.0,
 			"Current terminal '" + terminal_name + "' has zero cross-section.");
 
-		return AttributeVector(group.AttributeIds, current / area);
+		return AttributeVector(group.AttributeIds, term.Turns * current / area);
 	}
 
 	// A massive conductor carries its DC conduction distribution
@@ -513,26 +515,29 @@ protected:
 		}
 	}
 
-	// Scenario source current density, summed over the terminals @p include
-	// accepts. Current enters the model only through Terminals, so this is a
-	// pure function of sc.Excitations: a terminal the scenario does not drive
-	// contributes nothing. In CouplingMatrix mode the scenario carries a single
-	// unit excitation, so this IS the drive for that column rather than
-	// background data, and must not be suppressed the way boundary data is.
-	mfem::Vector BuildCurrentDensity(
+	// Real and imaginary parts of the scenario source current density, summed
+	// over the terminals @p include accepts. Current enters the model only
+	// through Terminals, so this is a pure function of sc.Excitations: a
+	// terminal the scenario does not drive contributes nothing. In
+	// CouplingMatrix mode the scenario carries a single unit excitation, so
+	// this IS the drive for that column rather than background data, and must
+	// not be suppressed the way boundary data is.
+	void BuildCurrentDensity(
 		const Scenario& sc,
-		const std::function<bool(const Terminal&)>& include) const {
-		mfem::Vector j_src(mesh.attributes.Max());
-		j_src = 0.0;
+		const std::function<bool(const Terminal&)>& include,
+		mfem::Vector& j_re, mfem::Vector& j_im) const {
+		j_re.SetSize(mesh.attributes.Max());
+		j_im.SetSize(mesh.attributes.Max());
+		j_re = 0.0;
+		j_im = 0.0;
 
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.DriveQuantity != Quantity::Current) continue;
 			if (!include(term)) continue;
 
-			const double I = ExcitationFor(sc, term_name);
-			if (I == 0.0) continue;
-			j_src += BuildTerminalCurrentDensity(term_name, I);
+			const std::complex<double> I = ExcitationFor(sc, term_name);
+			if (I.real() != 0.0) { j_re += BuildTerminalCurrentDensity(term_name, I.real()); }
+			if (I.imag() != 0.0) { j_im += BuildTerminalCurrentDensity(term_name, I.imag()); }
 		}
-		return j_src;
 	}
 };

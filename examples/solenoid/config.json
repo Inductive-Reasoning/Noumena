@@ -37,7 +37,8 @@
       "name": "CoilCurrent",
       "quantity": "current",
       "entity_group": "Coil",
-      "conductor_type": "stranded"
+      "conductor_type": "stranded",
+      "turns": 1000
     }
   ],
   "boundary_conditions": [
@@ -52,7 +53,7 @@
     {
       "name": "energized",
       "excitations": [
-        { "terminal": "CoilCurrent", "value": 1000.0 }
+        { "terminal": "CoilCurrent", "value": 1.0 }
       ]
     }
   ]

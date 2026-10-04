@@ -100,20 +100,27 @@ struct Terminal {
     ConductorType Conductor = ConductorType::Massive;
 	std::string EntityGroupName;   // mesh boundary (essential BC) or domain (RHS source) group name (validated)
 	std::optional<CurrentDirection> Direction;  // 3D magnetic current terminals only (validated)
+	// Stranded magnetic terminals only (validated): the winding's turns. Its
+	// excitation is the current in each turn, so the source is Turns times
+	// that current, and its flux linkage and coupling entries are the
+	// winding's.
+	int Turns = 1;
 };
 
 // One scenario's setting of one terminal.
 //
-// PHASOR CONVENTION: for time-harmonic (MQS) runs, Value is a PEAK (amplitude)
-// phasor, not RMS. Nothing converts or validates this -- the number is carried
-// unscaled into the RHS, so the solved port voltages, the extracted coupling
-// matrix (R = Re(V/I)), and the 1/2 in the time-averaged loss density all
-// inherit it. Prescribing an RMS value (e.g. a nameplate current) is silently
+// PHASOR CONVENTION: for time-harmonic (MQS) runs, Value is the PEAK amplitude
+// of the phasor Value * exp(j Phase), not RMS, with time dependence
+// exp(j omega t); static runs take Phase = 0 (validated). Nothing converts or
+// validates the amplitude -- it is carried unscaled into the RHS, so the
+// solved port voltages, the extracted coupling matrix (R = Re(V/I)), and the
+// 1/2 in the time-averaged loss density all inherit it. Prescribing an RMS value (e.g. a nameplate current) is silently
 // accepted and under-reports loss by 2x. See MqsLossDensityCoefficient.
 struct Excitation {
 	std::string TerminalName;   // must match a Terminal::Name (validated)
 	double Value = 0.0;         // volts (Voltage terminal) | amps (Current terminal);
 								// peak amplitude, not RMS (see above)
+	double Phase = 0.0;         // degrees
 };
 
 struct Material {

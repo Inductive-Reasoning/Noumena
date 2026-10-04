@@ -12,9 +12,8 @@ meshing noise. Each row of results-<problem>/dz.csv is one position:
 
   x_mm, L0_H, R0_ohm (unflawed), dL_uH, dR_ohm (flawed - unflawed)
 
-for the whole coil: the model is a half (y >= 0) driven with one ampere-turn,
-so its inductance and resistance are doubled and scaled by the number of
-turns squared. Positions already in dz.csv are skipped, so an interrupted scan
+for the whole coil: the model is the y >= 0 half of the winding, so its
+inductance and resistance are doubled. Positions already in dz.csv are skipped, so an interrupted scan
 resumes. Reading the results needs h5py (pip install h5py).
 """
 
@@ -26,7 +25,6 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TURNS = {1: 3790, 2: 408}
 
 
 def measured_positions(problem):
@@ -36,7 +34,7 @@ def measured_positions(problem):
 
 
 def coil_impedance(results):
-    """(L, R) of the half model per ampere-turn squared."""
+    """(L, R) of the half model."""
     import h5py
     with h5py.File(results / "results.h5", "r") as f:
         return float(f["coupling/Inductance/values"][0, 0, 0]), float(f["coupling/Resistance/values"][0, 0, 0])
@@ -76,7 +74,7 @@ def main():
             done = {float(r["x_mm"]) for r in csv.DictReader(f)}
     else:
         table.write_text("x_mm,L0_H,R0_ohm,dL_uH,dR_ohm\n")
-    scale = 2 * TURNS[args.problem] ** 2
+    scale = 2  # the model is half the coil
 
     for x_mm in positions:
         if x_mm in done:

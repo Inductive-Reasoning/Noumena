@@ -338,6 +338,7 @@ Array of objects naming drive/measurement sites.
 | `entity_group` | string | yes | -- | Role depends on `quantity` |
 | `conductor_type` | string | no | `massive` | `massive`, `stranded` |
 | `direction` | object | 3D magnetic current terminals | -- | Current path of a 3D conductor; see below |
+| `turns` | integer | no | `1` | Turns of a `stranded` magnetic winding; see below |
 
 | `quantity` | Required group role | Realization |
 |------------|---------------------|-------------|
@@ -354,7 +355,7 @@ and proximity effects. A `stranded` conductor carries no eddy current: its
 material's `sigma` is taken as the wire's conductivity and does not enter the
 field solve, so it neither screens the field nor dissipates. The winding's own
 resistance is not included in `R`. Magnetostatics, 2D and 3D, gives a
-`stranded` conductor the uniform `I / area` and a `massive` one its DC
+`stranded` conductor the uniform `N I / area` and a `massive` one its DC
 conduction distribution `σ E` -- the limit of the MQS distribution as the
 frequency goes to zero, so the two solvers agree there. It differs from
 uniform where the path length varies across the conductor (`J ∝ σ/r` in a
@@ -362,6 +363,14 @@ ring: for a thick one, b/a = 3, the inductance is 16% below the stranded
 value) or the conductivity does. A `massive` conductor therefore needs a
 material with positive `sigma`, in every solver; a multi-turn coil is
 `stranded`.
+
+`turns` is the number of turns `N` of a `stranded` winding, and is rejected
+on any other terminal (a massive conductor is a single turn). The terminal's
+excitation is the current in each turn, so the winding carries `N I`
+ampere-turns, and its flux linkage, coupling-matrix entries and impedances are
+those of all `N` turns: its self inductance and resistance scale as `N^2`,
+its mutual terms as `N`. With the default `N = 1` the excitation is the
+winding's ampere-turns.
 
 `direction` is required on every current terminal of a `3d` magnetic model and
 rejected everywhere else (a 2D model's current direction is fixed by its
@@ -459,6 +468,7 @@ Each entry of `excitations`:
 |-----|------|----------|---------|
 | `terminal` | string | yes | A defined terminal name |
 | `value` | number | yes | Volts or amps, per that terminal's `quantity` |
+| `phase` | number | no | Phase in degrees (default 0); MQS only |
 
 A terminal omitted from `excitations` defaults to zero of its quantity:
 grounded for voltage, open for current. Omission is meaningful, not an error.
@@ -466,6 +476,11 @@ grounded for voltage, open for current. Omission is meaningful, not an error.
 > **Excitation values are PEAK (amplitude) phasors in time-harmonic runs.**
 > There is no rms/peak selector and no conversion. See
 > [faq.md](faq.md#are-excitations-peak-or-rms).
+
+An MQS excitation is the phasor `value * exp(j phase)`, with time dependence
+`exp(j omega t)`: the terminal's current is `value * cos(omega t + phase)`. A
+balanced three-phase set is three terminals at phases 0, -120 and 120. Static
+physics rejects a nonzero `phase`.
 
 ### `frequency` (MQS only)
 

@@ -289,9 +289,10 @@ Every current terminal is a conductor with a direction field `w = −∇v`,
 from a unit conduction potential `v` (analytic `w = φ̂ / (Θr)` for
 `azimuthal`, `Θ` the conductor's angular extent: `2π` for a full ring, less
 for a sector bounded by symmetry planes; solved on the conductor for `electrodes` and `cut`, with `σ`
-weighting for a massive conductor). A stranded conductor carries
-`J = (I / A_cs) w / |w|` with `A_cs = ∫|w| dV` (for azimuthal,
-`∫ dV / (Θr)`, the meridional area); a massive one its DC distribution
+weighting for a massive conductor). A stranded conductor of `N` turns
+(`turns`, default 1) carries `J = (N I / A_cs) w / |w|` with `A_cs = ∫|w| dV`
+(for azimuthal, `∫ dV / (Θr)`, the meridional area), `I` the current in each
+turn; a massive one its DC distribution
 `J = σ w I / G` with `G = ∫σ|w|² dV` its conductance. Each unit-current
 load `b` is made discretely divergence-free before use: with `G` the discrete
 gradient from the matching H1 space and `M_c` the Nédélec mass matrix over the
@@ -337,6 +338,8 @@ where:
 - `j = √(-1)` is the imaginary unit
 
 For time-harmonic fields (`e^{jωt}`), `A⃗` becomes complex: `A⃗ = A⃗_real + j A⃗_imag`.
+A terminal's excitation is the peak phasor `I = value · e^{j·phase}`, so the
+sources, and with them the solution, are complex too.
 
 ### Weak Form
 
@@ -488,7 +491,7 @@ magnetostatics:
 ∇ × (ν ∇ × A) + jωσA = J_s + σ V w
 ```
 
-- Stranded terminals are sources `J_s = I (w/|w|) / A_cs`, projected as in
+- Stranded terminals are sources `J_s = N I (w/|w|) / A_cs`, projected as in
   magnetostatics.
 - A massive terminal is a port: in the conductor `E = V w − jωA`, and the
   voltage `V` is the unknown that makes its net current `∫σE·w dV = I`,

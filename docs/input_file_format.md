@@ -213,14 +213,16 @@ uniform current density (a winding of insulated strands; its material `sigma`
 does not enter the field solve, so no eddy current flows in it); `massive`
 carries its conduction current -- the DC distribution in magnetostatics, the
 true distribution including skin and proximity effects in MQS -- and needs a
-positive `sigma`. A multi-turn coil is `stranded`.
+positive `sigma`. A multi-turn coil is `stranded`; its `turns` (default 1)
+make the excitation the current in each turn and the coupling matrix that of
+the whole winding.
 
 ### 3.7 `scenarios`
 
 Array of solves. Ignored when `analysis_type` is `coupling_matrix`, which
 synthesizes its own unit-drive scenarios. Each scenario has a `name`, an
-optional list of `excitations` (a `terminal` and a `value`), and for MQS a
-`frequency`. Full listing: [`scenarios`](config_reference.md#scenarios).
+optional list of `excitations` (a `terminal`, a `value` and, for MQS, an
+optional `phase` in degrees), and for MQS a `frequency`. Full listing: [`scenarios`](config_reference.md#scenarios).
 
 **A terminal omitted from `excitations` defaults to zero** of its quantity:
 grounded for voltage, open for current. Omission is meaningful, not an error.

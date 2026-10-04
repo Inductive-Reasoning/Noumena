@@ -409,6 +409,101 @@ TEST_CASE("Stranded conductors carry no eddy currents", "[solvers][mqs][3d][2d][
 	}
 }
 
+// An excitation I exp(j phi) is the zero-phase excitation times exp(j phi),
+// and the system is linear, so shifting every terminal's phase by phi rotates
+// the whole solution -- the potential and the massive port's voltage -- by
+// exp(j phi). A sign error in how either a stranded source or a massive port
+// takes its imaginary part breaks the rotation by order one. In 3D, A agrees
+// only to about 1e-6: the gauge regularization (relative 1e-6) leaves the
+// gradient part of A sensitive to round-off.
+TEST_CASE("An excitation's phase rotates the MQS solution", "[solvers][mqs][3d][2d][phase]") {
+	const AnnulusSpec spec = EddyCurrentAnnulus();
+	const bool three_d = GENERATE(false, true);
+	INFO((three_d ? "3d" : "axisymmetric"));
+
+	struct Solution {
+		mfem::Vector re, im;
+		std::complex<double> port_voltage;
+	};
+	auto solve = [&](double phase) {
+		json config = MakeAnnulusConfig(spec, three_d, 1, "magnetoquasistatics", "field");
+		config["simulation"]["linear_solver"] = "direct";
+		config["scenarios"] = json::array({{{"name", "AC"}, {"frequency", 2000.0},
+			{"excitations", json::array({
+				{{"terminal", "C1"}, {"value", 1.0}, {"phase", phase}},
+				{{"terminal", "C2"}, {"value", -0.6}, {"phase", phase}}})}}});
+		mfem::Mesh mesh = three_d ? MakeAnnulus3D(spec, CellsAround(spec)) : MakeAnnulus2D(spec, 2);
+		if (three_d) {
+			MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config));
+			solver.Setup();
+			solver.Run();
+			return Solution{ solver.GetSolutionReal(), solver.GetSolutionImag(),
+							 solver.GetPortVoltage("C1") };
+		}
+		MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+		solver.Setup();
+		solver.Run();
+		const auto [v_re, v_im] = solver.GetPortVoltage("C1");
+		return Solution{ solver.GetSolutionReal(), solver.GetSolutionImag(), { v_re, v_im } };
+	};
+
+	constexpr double phase = 30.0;
+	const Solution reference = solve(0.0);
+	const Solution rotated = solve(phase);
+	const std::complex<double> turn = std::polar(1.0, phase * Constants::TWO_PI / 360.0);
+
+	mfem::Vector expected_re(reference.re), expected_im(reference.im);
+	expected_re *= turn.real();
+	expected_re.Add(-turn.imag(), reference.im);
+	expected_im *= turn.real();
+	expected_im.Add(turn.imag(), reference.re);
+	const double scale = std::max(reference.re.Normlinf(), reference.im.Normlinf());
+	REQUIRE(scale > 0.0);
+	const double tolerance = three_d ? 1e-4 : 1e-10;
+	expected_re -= rotated.re;
+	expected_im -= rotated.im;
+	REQUIRE(expected_re.Normlinf() <= tolerance * scale);
+	REQUIRE(expected_im.Normlinf() <= tolerance * scale);
+	REQUIRE(std::abs(rotated.port_voltage - turn * reference.port_voltage)
+			<= tolerance * std::abs(reference.port_voltage));
+}
+
+// A stranded winding of N turns carries N times its terminal current, and its
+// flux linkage is N times that of one turn, so its self impedance scales by
+// N^2 and its mutual impedances by N; the other terminals are unchanged.
+TEST_CASE("A stranded winding's turns scale its impedances", "[solvers][mqs][3d][2d][turns]") {
+	const AnnulusSpec spec = EddyCurrentAnnulus();
+	const bool three_d = GENERATE(false, true);
+	INFO((three_d ? "3d" : "axisymmetric"));
+
+	auto impedance = [&](int turns) {
+		json config = MakeAnnulusConfig(spec, three_d, 1, "magnetoquasistatics");
+		config["simulation"]["linear_solver"] = "direct";
+		config["scenarios"] = FrequencyScenarios({ 2000.0 });
+		REQUIRE(config["terminals"][1]["name"] == "C2");
+		config["terminals"][1]["turns"] = turns;
+		mfem::Mesh mesh = three_d ? MakeAnnulus3D(spec, CellsAround(spec)) : MakeAnnulus2D(spec, 2);
+		if (three_d) {
+			MagnetoquasistaticSolver3D solver(mesh, DecodeConfig(config, "turns.h5"));
+			return SolveImpedance(solver, "turns.h5");
+		}
+		MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, "turns.h5"));
+		return SolveImpedance(solver, "turns.h5");
+	};
+
+	constexpr int N = 3;
+	const ImpedanceSweep one = impedance(1);
+	const ImpedanceSweep wound = impedance(N);
+	const double factor[2][2] = { { 1.0, N }, { N, N * N } };
+	for (int i = 0; i < 2; ++i) {
+		for (int k = 0; k < 2; ++k) {
+			INFO("(" << i << "," << k << ")");
+			REQUIRE(wound.R[0][i][k] == Catch::Approx(factor[i][k] * one.R[0][i][k]).epsilon(1e-10));
+			REQUIRE(wound.L[0][i][k] == Catch::Approx(factor[i][k] * one.L[0][i][k]).epsilon(1e-10));
+		}
+	}
+}
+
 // In the weak-induction limit (omega mu sigma a^2 << 1) the eddy-current loss
 // of a region is proportional to its sigma: the loss of a sigma = 1 S/m block
 // must be exactly 1/100 of the same block's at 100 S/m. A block with ends (a

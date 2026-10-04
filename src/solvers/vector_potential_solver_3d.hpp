@@ -93,6 +93,7 @@ protected:
 		/// Stranded: the cross-section A_cs = integral |w|. Massive: the DC
 		/// conductance G = integral sigma |w|^2.
 		double PathIntegral = 0.0;
+		int Turns = 1;                        // stranded only; massive is 1
 	};
 
 	/// Terminal conductors in config.Terminals (name) order. Rebuilt per mesh
@@ -178,8 +179,9 @@ protected:
 		return mfem::Vector(load);
 	}
 
-	/// The divergence-free load of 1 A through @p c: J = w / (|w| A_cs)
-	/// stranded, the DC distribution sigma w / G massive.
+	/// The divergence-free load of 1 A in each turn of @p c: J = N w / (|w| A_cs)
+	/// stranded with N turns, the DC distribution sigma w / G massive. Its
+	/// product with A is the flux linkage of all N turns.
 	///
 	/// The load is projected within the conductor
 	/// (DivergenceFreeProjector::ProjectWithin), so the result is the nearest
@@ -200,7 +202,7 @@ protected:
 	/// gradient carries none along the path, since integral grad(psi) . w = 0
 	/// for the harmonic path w (no lateral flux, psi = 0 at electrodes).
 	mfem::Vector ProjectedUnitCurrentLoad(const TerminalConductor& c) {
-		const double scale = 1.0 / c.PathIntegral;
+		const double scale = c.Turns / c.PathIntegral;
 		mfem::Vector load = AssembleConductorLoad(c, scale);
 		const double removed = projector->ProjectWithin(load, c.Marker);
 		ConductorCurrentCoefficient J(*c.Path, ConductivityOf(c), scale);
@@ -281,6 +283,7 @@ private:
 		TerminalConductor c;
 		c.Name = name;
 		c.Type = term.Conductor;
+		c.Turns = term.Turns;
 		c.Direction = term.Direction->Type;
 		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
 		c.Marker = DomainMarkerFromAttrs(group.AttributeIds, "terminal '" + name + "'");

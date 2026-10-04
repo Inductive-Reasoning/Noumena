@@ -19,7 +19,7 @@ is centred on x = 0 and z = 0 is the mid-plane between the coils.
 - **Coils:** two square racetracks around the z axis, 270 x 270 outside (R45
   corners) and 200 x 200 inside (R10, concentric), each 217 tall, 24 apart
   (12 <= |z| <= 229), their near face 12 from the plate (x = 17 ... 287);
-  300 turns each, 10 A rms (4243 ampere-turns peak), in opposite directions.
+  300 turns each, 10 A rms (14.14 A peak), in opposite directions.
   Each is a stranded conductor driven through a cut (Cut1, Cut2) across its
   near side.
 - **Boundary:** n x A = 0 on an air box 600 beyond the plate and coils.
