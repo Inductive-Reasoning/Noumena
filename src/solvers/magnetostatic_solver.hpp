@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <sstream>
 
+#include <map>
 #include "mfem.hpp"
 #include "magnetic_solver.hpp"
 #include "../axisym/axisymmetric_curl_curl_integrator.hpp"
@@ -27,7 +28,16 @@ private:
 	// Resources (order of declaration = order of destruction)
 	std::unique_ptr<mfem::GridFunction> A; // A_phi (axisym) or A_z (planar scalar)
 
-	std::unique_ptr<mfem::PWConstCoefficient> j_coeff; // J_phi (axisym) or J (planar scalar src)
+	std::unique_ptr<mfem::PWConstCoefficient> j_coeff; // stranded J_phi (axisym) or J (planar)
+
+	// Each massive conductor's DC load for a unit voltage and its conductance
+	// G on the current mesh (MagneticSolver::MassiveConductorLoad); a current
+	// I loads the field with (I / G) * load.
+	struct MassiveSource {
+		mfem::Vector load;
+		double conductance = 0.0;
+	};
+	std::map<std::string, MassiveSource> massive_sources;
 
 	std::unique_ptr<mfem::LinearForm> b;
 	std::unique_ptr<mfem::BilinearForm> a;
@@ -72,6 +82,11 @@ public:
 
 		// Material Properties (Reluctivity nu = 1/mu), keyed by mesh DOMAIN attribute.
 		BuildReluctivity();
+		BuildConductivity();
+		for (const auto& [term_name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Massive) continue;
+			ValidateMassiveConductor(term_name, config.EntityGroups.at(term.EntityGroupName).AttributeIds);
+		}
 
 		boundary_conditions = BuildBoundaryConditions();
 		BuildEssentialBoundaryMarker();
@@ -89,6 +104,14 @@ public:
 
 	void BuildOperators() override {
 		fespace = std::make_unique<mfem::FiniteElementSpace>(&mesh, fec.get());
+
+		massive_sources.clear();
+		for (const auto& [term_name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Massive) continue;
+			const auto& attributes = config.EntityGroups.at(term.EntityGroupName).AttributeIds;
+			massive_sources[term_name] = { MassiveConductorLoad(term_name, attributes),
+										   MassiveConductance(term_name, attributes) };
+		}
 
 		A = std::make_unique<mfem::GridFunction>(fespace.get());
 		*A = 0.0;
@@ -220,6 +243,10 @@ public:
 		// Integrates J * v under the geometry's measure (2*pi*r for axisymmetric).
 		b->AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
 		b->Assemble();
+		for (const auto& [term_name, source] : massive_sources) {
+			const double I = ExcitationFor(sc, term_name);
+			if (I != 0.0) { b->Add(I / source.conductance, source.load); }
+		}
 		if (mode == ImprintMode::Field) {
 			*b += neumann_rhs;
 		}
@@ -349,6 +376,10 @@ private:
 	// Mirrors MagnetoquasistaticSolver::ComputeStrandedFluxLinkage.
 	double ComputeFluxLinkage(const std::string& terminal_name) const
 	{
+		const auto massive = massive_sources.find(terminal_name);
+		if (massive != massive_sources.end()) {
+			return (massive->second.load * *A) / massive->second.conductance;
+		}
 		mfem::Vector unit_density = BuildTerminalCurrentDensity(terminal_name, 1.0);
 		mfem::PWConstCoefficient unit_density_coeff(unit_density);
 
@@ -361,10 +392,12 @@ private:
 		return winding_functional * *A;
 	}
 
-	// Source current density for a scenario. Magnetostatics has no conductor-type
-	// distinction, so every current terminal contributes.
+	// Stranded conductors' uniform source current density for a scenario.
+	// Massive conductors carry their DC distribution instead, loaded from
+	// massive_sources in ImprintScenario().
 	mfem::Vector BuildCurrentDensity(const Scenario& sc) const {
-		return MagneticSolver::BuildCurrentDensity(
-			sc, [](const Terminal&) { return true; });
+		return MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
+			return term.Conductor == ConductorType::Stranded;
+		});
 	}
 };

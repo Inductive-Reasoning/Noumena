@@ -44,9 +44,12 @@ The long-solenoid value μ₀NI/L = 6.28 mT does not apply: this coil is only
 
 **Current density in coil:**
 
-The input file specifies the terminal excitation as a **total current** in
-amperes (here the full ampere-turns, N I = 1000 A); the solver divides by the
-coil cross-section to obtain the source current density:
+The terminal is `stranded`, a winding of many turns that carries a uniform
+current density (a `massive` conductor would carry its DC conduction
+distribution instead, which around the axis falls off as 1/r). The input file
+specifies the excitation as a **total current** in amperes (here the full
+ampere-turns, N I = 1000 A); the solver divides by the coil cross-section to
+obtain the source current density:
 
 ```
 J = N I / A_coil

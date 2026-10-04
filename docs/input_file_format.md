@@ -208,10 +208,12 @@ realized:
 `quantity` has no default. A wrong guess here would silently change the physics
 while still solving, so it must be stated.
 
-`conductor_type` applies to current terminals in MQS: `stranded` imposes uniform
-current density (a winding of insulated strands; its material `sigma` does not
-enter the field solve, so no eddy current flows in it); `massive` solves for
-the true current distribution including skin and proximity effects.
+`conductor_type` applies to magnetic current terminals: `stranded` imposes
+uniform current density (a winding of insulated strands; its material `sigma`
+does not enter the field solve, so no eddy current flows in it); `massive`
+carries its conduction current -- the DC distribution in magnetostatics, the
+true distribution including skin and proximity effects in MQS -- and needs a
+positive `sigma`. A multi-turn coil is `stranded`.
 
 ### 3.7 `scenarios`
 

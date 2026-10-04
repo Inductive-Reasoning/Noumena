@@ -36,7 +36,8 @@
     {
       "name": "CoilCurrent",
       "quantity": "current",
-      "entity_group": "Coil"
+      "entity_group": "Coil",
+      "conductor_type": "stranded"
     }
   ],
   "boundary_conditions": [

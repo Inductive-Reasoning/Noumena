@@ -17,6 +17,7 @@
 #include "../axisym/axisymmetric_curl_curl_integrator.hpp"
 #include "../axisym/magnetic_axis_boundary.hpp"
 #include "../axisym/radial_quadrature.hpp"
+#include "../coefficients/axisymmetric_conductance_coefficient.hpp"
 #include "../io/region_loss.hpp"
 
 /**
@@ -438,6 +439,78 @@ protected:
 			"Current terminal '" + terminal_name + "' has zero cross-section.");
 
 		return AttributeVector(group.AttributeIds, current / area);
+	}
+
+	// A massive conductor carries its DC conduction distribution
+	// J = sigma w V, with the path w = 1 per unit length in the plane and
+	// w = 1/(2 pi r) around the axis, and V the voltage driving the current.
+	// Its conductance is G = integral sigma |w|^2 dV, so a current I has
+	// V = I / G; this is the distribution an MQS massive conductor tends to as
+	// the frequency goes to zero, and the one 3D gives a massive conductor.
+	//
+	// MassiveConductorLoad is the load of J for V = 1: integral sigma w v dV.
+	// Weighted by the measure (2 pi r around the axis), sigma w becomes plain
+	// sigma, so it is the same unweighted domain form in both geometries.
+	// Assembly is restricted to the conductor's elements, so its cost is
+	// proportional to the conductor rather than to the mesh.
+	mfem::Vector MassiveConductorLoad(const std::string& name,
+									  const std::vector<int>& attributes) const {
+		mfem::Array<int> marker =
+			DomainMarkerFromAttrs(attributes, "massive conductor '" + name + "'");
+		mfem::LinearForm load(fespace.get());
+		load.AddDomainIntegrator(new mfem::DomainLFIntegrator(*sigma_coeff), marker);
+		load.Assemble();
+		return mfem::Vector(load);
+	}
+
+	// DC conductance G of a massive conductor: the integral of sigma over its
+	// elements in the plane, of sigma/(2 pi r) around the axis, where the rule
+	// also resolves the 1/r factor by the element's distance from the axis
+	// (radial_quadrature.hpp). A rule of fixed order cannot: a ring's
+	// conductance sigma h ln(b/a) / (2 pi) grows without bound as a -> 0.
+	double MassiveConductance(const std::string& name,
+							  const std::vector<int>& attributes) const {
+		const std::set<int> attrs(attributes.begin(), attributes.end());
+		AxisymmetricConductanceCoeff axisymmetric(*sigma_coeff);
+		mfem::Coefficient& integrand = geometry == GeometryType::Axisymmetric
+			? static_cast<mfem::Coefficient&>(axisymmetric) : *sigma_coeff;
+		double G = 0.0;
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
+			mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
+			const mfem::Geometry::Type shape = mesh.GetElementBaseGeometry(e);
+			const int order = 2 * config.Order + T->OrderW() + 2;
+			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+				? axisym::RadialRule(shape, order, *T)
+				: mfem::IntRules.Get(shape, order);
+			for (int i = 0; i < ir.GetNPoints(); ++i) {
+				const mfem::IntegrationPoint& ip = ir.IntPoint(i);
+				T->SetIntPoint(&ip);
+				G += ip.weight * T->Weight() * integrand.Eval(*T, ip);
+			}
+		}
+		MFEM_VERIFY(G > 0.0, "Massive conductor '" + name + "' has zero conductance.");
+		return G;
+	}
+
+	// A massive conductor needs a positive conductivity throughout and, around
+	// the axis, must not reach it: its conductance integral sigma/(2 pi r)
+	// diverges there.
+	void ValidateMassiveConductor(const std::string& name,
+								  const std::vector<int>& attributes) const {
+		ValidateMassiveConductivity(name, attributes);
+		if (geometry != GeometryType::Axisymmetric) { return; }
+		const std::set<int> attrs(attributes.begin(), attributes.end());
+		mfem::Vector pos(mesh.SpaceDimension());
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
+			double min_radius = 0.0, radial_width = 0.0;
+			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
+			MFEM_VERIFY(min_radius > axisymmetric_mesh.tolerance,
+				"Massive conductor '" + name + "' touches the symmetry axis. Its DC "
+				"conductance integral sigma/(2*pi*r) is divergent; model it as a "
+				"stranded conductor or move it off the axis.");
+		}
 	}
 
 	// Scenario source current density, summed over the terminals @p include

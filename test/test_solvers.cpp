@@ -2539,8 +2539,8 @@ TEST_CASE("Magnetostatic inductance matrix is reciprocal and distinguishes rows"
         {{"name", "CoilB"}, {"entity_group", "CoilB"}, {"material", "Material"}}
     });
     config["terminals"] = json::array({
-        {{"name", "CoilA"}, {"quantity", "current"}, {"entity_group", "CoilA"}},
-        {{"name", "CoilB"}, {"quantity", "current"}, {"entity_group", "CoilB"}}
+        {{"name", "CoilA"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilA"}},
+        {{"name", "CoilB"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilB"}}
     });
 
     mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
@@ -2571,7 +2571,7 @@ TEST_CASE("Magnetostatic loop inductance matches the analytic ring value",
 
     json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
     config["terminals"] = json::array({
-        {{"name", "LoopCurrent"}, {"quantity", "current"},
+        {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
          {"entity_group", "LoopDomain"}}
     });
 
@@ -2638,7 +2638,7 @@ TEST_CASE("Multigrid PCG and the direct solver agree on the 2D static operators"
         CreateCurrentLoopMesh(mesh_file);
         json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
         config["terminals"] = json::array({
-            {{"name", "LoopCurrent"}, {"quantity", "current"},
+            {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
              {"entity_group", "LoopDomain"}}});
         mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
         auto make = [&mesh](const json& c, const std::string& archive) {
@@ -2819,7 +2819,7 @@ TEST_CASE("Magnetostatic loop inductance is mesh-format independent (Netgen)",
 
     json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
     config["terminals"] = json::array({
-        {{"name", "LoopCurrent"}, {"quantity", "current"},
+        {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
          {"entity_group", "LoopDomain"}}
     });
 
@@ -2867,8 +2867,8 @@ TEST_CASE("Magnetostatic coupling ignores fixed Neumann background",
         {{"name", "CoilB"}, {"entity_group", "CoilB"}, {"material", "Material"}}
     });
     config["terminals"] = json::array({
-        {{"name", "CoilA"}, {"quantity", "current"}, {"entity_group", "CoilA"}},
-        {{"name", "CoilB"}, {"quantity", "current"}, {"entity_group", "CoilB"}}
+        {{"name", "CoilA"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilA"}},
+        {{"name", "CoilB"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilB"}}
     });
 
     auto solve = [&]() {
@@ -3951,6 +3951,66 @@ TEST_CASE("MQS massive ring conductance matches the exact value near the axis",
     }
 }
 
+// A massive conductor carries its DC conduction distribution in every solver:
+// in 2D magnetostatics as in MQS at low frequency, where it is the limit of
+// the port-driven current. Around the axis that distribution falls off as 1/r,
+// so for a thick ring (b/a = 3) it differs measurably from a stranded
+// winding's uniform current.
+TEST_CASE("A massive ring has one inductance in magnetostatics and low-frequency MQS",
+          "[solvers][mqs][axisymmetric][coupling]") {
+    const std::string matrix_file = "test_thick_ring.h5";
+    // r in [0, 1], z in [-0.5, 0.5]; the ring is 0.1 <= r <= 0.3, |z| <= 0.1.
+    auto make_mesh = [] {
+        mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(20, 20, mfem::Element::QUADRILATERAL);
+        for (int v = 0; v < mesh.GetNV(); ++v) { mesh.GetVertex(v)[1] -= 0.5; }
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            mfem::Vector c;
+            mesh.GetElementCenter(e, c);
+            mesh.SetAttribute(e, c(0) > 0.1 && c(0) < 0.3 && std::abs(c(1)) < 0.1 ? 2 : 1);
+        }
+        mesh.SetAttributes();
+        return mesh;
+    };
+    auto inductance = [&](const std::string& physics, const std::string& type) {
+        json config = {
+            {"simulation", {{"physics_type", physics}, {"mesh", "unused"}, {"order", 2},
+                {"geometry_type", "axisymmetric"}, {"analysis_type", "coupling_matrix"},
+                {"solver_print_level", 0}}},
+            {"entity_groups", json::array({
+                {{"name", "Air"}, {"dim", 2}, {"attribute_ids", {1}}},
+                {{"name", "Ring"}, {"dim", 2}, {"attribute_ids", {2}}},
+                {{"name", "Far"}, {"dim", 1}, {"attribute_ids", {1, 2, 3}}}})},
+            {"regions", json::array({
+                {{"name", "Air"}, {"entity_group", "Air"}, {"material", "Air"}},
+                {{"name", "Ring"}, {"entity_group", "Ring"}, {"material", "Copper"}}})},
+            {"materials", json::array({
+                {{"name", "Air"}, {"properties", {{"mu_r", 1.0}}}},
+                {{"name", "Copper"}, {"properties", {{"mu_r", 1.0}, {"sigma", 5.8e7}}}}})},
+            {"boundary_conditions", json::array({
+                {{"name", "Far"}, {"type", "dirichlet"}, {"entity_group", "Far"}, {"value", 0.0}}})},
+            {"terminals", json::array({
+                {{"name", "Ring"}, {"quantity", "current"}, {"conductor_type", type},
+                 {"entity_group", "Ring"}}})},
+            {"scenarios", json::array({
+                {{"name", "drive"}, {"frequency", 1e-6}, {"excitations", json::array()}}})}};
+        if (physics == "magnetostatics") { config["scenarios"][0].erase("frequency"); }
+        mfem::Mesh mesh = make_mesh();
+        auto solver = SolverFactory::Instance().Create(mesh, DecodeConfig(config, matrix_file));
+        solver->Setup();
+        solver->Run();
+        solver->SaveAnalysis();
+        const double L = ReadHdf5Matrix(matrix_file, "Inductance").values[0][0];
+        fs::remove(matrix_file);
+        return L;
+    };
+
+    const double magnetostatic = inductance("magnetostatics", "massive");
+    const double mqs = inductance("magnetoquasistatics", "massive");
+    const double stranded = inductance("magnetostatics", "stranded");
+    REQUIRE(magnetostatic == Catch::Approx(mqs).epsilon(1e-8));
+    REQUIRE(std::abs(magnetostatic - stranded) > 1e-2 * stranded);
+}
+
 TEST_CASE("MQS total Joule loss balances the delivered port power",
           "[solvers][mqs][loss][balance][axisymmetric]") {
     const std::string mesh_file = "test_mqs_power_balance.mesh";
@@ -4538,7 +4598,7 @@ TEST_CASE("Magnetostatic far-field truncation error converges as the boundary re
                  {"entity_group", "FarField"}, {"value", 0.0}}
             })},
             {"terminals", json::array({
-                {{"name", "Coil"}, {"quantity", "current"},
+                {{"name", "Coil"}, {"quantity", "current"}, {"conductor_type", "stranded"},
                  {"entity_group", "CoilDomain"}}
             })},
             {"scenarios", json::array({

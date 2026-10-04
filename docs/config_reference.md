@@ -353,10 +353,15 @@ series); `massive` solves for the true current distribution including skin
 and proximity effects. A `stranded` conductor carries no eddy current: its
 material's `sigma` is taken as the wire's conductivity and does not enter the
 field solve, so it neither screens the field nor dissipates. The winding's own
-resistance is not included in `R`. 2D magnetostatics treats both as uniform `I / area`. 3D
-magnetostatics gives a `massive` conductor its DC distribution `σ E` (which
-differs from uniform where the path length varies, e.g. `J ∝ 1/r` in a ring),
-so a `massive` 3D conductor needs a material with positive `sigma`.
+resistance is not included in `R`. Magnetostatics, 2D and 3D, gives a
+`stranded` conductor the uniform `I / area` and a `massive` one its DC
+conduction distribution `σ E` -- the limit of the MQS distribution as the
+frequency goes to zero, so the two solvers agree there. It differs from
+uniform where the path length varies across the conductor (`J ∝ σ/r` in a
+ring: for a thick one, b/a = 3, the inductance is 16% below the stranded
+value) or the conductivity does. A `massive` conductor therefore needs a
+material with positive `sigma`, in every solver; a multi-turn coil is
+`stranded`.
 
 `direction` is required on every current terminal of a `3d` magnetic model and
 rejected everywhere else (a 2D model's current direction is fixed by its

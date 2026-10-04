@@ -23,7 +23,6 @@
 #include "../core/problem_config.hpp"
 #include "mqs_massive_port_operator.hpp"
 #include "../linalg/complex_block_layout.hpp"
-#include "../coefficients/axisymmetric_conductance_coefficient.hpp"
 #include "../io/gmsh_results_writer.hpp"
 #include "amr_support.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
@@ -106,90 +105,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
     }
 
     std::vector<ImpedancePoint> coupling_results;
-
-    // Function to build the port vector for a specific port attribute
-    //
-    // The massive-port row is physical as written and needs no normalization
-    // adjustment: the field-row blocks (curl-curl K, sigma mass M_sigma, domain
-    // load) all carry the full 2*pi*r measure. Weighting the field source
-    // sigma*V/(2*pi*r) by that measure leaves exactly V * integral(sigma*v dr dz),
-    // which is this plain (unweighted) domain form.
-    std::unique_ptr<mfem::Vector> BuildPortVector(mfem::FiniteElementSpace* fespace,
-                            const std::vector<int>& port_attributes,
-                            mfem::Coefficient& conductivity,
-                            const std::string& port_name)
-    {
-        // Restrict integration to this specific port's attributes
-        mfem::Array<int> port_marker =
-            DomainMarkerFromAttrs(port_attributes, "massive port '" + port_name + "'");
-
-        // Assemble the LinearForm using a scalar domain integrator. The attribute
-        // marker restricts assembly to this port's elements, so the cost is
-        // proportional to the port rather than to the whole mesh; with one port per
-        // turn, assembling over every element would be quadratic overall.
-        mfem::LinearForm port_lf(fespace);
-        port_lf.AddDomainIntegrator(
-            new mfem::DomainLFIntegrator(conductivity), port_marker);
-        port_lf.Assemble();
-
-        // Extract and return as a standalone Vector
-        auto port_vector = std::make_unique<mfem::Vector>(port_lf.Size());
-        *port_vector = port_lf;
-        return port_vector;
-    }
-
-    // Smallest physical radius attained by the elements carrying any of
-    // @p attribute_ids, sampled through the element transformations so curved
-    // geometry is respected.
-    double MinRadiusOverAttributes(const std::vector<int>& attribute_ids) const
-    {
-        std::set<int> attrs(attribute_ids.begin(), attribute_ids.end());
-        double min_r = std::numeric_limits<double>::max();
-        mfem::Vector pos(mesh.SpaceDimension());
-
-        for (int e = 0; e < mesh.GetNE(); ++e) {
-            if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-            mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-            const mfem::IntegrationRule& nodes = fespace->GetFE(e)->GetNodes();
-            for (int i = 0; i < nodes.GetNPoints(); ++i) {
-                const mfem::IntegrationPoint& ip = nodes.IntPoint(i);
-                T->SetIntPoint(&ip);
-                T->Transform(ip, pos);
-                min_r = std::min(min_r, pos(0));
-            }
-        }
-        return min_r;
-    }
-
-    // DC conductance of a massive port: the integral of sigma over its
-    // elements in the plane, of sigma/(2*pi*r) in axisymmetry, where the rule
-    // also resolves the 1/r factor by the element's distance from the axis
-    // (radial_quadrature.hpp). A rule of fixed order cannot: a ring's
-    // conductance sigma h ln(b/a) / (2 pi) grows without bound as a -> 0.
-    double ComputePortConductance(const std::vector<int>& port_attributes,
-                                  mfem::Coefficient& conductivity) const
-    {
-        std::set<int> attrs(port_attributes.begin(), port_attributes.end());
-        AxisymmetricConductanceCoeff axisymmetric(conductivity);
-        mfem::Coefficient& integrand = geometry == GeometryType::Axisymmetric
-            ? static_cast<mfem::Coefficient&>(axisymmetric) : conductivity;
-        double G_dc = 0.0;
-        for (int e = 0; e < mesh.GetNE(); ++e) {
-            if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-            mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-            const mfem::Geometry::Type shape = mesh.GetElementBaseGeometry(e);
-            const int order = 2 * config.Order + T->OrderW() + 2;
-            const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-                ? axisym::RadialRule(shape, order, *T)
-                : mfem::IntRules.Get(shape, order);
-            for (int i = 0; i < ir.GetNPoints(); ++i) {
-                const mfem::IntegrationPoint& ip = ir.IntPoint(i);
-                T->SetIntPoint(&ip);
-                G_dc += ip.weight * T->Weight() * integrand.Eval(*T, ip);
-            }
-        }
-        return G_dc;
-    }
 
     // The complex block system is solved as a single real vector laid out
     // [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; ComplexPortVectorView and
@@ -394,23 +309,10 @@ public:
                 Reporter().Status("  assembled " + std::to_string(port_index) + " of " +
                     std::to_string(massive_ports.size()) + " massive ports");
             }
-            if (geometry == GeometryType::Axisymmetric) {
-                // G_dc = integral sigma/(2*pi*r) diverges for a toroidal massive
-                // conductor whose cross-section reaches the symmetry axis.
-                MFEM_VERIFY(
-                    MinRadiusOverAttributes(port.AttributeIds) > axisymmetric_mesh.tolerance,
-                    "Massive port '" + port.Name + "' touches the symmetry axis. "
-                    "Its DC conductance integral sigma/(2*pi*r) is divergent; "
-                    "model it as a stranded conductor or move it off the axis.");
-            }
-            ValidateMassiveConductivity(port.Name, port.AttributeIds);
-            port_loads.push_back(
-                BuildPortVector(fespace.get(), port.AttributeIds, *sigma_coeff,
-                                port.Name));
-            const double G_dc = ComputePortConductance(port.AttributeIds, *sigma_coeff);
-            MFEM_VERIFY(G_dc > 0.0,
-                "Massive port '" + port.Name + "' has zero conductance.");
-            port_conductances.push_back(G_dc);
+            ValidateMassiveConductor(port.Name, port.AttributeIds);
+            port_loads.push_back(std::make_unique<mfem::Vector>(
+                MassiveConductorLoad(port.Name, port.AttributeIds)));
+            port_conductances.push_back(MassiveConductance(port.Name, port.AttributeIds));
         }
         }
 
