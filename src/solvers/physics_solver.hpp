@@ -17,6 +17,7 @@
 #include "../axisym/axisymmetric_mesh_validation.hpp"
 #include "geometry_model.hpp"
 #include "../core/marked_boundary_condition.hpp"
+#include "../linalg/solve_acceptance.hpp"
 
 /**
  * @brief Base class for physics solvers using MFEM
@@ -29,8 +30,8 @@ protected:
 	mfem::Mesh& mesh;
 	ProblemConfig config;
 
-    // Held as the BASE collection type deliberately. Every solver currently
-    // builds an H1 space, but nothing in this class requires H1: the FE space
+    // Held as the BASE collection type deliberately. Scalar solvers build H1
+    // spaces and 3D magnetics uses Nedelec spaces: the FE space
     // constructor and GetOrder() are both base-class API. Naming the concrete
     // type here would commit every present and future solver to a nodal scalar
     // discretization, which is a formulation choice that belongs to the derived
@@ -66,8 +67,15 @@ public:
     virtual ~PhysicsSolver() = default;
 
     virtual void Setup() = 0;
-    void Run() {
+    void BeginOutput() {
+        run_solved = false;
         result_writer = std::make_unique<ResultWriter>(mesh, config);
+        result_writer->BeginMesh();
+    }
+    void Run() {
+        run_solved = false;
+        result_writer = std::make_unique<ResultWriter>(mesh, config);
+        try {
         if (config.Amr.Enabled) {
             RunAdaptive();
         }
@@ -76,10 +84,17 @@ public:
             result_writer->BeginMesh();
             RunOnCurrentMesh();
         }
+        run_solved = true;
+        } catch (...) {
+            amr_errors = nullptr;
+            throw;
+        }
     }
     void SaveAnalysis() {
         if (!result_writer) return;
+        if (!run_solved) throw std::runtime_error("Cannot save analysis from an incomplete run.");
         SaveAnalysisResults();
+        result_writer->Complete();
         result_writer.reset();
     }
 
@@ -94,6 +109,74 @@ public:
 
     // ---- Virtual methods: each solver supplies its own physics -------------
 protected:
+    bool run_solved = false;
+    std::string solve_context;
+    void SetSolveContext(const std::string& name, const Scenario& scenario) {
+        solve_context = "scenario '" + name + "', frequency "
+            + std::to_string(scenario.Frequency) + " Hz";
+    }
+    void ValidateScalarReferences(const mfem::Vector& load, bool constant_null = true) {
+        const int n = fespace->GetVSize();
+        std::vector<int> parent(n);
+        for (int i = 0; i < n; ++i) parent[i] = i;
+        auto root = [&](int d) {
+            while (parent[d] != d) {
+                parent[d] = parent[parent[d]];
+                d = parent[d];
+            }
+            return d;
+        };
+        auto decode = [](int d) { return d < 0 ? -1 - d : d; };
+        mfem::Array<int> dofs;
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            fespace->GetElementDofs(e, dofs);
+            for (int d : dofs) parent[root(decode(d))] = root(decode(dofs[0]));
+        }
+        std::vector<bool> anchored(n, false);
+        for (int e = 0; e < mesh.GetNBE(); ++e) {
+            const int attr = mesh.GetBdrAttribute(e);
+            bool reference = attr <= ess_bdr.Size() && ess_bdr[attr - 1];
+            for (const auto& bc : boundary_conditions) {
+                reference = reference || (bc.IsRobin() && bc.Condition.RobinCoeff > 0.0
+                    && attr <= bc.Marker.Size() && bc.Marker[attr - 1]);
+            }
+            if (!reference) continue;
+            auto& transformation = *mesh.GetBdrElementTransformation(e);
+            const auto& rule = mfem::IntRules.Get(transformation.GetGeometryType(),
+                2 * config.Order + transformation.OrderW() + 2);
+            double measure = 0.0;
+            mfem::Vector position;
+            for (int q = 0; q < rule.GetNPoints(); ++q) {
+                const auto& ip = rule.IntPoint(q);
+                transformation.SetIntPoint(&ip);
+                transformation.Transform(ip, position);
+                // A=0 axis regularity is a reference despite zero revolved area.
+                const double weight = constant_null ? Geometry().Measure(position) : 1.0;
+                measure += ip.weight * transformation.Weight() * weight;
+            }
+            if (!(measure > 0.0)) continue;
+            fespace->GetBdrElementDofs(e, dofs);
+            for (int d : dofs) anchored[root(decode(d))] = true;
+        }
+        std::vector<double> net(n, 0.0), magnitude(n, 0.0);
+        for (int d = 0; d < n; ++d) {
+            net[root(d)] += load(d);
+            magnitude[root(d)] += std::abs(load(d));
+        }
+        for (int d = 0; d < n; ++d) {
+            if (root(d) != d || anchored[d]) continue;
+            const std::string prefix = solve_context + ": scalar component "
+                + std::to_string(d) + " ";
+            if (constant_null && std::abs(net[d]) >
+                128 * std::numeric_limits<double>::epsilon() * magnitude[d]) {
+                throw std::runtime_error(prefix + "has incompatible pure-Neumann load; "
+                    "integrated source plus outward natural flux is not zero.");
+            }
+            throw std::runtime_error(prefix + "has no physical reference. Add a nonempty "
+                "Dirichlet/terminal boundary or positive-measure positive Robin boundary. "
+                "Unanchored magnetic annuli and MQS gauge components are unsupported.");
+        }
+    }
     virtual void SaveAnalysisResults() = 0;
     virtual void BuildOperators() = 0;
     virtual void RunOnCurrentMesh() = 0;
@@ -145,14 +228,16 @@ protected:
     // previously used here squares-roots its tolerance argument, so a
     // configured 1e-12 used to mean 1e-6 for these solvers only.)
     //
-    // Non-convergence is reported rather than silent: mfem::PCG returned the
-    // last iterate without comment, which reads exactly like a converged run.
+    // Failure is fatal before field recovery, output, or AMR.
     void SolveSpdIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
                              const mfem::Vector& B, mfem::Vector& X) const {
         mfem::CGSolver cg;
+        cg.iterative_mode = true;
         cg.SetOperator(A);
         cg.SetPreconditioner(preconditioner);
-        cg.SetRelTol(config.SolverTolerance);
+        // CG monitors the preconditioned recurrence norm. Leave headroom for
+        // the independently evaluated unpreconditioned acceptance residual.
+        cg.SetRelTol(0.1 * config.SolverTolerance);
         cg.SetAbsTol(0.0);
         cg.SetMaxIter(config.SolverMaxIter);
         cg.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
@@ -170,8 +255,33 @@ protected:
                 << " after " << cg.GetNumIterations() << " iterations, above "
                    "solver_tolerance " << config.SolverTolerance << ". Raise "
                    "solver_max_iter, loosen solver_tolerance, or use the direct "
-                   "solver; results may be inaccurate.";
-            Reporter().Warning(msg.str());
+                   "solver.";
+            throw std::runtime_error(solve_context + ": " + msg.str());
+        }
+        int iterations = cg.GetNumIterations();
+        for (int refinement = 0; ; ++refinement) {
+            try {
+                RequireAcceptedSolve(A, B, X, ess_tdof_list, config.SolverTolerance,
+                    solve_context + ", CG (" + std::to_string(iterations) + " iterations)");
+                break;
+            } catch (const std::runtime_error&) {
+                if (refinement == 3 || iterations >= config.SolverMaxIter) throw;
+                // A recursively updated residual can drift near roundoff.
+                // Solve a correction from the actual residual, within the
+                // original iteration budget; do not relax acceptance.
+                mfem::Vector residual(B.Size()), correction(X.Size());
+                A.Mult(X, residual);
+                residual *= -1;
+                residual += B;
+                correction = 0.0;
+                cg.iterative_mode = false;
+                cg.SetRelTol(0.1);
+                cg.SetMaxIter(config.SolverMaxIter - iterations);
+                cg.Mult(residual, correction);
+                iterations += cg.GetNumIterations();
+                if (!cg.GetConverged()) throw;
+                X += correction;
+            }
         }
     }
 
@@ -486,8 +596,9 @@ protected:
     // solvers only declare WHAT to export via CollectExportFields().
     void SaveScenario(const std::string& scenario_name, const Scenario& scenario,
         const std::string& driven_terminal = {}, const std::vector<RegionLoss>& losses = {}) {
-        if (!result_writer || !result_writer->WantsFields()) return;
-        result_writer->WriteScenario(scenario_name, scenario, CollectExportFields(), driven_terminal,
+        if (!result_writer) return;
+        result_writer->WriteScenario(scenario_name, scenario,
+            result_writer->WantsFields() ? CollectExportFields() : FieldExportSet{}, driven_terminal,
             losses);
     }
 

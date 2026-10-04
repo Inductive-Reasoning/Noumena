@@ -42,7 +42,7 @@ constexpr double kBxBound = 0.025;
 
 } // namespace
 
-TEST_CASE("TEAM 21a matches its measurements", "[.][team21a][solvers][mqs][3d]") {
+TEST_CASE("TEAM 21a stays within its measurement regression envelopes", "[.][team21a][solvers][mqs][3d]") {
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 21a needs the iterative solver of the MPI build.");
 	}
@@ -85,7 +85,8 @@ TEST_CASE("TEAM 21a matches its measurements", "[.][team21a][solvers][mqs][3d]")
 		}
 
 		if (slits != 2) continue;
-		// Bx is tabulated as rms; the solution's phasors are peak values.
+		// Retain the signed Re(Bx)/sqrt(2) comparison pending verification of
+		// the source table's phase convention; this is not RMS magnitude.
 		for (const auto& [probe, column] : { std::pair<std::string, std::string>{ "Bx_coil_side", "measured_coil_side" },
 											 { "Bx_far_side", "measured_far_side" } }) {
 			std::map<double, double> computed;

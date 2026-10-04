@@ -224,6 +224,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Execution
+        solver->BeginOutput();
         {
             auto operation = reporter.Start("solver setup");
             solver->Setup();

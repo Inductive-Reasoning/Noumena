@@ -141,6 +141,7 @@ public:
 		}
 		int column = 0;
 		for (const auto& [name, scenario] : BuildSolveScenarios()) {
+			SetSolveContext(name, scenario);
 			auto operation = Reporter().Start("scenario '" + name + "'");
 			ImprintScenario(scenario);
 			SolveSystem();
@@ -219,6 +220,8 @@ private:
 		a->FormLinearSystem(ess_tdof_list, *A, *b, A_op, X, B);
 		if (direct_solver) {
 			direct_solver->Mult(B, X);
+			RequireAcceptedSolve(*A_op, B, X, ess_tdof_list, config.SolverTolerance,
+				solve_context + ", direct");
 			a->RecoverFEMSolution(X, *b, *A);
 			return;
 		}

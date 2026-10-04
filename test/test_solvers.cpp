@@ -3732,10 +3732,8 @@ TEST_CASE("MQS loss excludes non-conducting and stranded regions",
 // left side and nothing to the right; a balance test that summed only the driven
 // region would fail for a reason that has nothing to do with correctness.
 //
-// The two sides discretize differently - one integrates a quadratic field
-// quantity, the other reads a solved port unknown - so they agree only to
-// discretization error rather than to round-off. The tolerance below was
-// measured on this mesh, not assumed.
+// Consistent quadrature makes this a discrete Galerkin identity, not a
+// mesh-convergence comparison.
 TEST_CASE("MQS total Joule loss balances the delivered port power",
           "[solvers][mqs][loss][balance][axisymmetric]") {
     const std::string mesh_file = "test_mqs_power_balance.mesh";
@@ -3772,13 +3770,8 @@ TEST_CASE("MQS total Joule loss balances the delivered port power",
     const auto [v_re, v_im] = solver.GetPortVoltage("TurnA");
     const double delivered = 0.5 * v_re * current;
 
-    // Measured: the relative gap is 3.0e-3 on this mesh, falling to 7.4e-4 when
-    // the radial resolution is doubled - a factor of 4.0 for a 2x refinement,
-    // i.e. clean second-order convergence to exact balance. That convergence is
-    // what establishes the identity actually holds; the coarser mesh is kept
-    // here because the finer one costs about two minutes to solve. The bound
-    // sits just above the measured value so a real regression cannot hide in it.
-    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(4.0e-3));
+    INFO("relative power imbalance=" << std::abs(delivered - total_loss) / total_loss);
+    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(1.0e-9));
 
     // The scope decision is load-bearing, not cosmetic. The shield and the
     // undriven turn own no net port current, so restricting the total to the
@@ -4138,7 +4131,10 @@ TEST_CASE("Solvers share output destinations and coupling field policy", "[solve
                 HighFive::File archive((root / "out/archive/run.h5").string(), HighFive::File::ReadOnly);
                 REQUIRE(archive.exist("mesh/mfem"));
                 REQUIRE(archive.exist("coupling") == !field_analysis);
-                REQUIRE(archive.exist("scenarios") == fields_enabled);
+                REQUIRE(archive.exist("scenarios"));
+                int complete = 0;
+                archive.getAttribute("run_complete").read(complete);
+                REQUIRE(complete == 1);
                 if (fields_enabled) {
                     const int count = field_analysis || mqs ? 2 : 1;
                     REQUIRE(archive.getGroup("scenarios").getNumberObjects() == count);
@@ -4159,8 +4155,8 @@ TEST_CASE("Solvers share output destinations and coupling field policy", "[solve
                 REQUIRE_FALSE(fs::exists(root / "out"));
             }
             const bool visualization = formats_enabled && fields_enabled && !field_analysis;
-            REQUIRE(fs::exists(root / "out/vtk") == visualization);
-            REQUIRE(fs::exists(root / "out/msh") == visualization);
+            REQUIRE(fs::exists(root / "out/vtk") == (formats_enabled && !field_analysis));
+            REQUIRE(fs::exists(root / "out/msh") == (formats_enabled && !field_analysis));
             if (visualization) {
                 const std::string artifact = mqs ? "scenario_000000_First_point_Drive_A"
                     : "scenario_000000_CouplingMatrix_Drive_A_Drive_A";
@@ -4360,4 +4356,259 @@ TEST_CASE("Magnetostatic far-field truncation error converges as the boundary re
     REQUIRE((far - mid) < (mid - near));
 
     fs::remove(matrix_file);
+}
+
+TEST_CASE("Robin terminal reactions equal the homogeneous energy derivative",
+          "[solvers][electrostatic][robin][reaction]") {
+    for (int order : {1, 2}) for (bool adjacent : {false, true}) {
+        const std::string mesh_file = "test_robin_reaction.mesh";
+        const std::string archive = "test_robin_reaction.h5";
+        CreatePlanarStripMesh(mesh_file, 1, 1, 4, 4);
+        for (double alpha : {0.0, 2 * Constants::EPSILON_0}) {
+            auto config = MakePlanarStripConfig("electrostatics", mesh_file, order,
+                {{"epsilon_r", 1.0}}, 0, 0);
+            config["simulation"]["analysis_type"] = "coupling_matrix";
+            config["terminals"] = json::array({
+                {{"name", "Left"}, {"quantity", "voltage"}, {"entity_group", "Left"}}});
+            if (adjacent) config["terminals"].push_back(
+                {{"name", "Right"}, {"quantity", "voltage"}, {"entity_group", "Right"}});
+            config["entity_groups"].push_back(
+                {{"name", "Side"}, {"dim", 1}, {"attribute_ids", {3}}});
+            config["boundary_conditions"] = json::array({
+                {{"name", "Robin"}, {"type", "robin"},
+                 {"entity_group", adjacent ? "Side" : "Right"},
+                 {"value", 7.0}, {"robin_coefficient", alpha}}});
+            mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+            ElectrostaticSolver solver(mesh, DecodeConfig(config, archive));
+            solver.Setup();
+            solver.Run();
+            const auto fields = solver.CollectExportFields();
+            const auto& potential = *FindField(fields, "V").primary;
+            mfem::ConstantCoefficient eps(Constants::EPSILON_0), robin(alpha);
+            mfem::H1_FECollection collection(order, 2);
+            mfem::FiniteElementSpace space(&mesh, &collection);
+            mfem::BilinearForm full(&space);
+            full.AddDomainIntegrator(new mfem::DiffusionIntegrator(eps));
+            mfem::Array<int> marker(mesh.bdr_attributes.Max());
+            marker = 0;
+            marker[(adjacent ? 3 : 2) - 1] = 1;
+            full.AddBoundaryIntegrator(new mfem::MassIntegrator(robin), marker);
+            full.Assemble();
+            full.Finalize();
+            mfem::Vector reaction(potential.Size());
+            full.SpMat().Mult(potential, reaction);
+            const double energy_derivative = potential * reaction;
+            solver.SaveAnalysis();
+            const auto matrix = ReadHdf5Matrix(archive, "Capacitance");
+            const int column = adjacent ? 1 : 0;
+            INFO("order=" << order << ", adjacent=" << adjacent << ", alpha=" << alpha);
+            REQUIRE(matrix.values[column][column] / Constants::EPSILON_0 ==
+                Catch::Approx(energy_derivative / Constants::EPSILON_0).epsilon(1e-10).margin(1e-12));
+            if (adjacent) REQUIRE(matrix.values[0][1] ==
+                Catch::Approx(matrix.values[1][0]).epsilon(1e-10).margin(1e-23));
+        }
+        fs::remove(archive);
+        fs::remove(mesh_file);
+    }
+}
+
+TEST_CASE("Scalar references are physical and component wise",
+          "[solvers][references]") {
+    const std::string mesh_file = "test_scalar_reference.mesh";
+    CreatePlanarStripMesh(mesh_file, 1, 1, 2, 2);
+    for (const std::string physics : {"electrostatics", "magnetostatics"}) {
+        auto config = MakePlanarStripConfig(physics, mesh_file, 1,
+            physics == "electrostatics" ? json{{"epsilon_r", 1.0}} : json{{"mu_r", 1.0}},
+            0, 0);
+        for (auto& bc : config["boundary_conditions"]) bc["type"] = "neumann";
+        for (bool balanced : {true, false}) {
+            config["boundary_conditions"][0]["value"] = -1.0;
+            config["boundary_conditions"][1]["value"] = balanced ? 1.0 : 0.0;
+            mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+            auto solver = SolverFactory::Instance().Create(mesh, DecodeConfig(config));
+            REQUIRE_THROWS_WITH(solver->Setup(), Catch::Matchers::ContainsSubstring(
+                balanced ? "no physical reference" : "incompatible pure-Neumann"));
+        }
+        if (physics == "electrostatics") {
+            config["boundary_conditions"][1]["type"] = "robin";
+            config["boundary_conditions"][1]["robin_coefficient"] = 1.0;
+            mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+            ElectrostaticSolver solver(mesh, DecodeConfig(config));
+            REQUIRE_NOTHROW(solver.Setup());
+            REQUIRE_NOTHROW(solver.Run());
+            config["boundary_conditions"][0]["value"] = 0.0;
+            config["boundary_conditions"][1]["value"] = 0.0;
+            config["boundary_conditions"][1]["robin_coefficient"] = 0.0;
+            ElectrostaticSolver zero_robin(mesh, DecodeConfig(config));
+            REQUIRE_THROWS_WITH(zero_robin.Setup(),
+                Catch::Matchers::ContainsSubstring("no physical reference"));
+            config["simulation"]["geometry_type"] = "axisymmetric";
+            config["boundary_conditions"] = json::array({
+                {{"name", "AxisRobin"}, {"type", "robin"}, {"entity_group", "Left"},
+                 {"value", 0.0}, {"robin_coefficient", 1.0}}});
+            ElectrostaticSolver axis_robin(mesh, DecodeConfig(config));
+            REQUIRE_THROWS_WITH(axis_robin.Setup(),
+                Catch::Matchers::ContainsSubstring("no physical reference"));
+        }
+    }
+    fs::remove(mesh_file);
+}
+
+TEST_CASE("Acceptance separates essential equations and rejects nonfinite iterates",
+          "[solvers][acceptance]") {
+    mfem::SparseMatrix matrix(2);
+    matrix.Add(0, 0, 1.0);
+    matrix.Add(1, 1, 1e-15);
+    matrix.Finalize();
+    mfem::Vector rhs(2), solution(2);
+    rhs(0) = solution(0) = 1.0;
+    rhs(1) = 1e-15;
+    solution(1) = 0.0;
+    mfem::Array<int> essential(1);
+    essential[0] = 0;
+    REQUIRE_THROWS(RequireAcceptedSolve(matrix, rhs, solution, essential, 1e-12, "test"));
+    solution(1) = 1.0;
+    REQUIRE_NOTHROW(RequireAcceptedSolve(matrix, rhs, solution, essential, 1e-12, "test"));
+    solution(1) = std::numeric_limits<double>::quiet_NaN();
+    REQUIRE_THROWS(RequireAcceptedSolve(matrix, rhs, solution, essential, 1e-12, "test"));
+    rhs = solution = 0.0;
+    REQUIRE_NOTHROW(RequireAcceptedSolve(matrix, rhs, solution, essential, 1e-12, "test"));
+}
+
+TEST_CASE("A failed later scenario leaves only accepted fields and incomplete status",
+          "[solvers][acceptance][hdf5]") {
+    const std::string mesh_file = "test_rejected_sweep.mesh";
+    const std::string archive = "test_rejected_sweep.h5";
+    CreatePlanarStripMesh(mesh_file, 1, 1, 32, 32);
+    auto config = MakePlanarStripConfig("electrostatics", mesh_file, 2,
+        {{"epsilon_r", 1.0}}, 0, 0);
+    config["simulation"]["linear_solver"] = "iterative";
+    config["simulation"]["solver_max_iter"] = 1;
+    config["boundary_conditions"].erase(1);
+    config["terminals"] = json::array({
+        {{"name", "Right"}, {"quantity", "voltage"}, {"entity_group", "Right"}}});
+    config["scenarios"] = json::array({
+        {{"name", "a_zero"}, {"excitations", json::array({
+            {{"terminal", "Right"}, {"value", 0.0}}})}},
+        {{"name", "b_driven"}, {"excitations", json::array({
+            {{"terminal", "Right"}, {"value", 1.0}}})}}});
+    {
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config, archive));
+        solver.Setup();
+        REQUIRE_THROWS_WITH(solver.Run(), Catch::Matchers::ContainsSubstring("b_driven"));
+        REQUIRE_THROWS(solver.SaveAnalysis());
+    }
+    {
+        HighFive::File file(archive, HighFive::File::ReadOnly);
+        int complete = 1, count = 0;
+        file.getAttribute("run_complete").read(complete);
+        file.getAttribute("accepted_scenarios").read(count);
+        REQUIRE(complete == 0);
+        REQUIRE(count == 1);
+        REQUIRE(file.getGroup("scenarios").getNumberObjects() == 1);
+    }
+    config["simulation"]["solver_max_iter"] = 4000;
+    {
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config, archive));
+        solver.Setup();
+        REQUIRE_NOTHROW(solver.Run());
+        solver.SaveAnalysis();
+    }
+    {
+        HighFive::File file(archive, HighFive::File::ReadOnly);
+        int complete = 0, count = 0;
+        file.getAttribute("run_complete").read(complete);
+        file.getAttribute("accepted_scenarios").read(count);
+        REQUIRE(complete == 1);
+        REQUIRE(count == 2);
+    }
+    fs::remove(archive);
+    fs::remove(mesh_file);
+}
+
+TEST_CASE("Empty markers and disconnected scalar domains do not acquire references",
+          "[solvers][references]") {
+    mfem::Mesh mesh(2, 8, 2, 8, 2);
+    for (int component = 0; component < 2; ++component) {
+        const double offset = 2.0 * component;
+        mesh.AddVertex(offset, 0);
+        mesh.AddVertex(offset + 1, 0);
+        mesh.AddVertex(offset + 1, 1);
+        mesh.AddVertex(offset, 1);
+        const int v = 4 * component;
+        mesh.AddQuad(v, v + 1, v + 2, v + 3, 1);
+        for (int i = 0; i < 4; ++i)
+            mesh.AddBdrSegment(v + i, v + (i + 1) % 4, component + 1);
+    }
+    mesh.FinalizeQuadMesh(1, 0, true);
+    auto config = MakePlanarStripConfig("electrostatics", "unused.mesh", 1,
+        {{"epsilon_r", 1.0}}, 0, 0);
+    config["boundary_conditions"].erase(1);
+    ElectrostaticSolver disconnected(mesh, DecodeConfig(config));
+    REQUIRE_THROWS_WITH(disconnected.Setup(),
+        Catch::Matchers::ContainsSubstring("no physical reference"));
+    config["entity_groups"][1]["attribute_ids"] = {99};
+    ElectrostaticSolver empty(mesh, DecodeConfig(config));
+    REQUIRE_THROWS_WITH(empty.Setup(),
+        Catch::Matchers::ContainsSubstring("no physical reference"));
+}
+
+TEST_CASE("Axis regularity anchors magnetic components but annuli need a reference",
+          "[solvers][references][axisymmetric]") {
+    for (bool annulus : {false, true}) {
+        auto mesh = mfem::Mesh::MakeCartesian2D(2, 2, mfem::Element::QUADRILATERAL);
+        if (annulus) for (int v = 0; v < mesh.GetNV(); ++v) mesh.GetVertex(v)[0] += 1;
+        auto config = MakePlanarStripConfig("magnetostatics", "unused.mesh", 1,
+            {{"mu_r", 1.0}}, 0, 0);
+        config["simulation"]["geometry_type"] = "axisymmetric";
+        config["boundary_conditions"] = json::array();
+        MagnetostaticSolver solver(mesh, DecodeConfig(config));
+        if (annulus) REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("no physical reference"));
+        else {
+            REQUIRE_NOTHROW(solver.Setup());
+            REQUIRE_NOTHROW(solver.Run());
+        }
+    }
+
+}
+
+TEST_CASE("MQS rejects exhausted GMRES before recovery and agrees with direct when converged",
+          "[solvers][acceptance][mqs]") {
+    const std::string mesh_file = "test_mqs_acceptance.mesh";
+    CreatePlanarStripMesh(mesh_file, 1, 0.5, 12, 4);
+    auto config = MakePlanarStripConfig("magnetoquasistatics", mesh_file, 1,
+        {{"mu_r", 1.0}, {"sigma", 1e6}}, 0, 1);
+    config["scenarios"][0]["frequency"] = 50.0;
+    config["simulation"]["linear_solver"] = "iterative";
+    config["simulation"]["solver_max_iter"] = 1;
+    {
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        REQUIRE_THROWS_WITH(solver.Run(), Catch::Matchers::ContainsSubstring("GMRES did not converge"));
+    }
+    config["simulation"]["solver_max_iter"] = 4000;
+    std::vector<double> real, imaginary;
+    for (const std::string method : {"direct", "iterative"}) {
+        config["simulation"]["linear_solver"] = method;
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        REQUIRE_NOTHROW(solver.Run());
+        if (method == "direct") {
+            for (int d = 0; d < solver.GetSolutionReal().Size(); ++d) {
+                real.push_back(solver.GetSolutionReal()(d));
+                imaginary.push_back(solver.GetSolutionImag()(d));
+            }
+        } else {
+            for (int d = 0; d < solver.GetSolutionReal().Size(); ++d) {
+                REQUIRE(solver.GetSolutionReal()(d) == Catch::Approx(real[d]).margin(1e-10));
+                REQUIRE(solver.GetSolutionImag()(d) == Catch::Approx(imaginary[d]).margin(1e-10));
+            }
+        }
+    }
+    fs::remove(mesh_file);
 }

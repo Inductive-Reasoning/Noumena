@@ -7,6 +7,13 @@ cut in the plate to break up its eddy currents (P21a-0 ... P21a-3). The
 benchmark is the plate's eddy-current loss, and for P21a-2 the flux density
 beside the plate.
 
+The checks are regression envelopes, not unconditional validation: P21a-3
+allows 21% loss error. The signed Bx comparison retains `Re(Bx)/sqrt(2)`;
+that is not the RMS magnitude `abs(Bx)/sqrt(2)`. The original V.2009 report's
+phase/sign convention has not been independently verified here (the source
+PDF could not be retrieved). Resolve that convention before treating this
+comparison as a measurement of RMS magnitude.
+
 ## Problem
 
 Dimensions in millimetres here; the mesh and configs are in metres. The plate

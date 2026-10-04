@@ -192,6 +192,7 @@ public:
 	void RunOnCurrentMesh() override {
 		if (config.AnalysisType == AnalysisType::Field) {
 			for (const auto& [name, scenario] : config.Scenarios) {
+				SetSolveContext(name, scenario);
 				auto operation = Reporter().Start("scenario '" + name + "'");
 				ActivateFrequency(scenario.Frequency);
 				Solve(scenario);
@@ -218,6 +219,7 @@ public:
 				Scenario drive;
 				drive.Frequency = point_frequency;
 				drive.Excitations.push_back({ conductors[column].Name, 1.0 });
+				SetSolveContext(point_name + "/" + conductors[column].Name, drive);
 				auto operation = Reporter().Start(
 					"scenario '" + point_name + "', terminal '" + conductors[column].Name + "'");
 				Solve(drive);
@@ -450,6 +452,8 @@ private:
 			}
 		}
 
+		port_operator->RequireAccepted(rhs, rhs, x, ess_packed_tdofs,
+			config.SolverTolerance, solve_context + (direct_solver ? ", direct" : ", GMRES"));
 		auto solved = port_operator->View(x);
 		for (int i = 0; i < layout.NDofs(); ++i) {
 			A->real()(i) = solved.ReMesh(i);
@@ -503,6 +507,7 @@ private:
 		gmres.SetMaxIter(config.SolverMaxIter);
 		gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 		gmres.Mult(rhs, x);
+		solve_context += ", GMRES (" + std::to_string(gmres.GetNumIterations()) + " iterations)";
 
 		std::ostringstream msg;
 		msg << std::scientific << std::setprecision(3);
@@ -516,8 +521,8 @@ private:
 				<< " after " << gmres.GetNumIterations() << " iterations, above "
 				   "solver_tolerance " << config.SolverTolerance << ". Raise "
 				   "solver_max_iter, loosen solver_tolerance, or use the direct "
-				   "solver; results may be inaccurate.";
-			Reporter().Warning(msg.str());
+				   "solver.";
+			throw std::runtime_error(solve_context + ": " + msg.str());
 		}
 #else
 		(void)rhs;

@@ -27,10 +27,11 @@ in metres; see [Units](../../docs/config_reference.md#units))
 ```
 δ = √(2 / (ω μ σ))
   = √(2 / (377 × 4π×10⁻⁷ × 3.5×10⁷))
-  = 1.47 mm
+  = 10.98 mm
 ```
 
-The field penetrates only ~1.5 mm into the aluminum at 60 Hz.
+The characteristic penetration depth is 10.98 mm at 60 Hz. The exponential
+half-space approximation is only local for this finite cylinder.
 
 ## Physical Phenomena
 
@@ -51,13 +52,13 @@ The field penetrates only ~1.5 mm into the aluminum at 60 Hz.
 
 ## Analytical Approximation
 
-For a thin conducting sheet:
+For a conducting half-space (thickness much greater than the skin depth):
 
 **Surface resistance:**
 ```
 R_s = √(ω μ / (2 σ))
     = √(377 × 4π×10⁻⁷ / (2 × 3.5×10⁷))
-    = 5.2 × 10⁻⁵ Ω/square
+    = 2.60e-6 ohms
 ```
 
 **Power loss per unit area:**
@@ -113,7 +114,8 @@ The simulation produces complex-valued fields:
 
 1. **A_real, A_imag:** In-phase and quadrature components of vector potential
 2. **B_real, B_imag:** Real and imaginary parts of magnetic flux density
-3. **B_magnitude:** RMS magnitude = √(B_real² + B_imag²)
+3. **B_magnitude:** Peak-phasor norm `sqrt(|B_real|^2 + |B_imag|^2)`;
+   the time-domain RMS vector magnitude is this norm divided by `sqrt(2)`.
 4. **Power loss:** Concentrated near conductor surface
 
 ## Visualization
@@ -146,12 +148,13 @@ To animate the time-harmonic solution:
 
 **Critical:** Mesh must resolve skin depth!
 
-- **In conductor:** Element size ≤ δ/3 ≈ 0.5 mm near surface
+- **In conductor:** Element size <= skin depth / 3, about 3.66 mm at 60 Hz
+  or 0.90 mm at the highest configured frequency (1 kHz)
 - **Boundary layer:** Use graded mesh from surface inward
 - **Air region:** Coarser mesh acceptable (5-10 mm)
 
 **Typical mesh:**
-- Surface layer: 5-10 elements within 3δ ≈ 4.5 mm
+- Surface layer: resolve several skin depths (3 delta = 32.94 mm at 60 Hz)
 - Geometric growth ratio: 1.2-1.5
 - Total elements: 10,000-50,000 depending on order
 
@@ -172,14 +175,14 @@ At depth x = δ, field should drop to ~37% (1/e) of surface value.
 
 ### 2. Power Loss
 Compare computed losses to analytical for simple geometry. The solver reports
-per-region time-averaged Joule loss at the end of each scenario; for
-`PowerFrequency` the conductor loss is ~1.03e-01 W with the shipped mesh and
-the peak-phasor excitation convention.
+per-region time-averaged Joule loss at the end of each scenario. Compare it
+with terminal real power and study mesh and outer-boundary convergence;
+the local half-space estimate is not an exact finite-cylinder reference.
 
 ### 3. Phase Relationship
-Inside conductor:
-- Current lags applied field by ~45°
-- Phase increases with depth
+The half-space surface impedance has a 45 degree phase for this phasor
+convention. There is no universal 45 degree lag between induced current and
+the applied field in a finite coil/conductor geometry; phase varies with depth.
 
 ## Frequency Sweep
 
@@ -217,12 +220,13 @@ for the shared frequency axis and quantity groups.
 
 **Expected trends:**
 - Higher f → smaller δ (stronger skin effect)
-- Higher f → greater power loss
+- Loss need not increase monotonically with frequency; it depends on the
+  imposed current/voltage, shielding, and geometry.
 - Higher f → better shielding
 
 **At 1 kHz:**
 ```
-δ = 1.47 mm / √(1000/60) = 0.36 mm
+delta = 10.98 mm / sqrt(1000/60) = 2.69 mm
 ```
 
 Much more confined to surface!
@@ -231,12 +235,15 @@ Much more confined to surface!
 
 Compare different conductors:
 
-| Material | σ (S/m) | δ @ 60 Hz | Application |
-|----------|---------|-----------|-------------|
-| Aluminum | 3.5×10⁷ | 1.5 mm | Lightweight |
-| Copper   | 5.8×10⁷ | 1.1 mm | High conductivity |
-| Steel    | 1.0×10⁶ | 7.0 mm | Structural, magnetic |
-| Carbon   | 1.0×10⁴ | 230 mm | Composite materials |
+| Material | sigma (S/m) | assumed mu_r | delta @ 60 Hz |
+|----------|-------------|--------------|---------------|
+| Aluminum | 3.5e7 | 1 | 10.98 mm |
+| Copper | 5.8e7 | 1 | 8.53 mm |
+| Steel | 1.0e6 | 100 | 6.50 mm |
+| Carbon | 1.0e4 | 1 | 650 mm |
+
+These are linear, isotropic material estimates. Steel permeability depends
+on field and frequency; carbon composites can be strongly anisotropic.
 
 ## Applications
 
@@ -257,17 +264,19 @@ Integrate power loss density:
 P_total = ∫_conductor (σ ω² / 2) |A|² dV
 ```
 
-Extract from simulation output.
+This expression applies only where the imposed electric drive is zero.
+Massive ports require the full `0.5 sigma |V/(2 pi r) - j omega A|^2`.
 
 ### 2. Force Calculation
 
 Lorentz force on conductor:
 
 ```
-F = ∫ J × B dV
+F_average = (1/2) integral Re(J cross conjugate(B)) dV
 ```
 
-Causes repulsion or attraction depending on phase.
+Here J and B are peak phasors. Instantaneous force instead uses the real
+time-domain fields without a factor of one half.
 
 ### 3. Impedance
 

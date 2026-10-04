@@ -224,7 +224,8 @@ private:
 			mfem::ElementTransformation& T = *mesh.GetElementTransformation(e);
 			const mfem::FiniteElement& fe = *fespace->GetFE(e);
 			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
-			const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(), order);
+			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+				? axisym::RadialRule(fe, T) : mfem::IntRules.Get(fe.GetGeomType(), order);
 			for (int q = 0; q < ir.GetNPoints(); ++q) {
 				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
 				T.SetIntPoint(&ip);
@@ -306,15 +307,7 @@ protected:
 		WarnOnUnderResolvedRadialQuadrature();
 	}
 
-	// The curl-curl 1/r term is integrated by a geometry-aware rule whose cost
-	// is set by s = r_min/h per element (see
-	// AxisymmetricCurlCurlIntegrator::RadialExtraOrder). 1/r is rational, so no
-	// polynomial rule integrates it exactly and the rule must be capped; an
-	// element that is both very thin radially and very close to the axis can
-	// therefore fall outside the accuracy target. Such an element is rare and
-	// always a meshing choice, but the resulting error is silent, so report it
-	// once. The electrostatic r-weighted diffusion integrand is polynomial and
-	// is integrated exactly, so no equivalent concern exists there.
+	// Warn about potentially expensive enrichment, not silent underintegration.
 	void WarnOnUnderResolvedRadialQuadrature() {
 		int worst_element = -1;
 		double worst_ratio = std::numeric_limits<double>::max();
@@ -346,10 +339,9 @@ protected:
 		msg << std::setprecision(3)
 			<< "Element " << worst_element << " has r_min/width = " << worst_ratio
 			<< ", below the ratio " << AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio
-			<< " at which the curl-curl 1/r quadrature reaches its accuracy "
-			   "target. The capped rule integrates such elements approximately; "
-			   "widen the innermost radial band or move it away from the axis if "
-			   "near-axis accuracy matters.";
+			<< "; radial quadrature enrichment may be expensive. The integration "
+			   "will fail if its convergence cap is reached; refine the radial "
+			   "mesh if necessary. Vertex samples do not bound curved radii.";
 		Reporter().Warning(msg.str());
 	}
 

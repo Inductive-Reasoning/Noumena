@@ -106,6 +106,11 @@ TEST_CASE("MQS massive-port operator preserves the coupled block equation", "[mq
 	REQUIRE(y(3) == Catch::Approx(-53.0));
 	REQUIRE(y(4) == Catch::Approx(-49.0));
 	REQUIRE(y(5) == Catch::Approx(-109.75));
+	mfem::Array<int> essential;
+	REQUIRE_NOTHROW(coupled.RequireAccepted(y, y, x, essential, 1e-12, "port test"));
+	mfem::Vector physical_rhs(y);
+	coupled.View(physical_rhs).ImPort(0) += 1.0;
+	REQUIRE_THROWS(coupled.RequireAccepted(y, physical_rhs, x, essential, 1e-12, "port test"));
 }
 
 TEST_CASE("MQS massive-port operator degenerates to the complex field operator", "[mqs][operator]")

@@ -98,6 +98,12 @@ public:
 		a->Assemble();
 
 		fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
+		for (const auto& [name, scenario] : BuildSolveScenarios()) {
+			SetSolveContext(name, scenario);
+			ImprintScenario(scenario, config.AnalysisType == AnalysisType::CouplingMatrix
+				? ImprintMode::CouplingPerturbation : ImprintMode::Field);
+			ValidateScalarReferences(*b, geometry == GeometryType::Planar);
+		}
 
 		// Form the constrained system operator. The eliminated-column part
 		// (mat_e, used to build each scenario's RHS) is bound to A_op, which is
@@ -244,6 +250,7 @@ public:
 		}
 
 		for (const auto& [sc_name, sc] : BuildSolveScenarios()) {
+			SetSolveContext(sc_name, sc);
 			auto operation = Reporter().Start("scenario '" + sc_name + "'");
 			ImprintScenario(sc,
 				config.AnalysisType == AnalysisType::CouplingMatrix
@@ -285,6 +292,8 @@ public:
 		if (direct_solver) {
 			// Back-substitution only: the factorization was done in BuildOperators().
 			direct_solver->Mult(B, X);
+			RequireAcceptedSolve(*A_op, B, X, ess_tdof_list, config.SolverTolerance,
+				solve_context + ", direct");
 		}
 		else {
 			SolveSpdIteratively(*A_op, *amg, B, X);

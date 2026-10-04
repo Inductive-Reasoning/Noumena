@@ -123,7 +123,12 @@ u = ½ ε |E⃗|²
 - **Robin:** `n̂ · (ε ∇V) + α V = g` on `∂Ω_R`, with `α = robin_coefficient`
   ≥ 0 and `g = value`. It adds `∫ α V v dS` to the operator (under the
   geometry's measure) and `∫ g v dS` to the RHS. Charge extraction uses the
-  domain stiffness alone, so the Robin term never enters `Q = K₀ V`.
+  full unconstrained operator in terminal reactions:
+  `Q = H^T ((K0 + R) V - f)`. At terminal/Robin junctions the terminal
+  lifting is nonzero on Robin edges, so dropping R gives incorrect charges.
+  Coupling solves homogenize fixed backgrounds and use
+  `C = H^T (K0 + R) H`; domain-only energy remains the dielectric energy
+  used by AMR, not the Robin-augmented energy.
 
 For axisymmetric problems, a nonzero Neumann load is integrated with the
 meridional boundary measure `2πr ds`, the same full measure carried by the
@@ -210,9 +215,20 @@ directions. The `B_z → 2 ∂A_φ/∂r` limit is applied only during field reco
 (`ComputeElementFlux` and `MagneticFieldCoefficient`), which operates on the
 constrained solution where the limit is valid.
 
-Quadrature order for the `1/r` term is chosen from element geometry rather than
-basis degree; see `AxisymmetricCurlCurlIntegrator::RadialExtraOrder` and finding
-M5 in `docs/math_review_findings.md`.
+The common policy in `src/axisym/radial_quadrature.hpp` enriches positive
+interior tensor/Duffy Gauss rules until transformed radial moments converge
+to 1e-11 relative to the corresponding zeroth moment. It checks monomials
+through degree 2p+2 with weights 1, r and 1/r, including the geometry Jacobian.
+The 512-point-per-direction cap fails with a mesh-refinement diagnostic, not
+silent underintegration. This is a convergence estimator, not a rigorous
+curved-map positivity certificate; sampled vertices and all quadrature
+points must have admissible radii. Axis-touching elements test regular
+moments because divergent axis basis directions are eliminated.
+
+Conductivity mass, port load C, conductance G, and independently integrated
+Joule loss use that same policy and positive weights. In particular a
+rectangular annular port has `G = sigma h log(b/a)/(2 pi)`. This makes the
+discrete Joule quadratic nonnegative and consistent with port real power.
 
 ### Derived Quantities
 
@@ -350,15 +366,15 @@ where:
 - `M` is the mass matrix (conductivity term)
 - `{F}` is the source term
 
-In integral form:
+Separating real and imaginary parts gives:
 
 ```
-∫_Ω ν (∇ × A⃗_real) · (∇ × v) · 2πr dr dz
-    + jω ∫_Ω σ A⃗_real · v · 2πr dr dz (real part)
-
-∫_Ω ν (∇ × A⃗_imag) · (∇ × v) · 2πr dr dz
-    + jω ∫_Ω σ A⃗_imag · v · 2πr dr dz (imaginary part)
+K A_real - omega M A_imag = F_real
+K A_imag + omega M A_real = F_imag
 ```
+
+The 2D scalar potentials use H1 nodal elements; 3D magnetic vector potentials
+use H(curl) Nedelec edge elements. These spaces are not interchangeable.
 
 ### Physical Interpretation
 
@@ -413,7 +429,7 @@ a nonzero `E⃗_drive`. Using the simplified form there omits the drive term and
 the cross term, and so misstates the loss.
 
 **Implementation status:** implemented. `MqsLossDensityCoefficient`
-(`src/mqs_loss_density_coefficient.hpp`) evaluates the general expression above
+(`src/coefficients/mqs_loss_density_coefficient.hpp`) evaluates the general expression above
 and is exported as the field `P_Loss`; `MagnetoquasistaticSolver::
 ComputeRegionLosses()` integrates it per region and reports per-region and total
 dissipation for field scenarios.
@@ -520,13 +536,16 @@ when a conductor touches such a wall outside its own electrodes.
 
 ## Finite Element Discretization
 
-All three formulations use H¹-conforming (Lagrange) finite elements:
+All electrostatic models and the 2D magnetic formulations use H1-conforming
+Lagrange finite elements. The 3D magnetic formulations instead use H(curl)
+Nedelec elements with tangential continuity and edge-based degrees of freedom.
+For the scalar 2D spaces:
 
 - **Basis functions:** `φ_i(r, z)` with `C⁰` continuity
 - **Degrees of freedom:** Nodal values
 - **Integration:** Gauss quadrature with elevated order. The `2*pi*r` weight is
   polynomial and raises the exact order by a fixed amount; the `1/r` term is not
-  polynomial and its cost depends on element geometry (see M5).
+  polynomial and its cost depends on element geometry (see radial quadrature above).
 
 ### Special Considerations for Axisymmetry
 
@@ -545,7 +564,7 @@ All three formulations use H¹-conforming (Lagrange) finite elements:
 Revolving a meridional `(r, z)` domain through the full azimuthal angle gives the
 volume element `2*pi*r dr dz` and the boundary element `2*pi*r ds`. **Every
 axisymmetric integrator applies the full measure**, obtained from the single
-definition `Axisymmetric::Measure(r)` in `src/axisymmetric_measure.hpp`:
+definition `Axisymmetric::Measure(r)` in `src/axisym/axisymmetric_measure.hpp`:
 
 | Term | File |
 |---|---|
@@ -572,8 +591,37 @@ The historical alternative - omitting the global `2*pi` from every integrator an
 reintroducing it in each derived quantity - is mathematically equivalent but was
 abandoned: it required six separate scale factors at call sites (some multiplying
 by `2*pi`, some dividing), left intermediate quantities in non-physical units,
-and was the direct cause of findings 1, 2, 3 and 5 in
-`docs/math_review_findings.md`.
+and made physical normalization unnecessarily difficult to audit.
+
+## Solve acceptance and references
+
+Failed Krylov convergence is fatal. Every direct and iterative solution must
+also be finite and pass an independently evaluated residual. Free equations
+and essential equations are checked separately: each satisfies
+`||Ax-b||_2 <= solver_tolerance ||b||_2 + 64 epsilon || |A||x| + |b| ||_2`.
+The second term is a floating-point backward-error allowance, not a relaxed
+physical tolerance; zero load and zero solution pass without division by zero.
+Matrix-free static checks use `|Ax|` when matrix entries are unavailable.
+CG may solve up to three corrections using recomputed residuals to remove
+recurrence drift near roundoff, within the original total iteration budget.
+MQS also checks `G V - j omega C^T A - I` in amperes, with a common drive scale
+across ports (including induced voltage currents for open ports).
+The unpreconditioned 2D GMRES path remains a performance follow-up.
+
+Scalar FE connectivity, not material labels, defines reference components.
+Each electrostatic/planar static component requires physical Dirichlet or
+terminal support, or a positive Robin coefficient on positive physical
+boundary measure. Before rejecting an unreferenced component, the sum of
+source and natural load is tested for Neumann compatibility. Compatible
+unreferenced components are still rejected; no arbitrary gauge is inserted.
+Axisymmetric magnetic axis regularity supplies a reference when the component
+touches the axis. Unsupported unanchored annuli (whose continuum null field
+is A=c/r) and unanchored 2D MQS components are rejected conservatively:
+conductive mass plus current ports does not automatically remove all gauges.
+General multiply connected 3D cohomology remains outside this check.
+
+For peak phasors, `0.5 (A_real^T K A_real + A_imag^T K A_imag)` is an AMR
+normalization, not time-averaged magnetic energy. The latter has factor 0.25.
 
 ## Conventions and Recurring Pitfalls
 
@@ -616,7 +664,7 @@ in assembly. D3 and finding M4 were both this confusion.
 **Non-polynomial terms are not covered by a polynomial order rule.** The `1/r`
 factor's quadrature cost is governed by the element's geometric ratio
 `r_min/width`, not by basis degree. A degree-only heuristic is structurally
-blind to the hard case rather than merely loosely tuned (M5).
+blind to the hard case rather than merely loosely tuned.
 
 **Carry the full physical measure everywhere.** Factoring a constant out of
 assembly and restoring it downstream is mathematically equivalent but was the

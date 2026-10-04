@@ -5,6 +5,7 @@
 
 #include "mfem.hpp"
 #include "axisymmetric_measure.hpp"
+#include "radial_quadrature.hpp"
 
 /**
  * @brief Axisymmetric Mass Integrator for Eddy Currents
@@ -32,14 +33,11 @@ public:
       const mfem::FiniteElement &test_fe,
       const mfem::ElementTransformation &Trans)
    {
-      const int order = trial_fe.GetOrder() + test_fe.GetOrder()
-         + Trans.Order() + Trans.OrderW();
-
-      if (trial_fe.Space() == mfem::FunctionSpace::rQk)
-      {
-         return mfem::RefinedIntRules.Get(trial_fe.GetGeomType(), order);
+      if (trial_fe.GetDim() == 1) {
+         return mfem::IntRules.Get(trial_fe.GetGeomType(),
+            trial_fe.GetOrder() + test_fe.GetOrder() + Trans.Order() + Trans.OrderW());
       }
-      return mfem::IntRules.Get(trial_fe.GetGeomType(), order);
+      return axisym::RadialRule(trial_fe, Trans);
    }
 
    void AssembleElementMatrix(const mfem::FiniteElement &el,

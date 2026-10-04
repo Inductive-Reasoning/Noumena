@@ -129,7 +129,9 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         // turn, assembling over every element would be quadratic overall.
         mfem::LinearForm port_lf(fespace);
         port_lf.AddDomainIntegrator(
-            new mfem::DomainLFIntegrator(conductivity), port_marker);
+            geometry == GeometryType::Axisymmetric
+                ? new axisym::PortLoadIntegrator(conductivity)
+                : new mfem::DomainLFIntegrator(conductivity), port_marker);
         port_lf.Assemble();
 
         // Extract and return as a standalone Vector
@@ -177,8 +179,10 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         for (int e = 0; e < mesh.GetNE(); ++e) {
             if (!attrs.count(mesh.GetAttribute(e))) { continue; }
             mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-            const mfem::IntegrationRule& ir = mfem::IntRules.Get(
-                mesh.GetElementBaseGeometry(e), 2 * config.Order + T->OrderW() + 2);
+            const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+                ? axisym::RadialRule(*fespace->GetFE(e), *T)
+                : mfem::IntRules.Get(mesh.GetElementBaseGeometry(e),
+                    2 * config.Order + T->OrderW() + 2);
             for (int i = 0; i < ir.GetNPoints(); ++i) {
                 const mfem::IntegrationPoint& ip = ir.IntPoint(i);
                 T->SetIntPoint(&ip);
@@ -352,6 +356,9 @@ public:
 	void BuildOperators() override {
 		// Build the FE space and everything bound to it for the starting mesh.
 		fespace = std::make_unique<mfem::FiniteElementSpace>(&mesh, fec.get());
+		mfem::Vector zero(fespace->GetVSize());
+		zero = 0.0;
+		ValidateScalarReferences(zero, false);
 		Reporter().Status("Mesh has " + std::to_string(mesh.GetNE()) +
 			" elements; field space has " + std::to_string(fespace->GetTrueVSize()) +
 			" true DOFs.");
@@ -510,6 +517,7 @@ public:
 
         if (config.AnalysisType == AnalysisType::Field) {
             for (const auto& [name, scenario] : config.Scenarios) {
+                SetSolveContext(name, scenario);
                 auto operation = Reporter().Start("scenario '" + name + "'");
                 ImprintScenario(scenario, ImprintMode::Field);
                 SolveSystem();
@@ -531,6 +539,7 @@ public:
                 Scenario column;
                 column.Frequency = point_frequency;
                 column.Excitations.push_back({ term_name, 1.0 });
+                SetSolveContext(point_name + "/" + term_name, column);
                 auto operation = Reporter().Start(
                     "scenario '" + point_name + "', terminal '" + term_name + "'");
                 ImprintScenario(column, ImprintMode::CouplingPerturbation);
@@ -566,12 +575,23 @@ public:
 		else {
 			// Iterative Complex Solver
 			mfem::GMRESSolver gmres;
+			gmres.iterative_mode = true;
 			gmres.SetOperator(*A_op.Ptr());
 			gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 			gmres.SetRelTol(config.SolverTolerance);
+			gmres.SetAbsTol(0.0);
 			gmres.SetMaxIter(config.SolverMaxIter);
 			gmres.Mult(B_vec, X_vec);
+			solve_context += ", GMRES (" + std::to_string(gmres.GetNumIterations()) + " iterations)";
+			if (!gmres.GetConverged()) {
+				throw std::runtime_error(solve_context + ": GMRES did not converge after "
+					+ std::to_string(gmres.GetNumIterations()) + " iterations; relative residual "
+					+ std::to_string(gmres.GetFinalRelNorm()));
+			}
 		}
+		port_operator->RequireAccepted(B_vec, *b_combined, X_vec, ess_packed_tdofs,
+			config.SolverTolerance, solve_context
+			+ (direct_solver ? ", direct" : ", GMRES"));
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh
 		// (field) DOFs back into the complex grid function, dropping the ports.

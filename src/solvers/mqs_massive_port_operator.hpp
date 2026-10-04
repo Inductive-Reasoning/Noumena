@@ -9,6 +9,7 @@
 #include "../linalg/bordered_block_operator.hpp"
 #include "../linalg/complex_block_layout.hpp"
 #include "../linalg/owning_complex_block_operator.hpp"
+#include "../linalg/solve_acceptance.hpp"
 
 // The assembled time-harmonic MQS operator with massive-conductor port coupling.
 // M_sigma is assembled once and scaled by the active omega at operator-application
@@ -243,6 +244,45 @@ public:
 	mfem::Array<int> MakeEssentialTDofs(const mfem::Array<int>& field_tdofs) const
 	{
 		return ComplexEssentialTDofs(field_tdofs, layout.HalfSize());
+	}
+
+	void RequireAccepted(const mfem::Vector& rhs, const mfem::Vector& physical_rhs,
+		const mfem::Vector& solution,
+		const mfem::Array<int>& essential, double tolerance,
+		const std::string& context) const {
+		auto matrix = AssemblePackedMatrix();
+		for (int d : essential) matrix->EliminateRowCol(d, mfem::Operator::DIAG_ONE);
+		RequireAcceptedSolve(*matrix, rhs, solution, essential, tolerance, context);
+		const auto x = View(solution);
+		const auto b = View(physical_rhs);
+		std::vector<double> residuals(layout.NPorts()), scales(layout.NPorts());
+		double drive = 0.0;
+		for (int p = 0; p < layout.NPorts(); ++p) {
+			double re = conductances[p] * x.RePort(p) + active_omega * b.ImPort(p);
+			double im = conductances[p] * x.ImPort(p) - active_omega * b.RePort(p);
+			double scale = conductances[p] * std::hypot(x.RePort(p), x.ImPort(p))
+				+ active_omega * std::hypot(b.RePort(p), b.ImPort(p));
+			drive = std::max(drive, active_omega * std::hypot(b.RePort(p), b.ImPort(p)));
+			for (int d = 0; d < layout.NDofs(); ++d) {
+				const double c = active_omega * port_columns(d, p);
+				re += c * x.ImMesh(d);
+				im -= c * x.ReMesh(d);
+				scale += std::abs(c) * std::hypot(x.ReMesh(d), x.ImMesh(d));
+			}
+			drive = std::max(drive, conductances[p] * std::hypot(x.RePort(p), x.ImPort(p)));
+			residuals[p] = std::hypot(re, im);
+			scales[p] = scale;
+		}
+		for (int p = 0; p < layout.NPorts(); ++p) {
+			const double allowed = tolerance * drive
+				+ 64 * std::numeric_limits<double>::epsilon() * scales[p];
+			if (!std::isfinite(residuals[p]) || residuals[p] > allowed) {
+				std::ostringstream msg;
+				msg << context << ": rejected physical current balance at port " << p
+					<< "; residual=" << residuals[p] << " A, allowed=" << allowed << " A";
+				throw std::runtime_error(msg.str());
+			}
+		}
 	}
 
 private:

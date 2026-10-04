@@ -9,6 +9,10 @@ P21a-2, Bx along z from the probe CSVs. The tables give rms values at the
 rated 10 A rms; the solver's phasors are peak values of the same excitation
 (4243 ampere-turns peak), so computed fields are divided by sqrt(2). Losses
 are time averages and compare directly.
+
+The retained signed comparison is Re(Bx)/sqrt(2), NOT abs(Bx)/sqrt(2).
+The original measurement phase/sign convention remains unverified; this is
+a regression comparison, not an unconditional RMS-magnitude validation.
 """
 
 import csv

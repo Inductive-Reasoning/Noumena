@@ -17,6 +17,16 @@ The root has integer `schema_version = 2` and string attributes `physics_type`,
 All archived fields reference the final solved mesh. AMR intermediate results
 are replaced on each mesh pass, not retained as extra scenarios.
 
+Root integer `run_complete` is initially 0 and becomes 1 only after all solves
+and analysis output finish (`SaveAnalysis()` in the C++ API).
+`accepted_scenarios` counts fully written accepted scenarios on this mesh.
+Each written scenario carries `accepted = 1`; coupling runs retain this
+metadata even when field export is disabled. A partial sweep or failed AMR
+pass remains incomplete and must not be consumed as a complete result.
+For ParaView, Gmsh and CSV destinations, `run_status.json` provides the same
+completion flag and count plus the current artifact names. Files left from
+older passes/runs are not current unless listed there and the run is complete.
+
 ### Mesh
 
 `/mesh/mfem` is a scalar string containing the complete MFEM mesh serialization

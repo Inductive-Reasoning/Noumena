@@ -168,8 +168,8 @@ After building, the executable `mfem-electromag` will be in the `build` director
 # Run with a configuration file
 ./mfem-electromag path/to/config.json
 
-# Example: Run test cases
-./mfem-electromag ../test/electrostatic_test.json
+# Example: Run a shipped electrostatic mesh
+./mfem-electromag ../examples/simple_capacitor/config.json
 ./mfem-electromag ../test/magnetostatic_test.json
 ./mfem-electromag ../test/mqs_test.json
 
@@ -221,7 +221,9 @@ There is no unit or scale key in the schema; see
 [Units](docs/config_reference.md#units).
 
 See the `test/` directory for examples of:
-- `electrostatic_test.json`: Electrostatic problem setup
+- `electrostatic_test.json`: Illustrative, **not runnable**: its mesh is absent
+  and its Pressboard/Copper regions both claim domain attribute 2. Use
+  `examples/simple_capacitor/config.json` for a runnable electrostatic example.
 - `magnetostatic_test.json`: Magnetostatic problem setup
 - `mqs_test.json`: Magnetoquasistatic problem setup
 

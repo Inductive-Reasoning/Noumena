@@ -184,6 +184,74 @@ double CurlCurlEnergy(mfem::Mesh &mesh)
 
 } // namespace
 
+TEST_CASE("Radial conductance and the Joule quadratic share accurate positive quadrature",
+          "[axisymmetric][quadrature][power]") {
+   for (auto type : {mfem::Element::TRIANGLE, mfem::Element::QUADRILATERAL})
+   for (int order : {1, 2})
+   for (double inner : {0.001, 0.1, 3.0})
+   for (bool curved : {false, true}) {
+      auto mesh = mfem::Mesh::MakeCartesian2D(2, 1, type, true, 1, 1);
+      for (int e = 0; e < mesh.GetNE(); ++e) {
+         mfem::Vector center;
+         mesh.GetElementCenter(e, center);
+         mesh.GetElement(e)->SetAttribute(center(0) < 0.5 ? 1 : 2);
+      }
+      mesh.SetAttributes();
+      mesh.SetCurvature(2);
+      mfem::VectorFunctionCoefficient map(2,
+         [=](const mfem::Vector& p, mfem::Vector& mapped) {
+            mapped(0) = inner + p(0);
+            mapped(1) = p(1) + (curved ? 0.1 * p(0) * (1 - p(0)) : 0);
+         });
+      mesh.Transform(map);
+      mfem::H1_FECollection collection(order, 2);
+      mfem::FiniteElementSpace space(&mesh, &collection);
+      mfem::Vector material(2);
+      material(0) = 1; material(1) = 3;
+      mfem::PWConstCoefficient sigma(material);
+      mfem::BilinearForm mass(&space);
+      mass.AddDomainIntegrator(new AxisymmetricMassIntegrator(sigma));
+      mass.Assemble(); mass.Finalize();
+      mfem::LinearForm coupling(&space);
+      coupling.AddDomainIntegrator(new axisym::PortLoadIntegrator(sigma));
+      coupling.Assemble();
+      mfem::GridFunction ar(&space), ai(&space);
+      for (int d = 0; d < ar.Size(); ++d) {
+         ar(d) = std::sin(0.3 * d);
+         ai(d) = std::cos(0.2 * d);
+      }
+      constexpr double vr = 0.7, vi = -0.2, omega = 3.0;
+      double conductance = 0, power = 0;
+      for (int e = 0; e < mesh.GetNE(); ++e) {
+         auto& t = *mesh.GetElementTransformation(e);
+         const auto& rule = axisym::RadialRule(*space.GetFE(e), t);
+         for (int q = 0; q < rule.GetNPoints(); ++q) {
+            const auto& ip = rule.IntPoint(q);
+            t.SetIntPoint(&ip);
+            mfem::Vector position;
+            t.Transform(ip, position);
+            const double radius = position(0);
+            const double weight = ip.weight * t.Weight() * sigma.Eval(t, ip);
+            conductance += weight / (Constants::TWO_PI * radius);
+            const double er = vr / (Constants::TWO_PI * radius) + omega * ai.GetValue(e, ip);
+            const double ei = vi / (Constants::TWO_PI * radius) - omega * ar.GetValue(e, ip);
+            power += weight * Constants::TWO_PI * radius * (er * er + ei * ei);
+         }
+      }
+      const double exact = (std::log((inner + 0.5) / inner)
+         + 3 * std::log((inner + 1) / (inner + 0.5))) / Constants::TWO_PI;
+      mfem::Vector mr(ar.Size()), mi(ai.Size());
+      mass.SpMat().Mult(ar, mr); mass.SpMat().Mult(ai, mi);
+      const double quadratic = conductance * (vr * vr + vi * vi)
+         + omega * omega * (ar * mr + ai * mi)
+         + 2 * omega * (vr * (coupling * ai) - vi * (coupling * ar));
+      INFO("inner=" << inner << ", order=" << order << ", curved=" << curved);
+      REQUIRE(conductance == Catch::Approx(exact).epsilon(1e-10));
+      REQUIRE(power >= 0);
+      REQUIRE(power == Catch::Approx(quadratic).epsilon(1e-11));
+   }
+}
+
 // The 1/r term is non-polynomial and its quadrature difficulty is governed by
 // the element's geometry, s = r_min/width, not by the basis degree: mapped to
 // the reference interval, 1/r has a pole at -(1 + 2s), which approaches the
@@ -216,11 +284,8 @@ TEST_CASE("Near-axis annular curl-curl quadrature meets its accuracy target",
    }
 }
 
-// Below the documented ratio the rule is capped and only approximate. That is
-// a deliberate cost bound, not an accident: the tensor-product point count
-// grows quadratically in the order. Pinning the degradation here keeps the
-// published limit honest and detects any silent change to the cap.
-TEST_CASE("Curl-curl quadrature degrades only past its documented ratio",
+// Enrichment must resolve the near-axis band rather than silently saturate.
+TEST_CASE("Curl-curl quadrature resolves the formerly capped radial band",
 		  "[axisymmetric][quadrature]")
 {
    const double width = 1.0;
@@ -233,10 +298,7 @@ TEST_CASE("Curl-curl quadrature degrades only past its documented ratio",
 	  std::abs(CurlCurlEnergy(*mesh) - exact) / exact;
 
    REQUIRE(s < AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio);
-   // Far better than the ~40% the basis-degree-only rule produced here, but
-   // short of the 1e-10 target, which is exactly what the warning reports.
-   REQUIRE(relative_error > 1.0e-10);
-   REQUIRE(relative_error < 1.0e-3);
+   REQUIRE(relative_error < 1.0e-10);
 }
 
 TEST_CASE("Axisymmetric boundary load includes radial measure",
@@ -275,14 +337,11 @@ TEST_CASE("Curl-curl quadrature stays on positive-weight simplex rules",
    mfem::ElementTransformation &transformation =
       *mesh.GetElementTransformation(0);
 
-   // Without the clamp this element would request an order in the
-   // Grundmann-Moller fallback range, where weights alternate in sign.
+   // Positive Duffy rules enrich beyond the simplex tables.
    const mfem::IntegrationRule &rule =
       AxisymmetricCurlCurlIntegrator::GetRule(element, element, transformation);
-   // Measured with the clamp disabled: order 125, minimum weight -1.5e17,
-   // and the element matrix loses positive definiteness.
    REQUIRE(rule.GetOrder()
-           <= AxisymmetricCurlCurlIntegrator::kMaxPositiveWeightSimplexOrder);
+           > AxisymmetricCurlCurlIntegrator::kMaxPositiveWeightSimplexOrder);
 
    double min_weight = rule.IntPoint(0).weight;
    for (int i = 1; i < rule.GetNPoints(); ++i)

@@ -4,14 +4,16 @@
 
 Every exterior-field problem the solver handles — a current loop's stray field, a
 transformer's leakage flux, a capacitor's fringing field — is posed on an
-unbounded domain. The mesh is not unbounded. Today the only way to close it is
-to put the far boundary at some finite distance `D` and impose a homogeneous
-Dirichlet condition (`A_phi = 0` or `V = 0`) there.
+unbounded domain. The mesh is not unbounded. Magnetics currently closes it
+with a distant homogeneous Dirichlet boundary (`A_phi = 0`).
+Electrostatics also supports a Robin far-field approximation.
 
 That condition is exact only at infinity. At any finite `D` it is wrong, and it
-is wrong in a specific direction: forcing the potential to zero too early
-removes field energy that physically extends past the boundary, so terminal
-quantities derived from that energy come out **low**.
+the sign depends on the formulation and drive. At fixed voltage, a sphere
+of radius a inside a grounded sphere of radius R has
+`C_R = 4 pi epsilon a R/(R-a) > C_infinity`: capacitance is **high**.
+For closed magnetic current sources at fixed current, a distant tangential
+Dirichlet closure generally lowers inductance.
 
 This is a modelling error, not a discretization error. Refining the mesh does
 not reduce it — you can drive the FE error to round-off and still be off by a
@@ -36,25 +38,16 @@ computed self-inductance against Grover's ring formula
 | 8.0 | 80 | 6.0252e-07 | -0.04% |
 | 16.0 | 160 | 6.0261e-07 | -0.03% |
 
-Three conclusions:
+This historical table mixes discretization, truncation, and reference-model
+errors; it has not been reproduced here. An empirical 1/D fit does not separate
+them or prove the accuracy of the geometric-mean-distance approximation.
+For a closed magnetic dipole, B decays as 1/r^3 and exterior energy as 1/D^3.
+Self-similar distant-boundary expansion therefore gives a leading O(D^-3)
+inductance truncation error, not a universal 1/D law.
 
-1. **The error is one-sided and decays as `1/D`.** Every entry is negative and
-   halving the error requires doubling the domain. That is a poor exchange rate:
-   the extra volume is nearly all air, and in 2D axisymmetric geometry the
-   element count grows with it even under aggressive radial grading.
-
-2. **The limit is the analytic value.** Richardson-extrapolating consecutive
-   pairs under the assumed `L(D) = L_inf - C/D` model gives `L_inf = 6.0265e-07 H`,
-   within **-0.013%** of Grover's formula. The solver reproduces the closed form
-   to about a part in 10^4 once truncation is removed.
-
-3. **The GMD approximation is not a meaningful contributor here.** An earlier
-   reading of this example attributed the residual jointly to truncation and to
-   the geometric-mean-distance substitution in the ring formula. The
-   extrapolation above refutes that: the GMD form is accurate to ~0.01% for this
-   aspect ratio, and essentially the entire observed deviation is boundary
-   truncation. Do not blame the analytic reference for what the mesh boundary is
-   doing.
+`test/test_coaxial_rings.cpp` uses the dipole correction
+`(L_tangent + 2 L_normal)/3`. Boundary expansion and mesh refinement must still
+be studied separately before attributing the residual to either error source.
 
 ## Current state of the code
 
@@ -79,8 +72,10 @@ In increasing order of implementation cost.
 Replace `u = 0` at `D` with a condition encoding the known decay rate of the
 exterior solution, e.g. `du/dn + (k/r) u = 0` with `k` chosen for the leading
 multipole. For an axisymmetric current loop the exterior `A_phi` is
-dipole-like, so a correctly chosen `k` cancels the leading `1/D` term and
-typically leaves `1/D^3`.
+dipole-like (`A_phi` decays as 1/r^2). A suitable spherical closure removes
+the leading dipole truncation; remaining multipoles and boundary shape set
+the subsequent rate. The scalar electrostatic Robin term cannot simply be
+reused as the magnetic natural boundary operator.
 
 - **Pro:** by far the cheapest. The config plumbing and `RobinCoeff` field
   already exist; this is a boundary-integrator addition plus lifting the setup
@@ -126,6 +121,5 @@ loose tolerance.
 Option 2 is only worth the effort if exterior field distributions — not just
 lumped terminal parameters — become a deliverable.
 
-Whichever is chosen, the convergence study above should be re-run as the
-acceptance test: the `1/D` sweep and its extrapolated limit are the evidence
-that the closure works.
+Whichever is chosen, rerun independent mesh refinement and self-similar domain
+expansion studies. The historical 1/D fit is not an acceptance test.

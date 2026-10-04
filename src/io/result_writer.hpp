@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <fstream>
 #include "coupling_matrix_writer.hpp"
 #include "hdf5_results_writer.hpp"
 #include "probe_sampler.hpp"
@@ -16,12 +17,19 @@ public:
 
 	void BeginMesh() {
 		next_scenario_ = 0;
+		artifacts_.clear();
+		WriteStatus(false);
 		hdf5_.reset();
 		if (config_.Output.Hdf5File) {
 			hdf5_ = std::make_unique<Hdf5ResultsWriter>(*config_.Output.Hdf5File, mesh_, config_);
 		}
 		// Located on every mesh: adaptive refinement replaces the elements.
 		probes_ = std::make_unique<ProbeSampler>(mesh_, config_);
+	}
+
+	void Complete() {
+		if (hdf5_) hdf5_->Complete();
+		WriteStatus(true);
 	}
 
 	bool WantsFields() const {
@@ -33,7 +41,6 @@ public:
 	void WriteScenario(const std::string& name, const Scenario& scenario,
 		const FieldExportSet& fields, const std::string& driven_terminal = {},
 		const std::vector<RegionLoss>& losses = {}) {
-		if (!WantsFields()) return;
 		std::ostringstream identifier;
 		identifier << "scenario_" << std::setfill('0') << std::setw(6) << next_scenario_++;
 		const std::string id = identifier.str();
@@ -47,20 +54,22 @@ public:
 			}
 		}
 		const std::string artifact_name = id + "_" + label;
-		if (config_.Output.ParaviewDirectory) {
+		if (WantsFields() && config_.Output.ParaviewDirectory) {
 			fields_.WriteParaview(*config_.Output.ParaviewDirectory, artifact_name, fields);
 		}
-		if (config_.Output.Gmsh) {
+		if (WantsFields() && config_.Output.Gmsh) {
 			fields_.WriteGmsh(config_.Output.Gmsh->Directory / (artifact_name + ".msh"), fields,
 				gmsh_results::ParseMshVersion(config_.Output.Gmsh->Version));
 		}
 		std::vector<ProbeSamples> probes;
-		if (probes_ && !probes_->Empty()) {
+		if (WantsFields() && probes_ && !probes_->Empty()) {
 			probes = probes_->Sample(fields);
 			ProbeSampler::WriteCsv(config_.Output.ProbeDirectory, artifact_name, probes,
 				config_.GeometryType == GeometryType::Axisymmetric);
 		}
 		if (hdf5_) hdf5_->WriteScenario(id, name, scenario, fields, probes, driven_terminal, losses);
+		artifacts_.push_back(artifact_name);
+		WriteStatus(false);
 		StatusReporter::Global().Diagnostic("Wrote " + id + " for scenario '" + name + "'"
 			+ (driven_terminal.empty() ? "" : ", terminal '" + driven_terminal + "'"));
 	}
@@ -74,10 +83,32 @@ public:
 	}
 
 private:
+	void WriteStatus(bool complete) const {
+		// Sidecars also invalidate artifacts left over from a preceding AMR pass
+		// or run when no HDF5 archive was requested.
+		std::vector<std::filesystem::path> directories;
+		if (config_.Output.ParaviewDirectory) directories.push_back(*config_.Output.ParaviewDirectory);
+		if (config_.Output.Gmsh) directories.push_back(config_.Output.Gmsh->Directory);
+		if (!config_.Output.Probes.empty()) directories.push_back(config_.Output.ProbeDirectory);
+		for (const auto& directory : directories) {
+			std::filesystem::create_directories(directory);
+			std::ofstream status(directory / "run_status.json", std::ios::trunc);
+			status << "{\"complete\":" << (complete ? "true" : "false")
+				<< ",\"accepted_scenarios\":" << artifacts_.size() << ",\"artifacts\":[";
+			for (size_t i = 0; i < artifacts_.size(); ++i) {
+				if (i) status << ',';
+				status << '"' << artifacts_[i] << '"';
+			}
+			status << "]}\n";
+			status.close();
+			if (!status) throw std::runtime_error("Cannot write run status in " + directory.string());
+		}
+	}
 	mfem::Mesh& mesh_;
 	const ProblemConfig& config_;
 	SolverFieldWriter fields_;
 	std::unique_ptr<Hdf5ResultsWriter> hdf5_;
 	std::unique_ptr<ProbeSampler> probes_;
 	std::size_t next_scenario_ = 0;
+	std::vector<std::string> artifacts_;
 };

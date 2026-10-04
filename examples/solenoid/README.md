@@ -25,14 +25,18 @@ in metres; see [Units](../../docs/config_reference.md#units))
 
 ## Analytical Solution
 
-For a long solenoid, the magnetic field inside is approximately uniform:
+For a finite, uniformly filled rectangular winding, the free-space center
+field is:
 
 **Magnetic field inside solenoid:**
 ```
-B = μ₀ N I / L = 4π × 10⁻⁷ × 1000 × 1 / 0.2
-  = 6.28 × 10⁻³ T
-  = 6.28 mT
+B_center = mu0 N I / (2 (r_out - r_in))
+           * (asinh(2 r_out/L) - asinh(2 r_in/L))
+         = 5.27 mT
 ```
+
+The infinite-solenoid estimate `mu0 N I/L = 6.28 mT` is not a 2% reference
+for this aspect ratio.
 
 **Current density in coil:**
 
@@ -82,7 +86,7 @@ These paths are relative to the config directory unless `output.directory` is se
 
 The simulation should produce:
 1. **Vector potential A_φ:** Increases inside coil, drops to zero at far field
-2. **Magnetic flux density B:** ~6 mT axial field inside solenoid
+2. **Magnetic flux density B:** Approximately 5.27 mT at the center in free space
 3. **Field lines:** Closed loops through coil and return path in air
 4. **Fringing:** Field spreads near ends of solenoid
 
@@ -114,14 +118,17 @@ Recommended mesh:
 
 ## Validation
 
-Compare FEM results to analytical:
+Compare a mesh and boundary-converged center field to the finite-winding
+formula above. A 2% comparison is a suggested study target, not a reproduced
+result for this mesh:
 
 **Inside solenoid (center):**
 ```
 |B_z,FEM - B_analytical| / B_analytical < 2%
 ```
 
-**End effects:** Near ends, expect ~50% of central field value.
+**End effects:** The field decreases near the ends; the half-center estimate
+is only the long, thin solenoid limit.
 
 ## With Iron Core
 
@@ -129,16 +136,24 @@ Add iron core (μᵣ = 1000) inside solenoid:
 
 ```json
 {
-  "name": "IronCore",
-  "attributes": [3],
-  "properties": {
-    "mu_r": 1000.0
-  }
+  "entity_groups": [
+    {"name": "Core", "dim": 2, "attribute_ids": [3]}
+  ],
+  "materials": [
+    {"name": "Iron", "properties": {"mu_r": 1000.0}}
+  ],
+  "regions": [
+    {"name": "IronCore", "entity_group": "Core", "material": "Iron"}
+  ]
 }
 ```
 
+Merge these entries into the corresponding arrays only after meshing a distinct
+core domain with attribute 3; do not assign an existing air domain twice.
+
 **Expected changes:**
-- Field inside core increases by factor of ~μᵣ
+- Demagnetizing fields limit the increase; it is not generally a factor of mu_r.
+  Saturation is not represented by the present constant-permeability model.
 - Field concentration along axis
 - Reduced fringing outside coil
 
@@ -167,4 +182,8 @@ U = ∫ (B·H/2) dV
 L ≈ N Φ / I
 ```
 
-For this geometry, expect L ≈ 10-100 mH depending on core.
+Use the physical turn current I in the energy formula, not the configured
+ampere-turn excitation N I. For an ampere-turn-normalized coupling matrix,
+physical winding coefficients are `L_winding(i,j) = N_i N_j L_solver(i,j)`.
+Do not apply this conversion a second time if turn factors are already part
+of the terminal source definition.

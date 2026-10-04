@@ -73,7 +73,7 @@ Object. **Required** -- the only required section.
 | `analysis_type` | string | `field` | `field`, `coupling_matrix` |
 | `order` | integer | `1` | 1-10 |
 | `linear_solver` | string | `direct` (2D), `iterative` (`3d`) | `direct`, `iterative` |
-| `solver_tolerance` | number | `1e-12` | (0, 1); relative residual of the iterative solve |
+| `solver_tolerance` | number | `1e-12` | (0, 1); actual residual acceptance tolerance, direct and iterative |
 | `solver_max_iter` | integer | `1000` | >= 1 |
 | `solver_print_level` | integer | `1` | -- |
 | `amr` | object | absent = disabled | See below |
@@ -95,7 +95,7 @@ tetrahedra (orders 1-10) and hexahedra (orders 1-9) in 3D.
 
 `direct` is the default linear solver for the 2D models because a
 coupling-matrix run amortizes one factorization over every terminal's
-right-hand side, and its accuracy does not depend on a residual tolerance.
+right-hand side. Direct solutions also undergo residual and finiteness checks.
 
 For `3d` the default is `iterative`. The direct solver's fill-in grows far
 faster in 3D (a P2 Laplacian took 346 s and 1.5 GB at 118k unknowns), and a
@@ -116,8 +116,12 @@ Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
 loses strength; the iteration counts differ accordingly. The 3D MQS `direct` solver is a
 sparse LU of the complex system, refactored per frequency; no MUMPS or other
 parallel direct solver is included. In every solver `solver_tolerance` is the relative
-residual `||b - Ax|| / ||b||`; a run that does not reach it within
-`solver_max_iter` iterations prints a warning.
+residual `||b - Ax|| / ||b||`, checked separately on free and essential
+equations with a floating-point backward-error allowance (see
+[solve acceptance](math_formulation.md#solve-acceptance-and-references)).
+A failed solve throws before field recovery, output or AMR; the CLI exits
+nonzero and leaves its output marked incomplete. CG's internal preconditioned
+criterion is tighter than this final unpreconditioned check.
 
 `frequency` is **not** valid here. It belongs on each scenario; see
 [`scenarios`](#scenarios).

@@ -19,6 +19,8 @@ public:
 		const ProblemConfig& config)
 		: file_(Open(path)), mesh_(mesh), order_(config.Order) {
 		file_.createAttribute("schema_version", 2);
+		file_.createAttribute("run_complete", 0);
+		file_.createAttribute("accepted_scenarios", 0);
 		file_.createAttribute("physics_type", std::string(ToString(config.PhysicsType)));
 		file_.createAttribute("geometry_type", std::string(ToString(config.GeometryType)));
 		file_.createAttribute("analysis_type", std::string(
@@ -91,6 +93,15 @@ public:
 			loss_group.createDataSet("region_names", names);
 			loss_group.createDataSet("power_w", power);
 		}
+		group.createAttribute("accepted", 1);
+		int accepted = 0;
+		file_.getAttribute("accepted_scenarios").read(accepted);
+		file_.getAttribute("accepted_scenarios").write(accepted + 1);
+		file_.flush();
+	}
+
+	void Complete() {
+		file_.getAttribute("run_complete").write(1);
 		file_.flush();
 	}
 
