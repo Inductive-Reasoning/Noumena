@@ -75,6 +75,7 @@ public:
 
 		boundary_conditions = BuildBoundaryConditions();
 		BuildEssentialBoundaryMarker();
+		RequireReferencePotential();
 
 		// Build the FE space and everything bound to it for the starting mesh.
 		BuildOperators();

@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include "mfem.hpp"
 #include "../core/problem_config.hpp"
 #include "../io/field_export.hpp"
@@ -118,6 +119,53 @@ protected:
     // and is reused across every AMR pass.
     virtual void BuildEssentialBoundaryMarker() {
         ess_bdr = boundary_conditions.DirichletMarker(mesh.bdr_attributes.Max());
+    }
+
+    // Every connected piece of the mesh needs something that fixes the scalar
+    // potential on it: a boundary in ess_bdr (a Dirichlet condition, a voltage
+    // terminal, the axis of an axisymmetric magnetic run) or a Robin boundary
+    // with a positive coefficient. Without one the operator is singular on that
+    // piece: its solution is fixed only up to a constant, and a load with a net
+    // flux into it has no solution at all -- yet a direct factorization would
+    // return a field anyway. Call after BuildEssentialBoundaryMarker().
+    void RequireReferencePotential() const {
+        std::vector<int> root(mesh.GetNE());
+        for (int e = 0; e < mesh.GetNE(); ++e) { root[e] = e; }
+        auto find = [&](int e) {
+            while (root[e] != e) { e = root[e] = root[root[e]]; }
+            return e;
+        };
+        for (int f = 0; f < mesh.GetNumFaces(); ++f) {
+            int e1, e2;
+            mesh.GetFaceElements(f, &e1, &e2);
+            if (e1 >= 0 && e2 >= 0) { root[find(e1)] = find(e2); }
+        }
+
+        auto fixes_potential = [&](int attribute) {
+            if (attribute <= ess_bdr.Size() && ess_bdr[attribute - 1]) { return true; }
+            for (const auto& bc : boundary_conditions) {
+                if (bc.IsRobin() && bc.Condition.RobinCoeff > 0.0
+                    && attribute <= bc.Marker.Size() && bc.Marker[attribute - 1]) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::vector<bool> fixed(mesh.GetNE(), false);
+        for (int be = 0; be < mesh.GetNBE(); ++be) {
+            if (!fixes_potential(mesh.GetBdrAttribute(be))) { continue; }
+            int e1, e2;
+            mesh.GetFaceElements(mesh.GetBdrElementFaceIndex(be), &e1, &e2);
+            fixed[find(e1)] = true;
+        }
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            MFEM_VERIFY(fixed[find(e)],
+                "Nothing fixes the potential on the part of the mesh containing element "
+                << e << " (domain attribute " << mesh.GetAttribute(e) << "): no 'dirichlet' "
+                "boundary, terminal, symmetry axis or Robin boundary with a positive "
+                "robin_coefficient touches it, so its solution is determined only up to a "
+                "constant. Add a 'dirichlet' boundary (or terminal) on it.");
+        }
     }
 
     // ---- Shared helpers for derived solvers ---------------------------------

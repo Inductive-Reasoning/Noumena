@@ -2699,6 +2699,73 @@ TEST_CASE("An iterative solve that does not converge stops the run",
     }
 }
 
+// Every connected piece of a scalar model needs something that fixes its
+// potential (a Dirichlet boundary, a terminal, the axis of an axisymmetric
+// magnetic run, or a Robin boundary with a positive coefficient); otherwise its
+// operator is singular and setup must say so rather than solve.
+TEST_CASE("Setup rejects a model with nothing to fix its potential",
+          "[solvers][validation]") {
+    using Catch::Matchers::ContainsSubstring;
+    const std::string mesh_file = "test_reference.mesh";
+    auto setup = [](mfem::Mesh& mesh, const json& config) {
+        SolverFactory::Instance().Create(mesh, DecodeConfig(config))->Setup();
+    };
+
+    SECTION("pure Neumann electrostatics") {
+        CreatePlanarStripMesh(mesh_file, 0.2, 0.05, 4, 2);
+        json config = MakePlanarStripConfig(
+            "electrostatics", mesh_file, 1, {{"epsilon_r", 1.0}}, 0.0, 0.0);
+        for (auto& bc : config["boundary_conditions"]) { bc["type"] = "neumann"; }
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_THROWS_WITH(setup(mesh, config), ContainsSubstring("Nothing fixes the potential"));
+
+        // A Robin boundary with a positive coefficient fixes it.
+        config["boundary_conditions"][1]["type"] = "robin";
+        config["boundary_conditions"][1]["robin_coefficient"] = 1e-10;
+        REQUIRE_NOTHROW(setup(mesh, config));
+    }
+
+    SECTION("a disconnected piece with no reference of its own") {
+        // Two triangles that share no edge: Left (attribute 1) bounds the
+        // first, Right (attribute 2) the second; only Left is Dirichlet.
+        {
+            std::ofstream out(mesh_file);
+            out << "MFEM mesh v1.0\n\ndimension\n2\n\nelements\n2\n"
+                   "1 2 0 1 2\n1 2 3 4 5\n\nboundary\n6\n"
+                   "1 1 0 1\n1 1 1 2\n1 1 2 0\n2 1 3 4\n2 1 4 5\n2 1 5 3\n\n"
+                   "vertices\n6\n2\n0 0\n1 0\n0 1\n2 0\n3 0\n2 1\n";
+        }
+        json config = MakePlanarStripConfig(
+            "electrostatics", mesh_file, 1, {{"epsilon_r", 1.0}}, 1.0, 0.0);
+        config["boundary_conditions"].erase(1);
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_THROWS_WITH(setup(mesh, config), ContainsSubstring("containing element 1"));
+    }
+
+    SECTION("an axisymmetric magnetic annulus away from the axis") {
+        CreateCoaxMesh(mesh_file, 0.01, 0.03, 0.05, 8, 4);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["physics_type"] = "magnetostatics";
+        config["simulation"].erase("amr");
+        config["materials"][0]["properties"] = {{"mu_r", 1.0}};
+        config["terminals"] = json::array();
+        config["scenarios"][0]["excitations"] = json::array();
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_THROWS_WITH(setup(mesh, config), ContainsSubstring("Nothing fixes the potential"));
+    }
+
+    SECTION("the axis of an axisymmetric magnetic run is a reference") {
+        CreatePlanarStripMesh(mesh_file, 0.2, 0.05, 4, 2);  // reaches r = 0
+        json config = MakePlanarStripConfig(
+            "magnetostatics", mesh_file, 1, {{"mu_r", 1.0}}, 0.0, 0.0);
+        config["simulation"]["geometry_type"] = "axisymmetric";
+        config["boundary_conditions"] = json::array();
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_NOTHROW(setup(mesh, config));
+    }
+    fs::remove(mesh_file);
+}
+
 TEST_CASE("Magnetoquasistatic loop inductance matches the analytic ring value at low frequency",
           "[solvers][analytic][mqs][coupling][axisymmetric]") {
     const std::string mesh_file = "test_current_loop_mqs.mesh";

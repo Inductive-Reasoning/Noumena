@@ -315,7 +315,13 @@ Array of objects.
   (see [Open-boundary truncation](open_boundary.md)). Coupling-matrix runs keep
   the `alpha` term in the operator but omit `value`, like all boundary data.
 
-Boundaries with no entry are homogeneous Neumann. Axis regularity on `r = 0` in
+Boundaries with no entry are homogeneous Neumann. In the scalar (2D and
+electrostatic) formulations every connected piece of the mesh needs something
+that fixes its potential -- a `dirichlet` boundary, a terminal, the axis of an
+axisymmetric magnetic run, or a `robin` boundary with a positive coefficient --
+and setup rejects a model with a piece that has none: its potential would be
+determined only up to a constant, and with a net flux into it there would be no
+solution at all. Axis regularity on `r = 0` in
 axisymmetric magnetic runs is imposed automatically and must **not** be
 prescribed here.
 
