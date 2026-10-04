@@ -38,7 +38,8 @@ bottom (z = 0) surfaces along y = 72 mm, sampled from inside the plate.
 `measured.csv` holds the problem's measured tables.
 
 The on-demand test `mfem_tests "[team7]"` runs the same model and checks
-every column of the comparison against the bounds below.
+every column of the comparison against the bounds below. These are regression bounds, the current agreement plus a margin, not
+measurement uncertainty.
 
 Regenerate the mesh with `gmsh -3 -format msh2 team7.geo -o team7.msh`; the
 sizes in the plate and coil are `h_plate` (6 mm) and `h_coil` (12 mm), and

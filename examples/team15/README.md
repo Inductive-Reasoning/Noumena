@@ -47,7 +47,8 @@ Both read the solver's HDF5 output, which needs h5py (`pip install h5py`).
 
 The on-demand test `mfem_tests "[team15]"` solves three positions of
 problem 1 (0, 9 and 17 mm) and checks them against the measurements to
-100 uH in dL and 0.25 ohm in dR.
+100 uH in dL and 0.25 ohm in dR. These are regression bounds, the current agreement plus a margin, not
+measurement uncertainty.
 
 ## Results
 

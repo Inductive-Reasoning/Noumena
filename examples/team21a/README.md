@@ -48,7 +48,8 @@ its authors' own (Ar-V-Ar) calculation.
 
 The on-demand test `mfem_tests "[team21a]"` generates the meshes with Gmsh
 (found by CMake; the test skips without it), solves all four variants and
-checks them against the bounds below.
+checks them against the bounds below. These are regression bounds, the current agreement plus a margin, not
+measurement uncertainty.
 
 ## Results
 
@@ -61,7 +62,9 @@ Plate loss at the rated 10 A rms:
 | P21a-2 | 1.70 | 1.68 | +1.4% | 1.66 |
 | P21a-3 | 1.01 | 1.25 | -19% | 1.14 |
 
-Bx of P21a-2 along z (14 points, rms) agrees with the measurements to 1.6%
+Bx of P21a-2 along z (14 points; the tables are signed rms values, compared
+with the in-phase component Re(Bx)/sqrt(2), which differs from |Bx|/sqrt(2) by
+at most 0.34% of the peak) agrees with the measurements to 1.6%
 on the coil side (x = +5.76 mm) and 1.3% on the far side (x = -5.76 mm),
 as RMS differences relative to the largest measured value, and with the
 problem's calculation equally well.

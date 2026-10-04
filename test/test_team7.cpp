@@ -42,7 +42,7 @@ struct Table {
 
 } // namespace
 
-TEST_CASE("TEAM 7 matches its measurements", "[.][team7][solvers][mqs][3d]") {
+TEST_CASE("TEAM 7 stays within its regression bounds of the measurements", "[.][team7][solvers][mqs][3d]") {
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 7 needs the iterative solver of the MPI build.");
 	}

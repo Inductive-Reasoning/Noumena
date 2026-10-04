@@ -168,10 +168,10 @@ After building, the executable `mfem-electromag` will be in the `build` director
 # Run with a configuration file
 ./mfem-electromag path/to/config.json
 
-# Example: Run test cases
-./mfem-electromag ../test/electrostatic_test.json
-./mfem-electromag ../test/magnetostatic_test.json
-./mfem-electromag ../test/mqs_test.json
+# Example: the shipped examples (see examples/README.md)
+./mfem-electromag ../examples/simple_capacitor/config.json
+./mfem-electromag ../examples/solenoid/config.json
+./mfem-electromag ../examples/eddy_current/config.json
 
 # Run with OpenMP parallelism (if enabled)
 OMP_NUM_THREADS=4 ./mfem-electromag config.json
@@ -220,15 +220,13 @@ in millimetres solves cleanly and returns silently wrong absolute quantities.
 There is no unit or scale key in the schema; see
 [Units](docs/config_reference.md#units).
 
-See the `test/` directory for examples of:
-- `electrostatic_test.json`: Electrostatic problem setup
-- `magnetostatic_test.json`: Magnetostatic problem setup
-- `mqs_test.json`: Magnetoquasistatic problem setup
-
 See `examples/` directory for complete example problems with documentation:
 - `simple_capacitor/`: Parallel plate capacitor with analytical validation
 - `solenoid/`: Magnetostatic coil with field calculations
 - `eddy_current/`: Time-harmonic eddy current analysis
+- `team7/`, `team15/`, `team21a/`: 3D TEAM benchmarks compared with their measurements
+
+The full list is in [examples/README.md](examples/README.md).
 
 ### MQS Frequency Scenarios
 

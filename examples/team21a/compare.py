@@ -5,10 +5,12 @@ Usage: compare.py [results_root]   (default: this directory)
 
 Reads, for each P21a-n with a results-n directory under results_root, the
 plate loss from results-n/results.h5 (needs h5py: pip install h5py) and, for
-P21a-2, Bx along z from the probe CSVs. The tables give rms values at the
-rated 10 A rms; the solver's phasors are peak values of the same excitation
-(4243 ampere-turns peak), so computed fields are divided by sqrt(2). Losses
-are time averages and compare directly.
+P21a-2, Bx along z from the probe CSVs. The tables give signed rms values at
+the rated 10 A rms; the solver's phasors are peak values of the same
+excitation (4243 ampere-turns peak), so the in-phase component Re(Bx) is
+compared on an rms scale, divided by sqrt(2). (The quadrature part is small:
+|Bx| and |Re Bx| differ by at most 0.34% of the peak.) Losses are time
+averages and compare directly.
 """
 
 import csv

@@ -75,7 +75,7 @@ std::pair<double, double> Impedance(const fs::path& work, const fs::path& mesh_f
 
 } // namespace
 
-TEST_CASE("TEAM 15 matches its measurements", "[.][team15][solvers][mqs][3d]") {
+TEST_CASE("TEAM 15 stays within its regression bounds of the measurements", "[.][team15][solvers][mqs][3d]") {
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 15 needs the iterative solver of the MPI build.");
 	}

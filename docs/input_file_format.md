@@ -185,7 +185,7 @@ listing: [`boundary_conditions`](config_reference.md#boundary_conditions).
   `A_phi` (magnetics).
 - **neumann** prescribes the outward natural flux. Value `0` is the implicit
   natural condition, so a boundary with no entry behaves as homogeneous Neumann.
-- **robin** is parsed and reserved but **not implemented**; the solver rejects it.
+- **robin** is implemented for electrostatics; the magnetic solvers reject it.
   `robin_coefficient` is required for Robin entries and rejected on all others.
 
 Entries omitted entirely are homogeneous Neumann. Axis regularity on `r = 0` in

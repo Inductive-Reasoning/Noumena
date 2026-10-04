@@ -42,7 +42,7 @@ constexpr double kBxBound = 0.025;
 
 } // namespace
 
-TEST_CASE("TEAM 21a matches its measurements", "[.][team21a][solvers][mqs][3d]") {
+TEST_CASE("TEAM 21a stays within its regression bounds of the measurements", "[.][team21a][solvers][mqs][3d]") {
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 21a needs the iterative solver of the MPI build.");
 	}
@@ -85,7 +85,9 @@ TEST_CASE("TEAM 21a matches its measurements", "[.][team21a][solvers][mqs][3d]")
 		}
 
 		if (slits != 2) continue;
-		// Bx is tabulated as rms; the solution's phasors are peak values.
+		// The tables give signed rms values, so the in-phase component of the
+		// peak phasor is compared on an rms scale, Re(Bx)/sqrt(2). Here |Bx|
+		// and |Re Bx| differ by at most 0.34% of the peak.
 		for (const auto& [probe, column] : { std::pair<std::string, std::string>{ "Bx_coil_side", "measured_coil_side" },
 											 { "Bx_far_side", "measured_far_side" } }) {
 			std::map<double, double> computed;

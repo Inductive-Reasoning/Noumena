@@ -225,6 +225,15 @@ Object. Optional; absent or `enabled: false` means a single solve.
 Unknown keys in this block are ignored, so a producer and the solver can evolve
 independently.
 
+The error indicator is a Zienkiewicz-Zhu flux-recovery estimate of the field
+error (the flux of `V`, `A_z` or `A_φ`), divided by the square root of the
+solution's energy so it does not scale with the drive, and combined over
+scenarios as a root sum of squares. It is a heuristic for where to refine,
+not a bound: it does not control the error of capacitances, impedances or
+losses, and among many scenarios one hard scenario's contribution can be
+diluted by the rest. For MQS the normalizing energy, `½(A_Rᵀ K A_R + A_Iᵀ K A_I)`,
+is twice the time-averaged magnetic energy of the peak phasors (`¼∫ν|B̂|²`).
+
 ---
 
 ## `entity_groups`
@@ -385,8 +394,11 @@ geometry). It says where the conductor's current flows:
 Whatever the type, a terminal's current must balance in its conductor: be
 divergence-free, and leave it only through its electrodes. Setup measures how
 much of the current density (in L2 norm) the divergence-free projection has to
-remove and warns above 2%; the effect on energies and inductances is about
-that fraction squared. Correct directions lose only discretization noise. The
+remove and warns above 2%. That fraction is a property of the source, not a
+bound on the error of fields, inductances or losses; in the TEAM 7 and 21a
+coils (2.6% and 4.7% removed) solving with the exact winding current instead
+changed the results by 0.1-0.4%. Correct directions lose only discretization
+noise. The
 warning catches an `azimuthal` direction about the wrong axis (about 1% per mm
 of offset on a 5 cm coil) or on a shape that is not revolved, a coarsely
 faceted round conductor (a few percent at 16 straight segments), and a

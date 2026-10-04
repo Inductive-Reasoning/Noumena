@@ -214,8 +214,7 @@ directions. The `B_z → 2 ∂A_φ/∂r` limit is applied only during field reco
 constrained solution where the limit is valid.
 
 Quadrature order for the `1/r` term is chosen from element geometry rather than
-basis degree; see `AxisymmetricCurlCurlIntegrator::RadialExtraOrder` and finding
-M5 in `docs/math_review_findings.md`.
+basis degree; see `AxisymmetricCurlCurlIntegrator::RadialExtraOrder`.
 
 ### Derived Quantities
 
@@ -305,9 +304,9 @@ a racetrack's corners, where it grows like `1/r` inwards -- and the projection
 then removes that part, so the source is the projected field rather than a
 uniform winding current. In TEAM 7's racetrack coil this is 2.6% on any mesh
 (see `examples/team7/README.md` for the measurements), 4.7% in TEAM 21a's.
-Its effect on the results is about the square of that fraction: solving with
-the exact winding current instead moves TEAM 7's fields by 0.12-0.17% and the
-TEAM 21a losses by 0.3-0.4%. A construction that avoids it is an open issue. The flux linkage of
+The removed fraction does not bound the error of any output; measured,
+solving with the exact winding current instead moves TEAM 7's fields by
+0.12-0.17% and the TEAM 21a losses by 0.3-0.4%. A construction that avoids it is an open issue. The flux linkage of
 terminal `k` is `λ_k = ∫ A · J_k dV = b'_k · A` (with `J_k` its unit-current
 density), and the inductance matrix `L = B'ᵀ K⁻¹ B'` is symmetric by
 construction.
@@ -335,10 +334,11 @@ For time-harmonic fields (`e^{jωt}`), `A⃗` becomes complex: `A⃗ = A⃗_real
 Find complex `A_φ ∈ H¹` such that for all test functions `v`:
 
 ```
-∫_Ω ν (∇ × A⃗) · (∇ × v*) dΩ + jω ∫_Ω σ A⃗ · v* dΩ = ∫_Ω J⃗_source · v* dΩ
+∫_Ω ν (∇ × A⃗) · (∇ × v) dΩ + jω ∫_Ω σ A⃗ · v dΩ = ∫_Ω J⃗_source · v dΩ
 ```
 
-where `v*` is the complex conjugate of the test function.
+The basis and test functions are real, so whether `v` is conjugated makes no
+difference; the resulting matrix is complex symmetric, not Hermitian.
 
 ### Axisymmetric Form
 
@@ -353,21 +353,22 @@ where:
 - `M` is the mass matrix (conductivity term)
 - `{F}` is the source term
 
-In integral form:
+with `K` and `M` integrated under the measure `2πr dr dz`. Splitting
+`{A} = {A_R} + j{A_I}` and `{F} = {F_R} + j{F_I}` gives the real system the
+solver assembles:
 
 ```
-∫_Ω ν (∇ × A⃗_real) · (∇ × v) · 2πr dr dz
-    + jω ∫_Ω σ A⃗_real · v · 2πr dr dz (real part)
-
-∫_Ω ν (∇ × A⃗_imag) · (∇ × v) · 2πr dr dz
-    + jω ∫_Ω σ A⃗_imag · v · 2πr dr dz (imaginary part)
+K A_R − ω M A_I = F_R
+K A_I + ω M A_R = F_I
 ```
+
+that is, `[K, −ωM; ωM, K]`, which is not symmetric even though `K` and `M` are.
 
 ### Physical Interpretation
 
 The real and imaginary parts of `A_φ` represent:
 - **Real part:** Component in phase with the driving current
-- **Imaginary part:** Component 90° out of phase (eddy current losses)
+- **Imaginary part:** Component 90° out of phase, produced by the eddy currents
 
 ### Derived Quantities
 
@@ -499,6 +500,10 @@ since the surface term remains. MQS therefore uses
 `β = 10⁻⁶ min(ν_min/L², ω_min σ_min)` over all scenario frequencies and
 conducting regions, which keeps `β/(ωσ) ≤ 10⁻⁶`, floored at `10⁻⁶` of the
 static weight to stay above round-off (with a warning if the floor binds).
+`β` is fixed: neither `solver_tolerance` nor mesh refinement reduces its
+effect, and `β/(ωσ) ≤ 10⁻⁶` bounds the charge-conservation error, not the
+error of fields or impedances, which also depends on the geometry; the tests
+do not include a study of the results' sensitivity to `β`.
 
 `direct` factors the packed real form once per frequency (sparse LU); `iterative` is GMRES with the
 block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
@@ -510,9 +515,11 @@ The loss density is `½σ|V w − jωA|²`. For the discrete solution the total 
 equals the real input power `½ Re(Σ_k V_k I_k*)` (with `V_k = jωλ_k` for a
 stranded terminal) by the Galerkin energy identity, but only as exactly as the
 quadratures agree: `G`, the port columns `c` and the loss integral use their own
-rules, which are exact on affine elements and approximate on curved ones, so on
-a curved mesh the balance holds to quadrature error. Stranded regions do not
-conduct in the field solve, so they add nothing to either side.
+rules. Those are exact only for polynomial integrands, and many are not: an
+azimuthal path `w = φ̂/(Θr)` makes `G` and the loss rational even on affine
+elements, and curved elements add rational Jacobian factors, so the balance
+holds to quadrature error. Stranded regions do not conduct in the field solve,
+so they add nothing to either side.
 
 **Conductors touching an `n × A = 0` wall.** `n × A = 0` makes the tangential
 `E = −jωA` vanish on the wall, so the wall behaves like a perfect electrical
@@ -523,13 +530,18 @@ when a conductor touches such a wall outside its own electrodes.
 
 ## Finite Element Discretization
 
-All three formulations use H¹-conforming (Lagrange) finite elements:
+Electrostatics (2D and 3D) and the 2D magnetic formulations use H¹-conforming
+(Lagrange) finite elements for their scalar unknowns (`V`, `A_z`, `A_φ`). The 3D
+magnetic formulations use H(curl)-conforming Nédélec elements for the vector
+potential, with tangential continuity and edge/face degrees of freedom (see
+"3D Form" above). For the scalar spaces:
 
 - **Basis functions:** `φ_i(r, z)` with `C⁰` continuity
 - **Degrees of freedom:** Nodal values
 - **Integration:** Gauss quadrature with elevated order. The `2*pi*r` weight is
   polynomial and raises the exact order by a fixed amount; the `1/r` term is not
-  polynomial and its cost depends on element geometry (see M5).
+  polynomial and its cost depends on element geometry (see "Quadrature order for
+  the `1/r` term" above).
 
 ### Special Considerations for Axisymmetry
 
@@ -575,8 +587,7 @@ The historical alternative - omitting the global `2*pi` from every integrator an
 reintroducing it in each derived quantity - is mathematically equivalent but was
 abandoned: it required six separate scale factors at call sites (some multiplying
 by `2*pi`, some dividing), left intermediate quantities in non-physical units,
-and was the direct cause of findings 1, 2, 3 and 5 in
-`docs/math_review_findings.md`.
+and made the physical normalization hard to audit.
 
 ## Conventions and Recurring Pitfalls
 
