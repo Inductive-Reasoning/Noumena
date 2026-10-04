@@ -264,7 +264,7 @@ TEST_CASE("Near-axis annular curl-curl quadrature meets its accuracy target",
 {
    const double width = 1.0;
 
-   // kResolvedRadiusRatio is the documented limit of the capped rule.
+   // Include the former capped-rule threshold as a regression point.
    const double ratios[] = {
 	  3.0, 1.0, 0.1, 0.03,
 	  AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio};
@@ -301,6 +301,40 @@ TEST_CASE("Curl-curl quadrature resolves the formerly capped radial band",
    REQUIRE(relative_error < 1.0e-10);
 }
 
+TEST_CASE("Radial quadrature checks curved radii and reports unresolved geometry",
+          "[axisymmetric][quadrature]") {
+   auto mesh = mfem::Mesh::MakeCartesian2D(1, 1, mfem::Element::QUADRILATERAL);
+   mesh.SetCurvature(2);
+   constexpr double inner = 0.01;
+   mfem::VectorFunctionCoefficient deformation(2,
+      [](const mfem::Vector& x, mfem::Vector& mapped) {
+         mapped(0) = inner + x(0) + 0.2 * x(1) * (1 - x(1));
+         mapped(1) = x(1);
+      });
+   mesh.Transform(deformation);
+   mfem::H1_FECollection collection(2, 2);
+   mfem::FiniteElementSpace space(&mesh, &collection);
+   auto& t = *mesh.GetElementTransformation(0);
+   const auto& rule = axisym::RadialRule(*space.GetFE(0), t);
+   double integral = 0.0, reference = 0.0;
+   for (int q = 0; q < rule.GetNPoints(); ++q) {
+      const auto& ip = rule.IntPoint(q);
+      t.SetIntPoint(&ip);
+      mfem::Vector position;
+      t.Transform(ip, position);
+      integral += ip.weight * t.Weight() / position(0);
+   }
+   const auto& line = mfem::IntRules.Get(mfem::Geometry::SEGMENT, 255);
+   for (int q = 0; q < line.GetNPoints(); ++q) {
+      const auto& ip = line.IntPoint(q);
+      const double a = inner + 0.2 * ip.x * (1 - ip.x);
+      reference += ip.weight * std::log((a + 1) / a);
+   }
+   REQUIRE(integral == Catch::Approx(reference).epsilon(1e-10));
+   auto unresolved = MakeRadialBand(1e-12, 1.0);
+   REQUIRE_THROWS(CurlCurlEnergy(*unresolved));
+}
+
 TEST_CASE("Axisymmetric boundary load includes radial measure",
 		  "[axisymmetric][quadrature][boundary]")
 {
@@ -321,9 +355,8 @@ TEST_CASE("Axisymmetric boundary load includes radial measure",
 TEST_CASE("Curl-curl quadrature stays on positive-weight simplex rules",
           "[axisymmetric][quadrature][curlcurl]")
 {
-   // A triangle hugging the axis: r_min/width = 1e-3 drives RadialExtraOrder
-   // far past the tabulated positive-weight range, so this is the geometry
-   // that exercises the clamp in GetRule.
+   // This near-axis triangle needs enrichment beyond MFEM's positive-weight
+   // simplex tables, so it exercises the positive Duffy construction.
    mfem::Mesh mesh(2, 3, 1, 0, 2);
    mesh.AddVertex(1.0e-3, 0.0);
    mesh.AddVertex(1.0, 0.0);
@@ -350,7 +383,7 @@ TEST_CASE("Curl-curl quadrature stays on positive-weight simplex rules",
    }
    REQUIRE(min_weight > 0.0);
 
-   // The point of the clamp: the assembled operator stays positive definite.
+   // Positive quadrature preserves the assembled operator's positive definiteness.
    // Tested by attempting a Cholesky factorization, which succeeds exactly
    // when the matrix is positive definite. MFEM here is built without LAPACK,
    // so this is also the check that does not need an eigensolver.

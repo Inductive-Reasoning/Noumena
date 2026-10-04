@@ -523,9 +523,12 @@ The loss density is `½σ|V w − jωA|²`. For the discrete solution the total 
 equals the real input power `½ Re(Σ_k V_k I_k*)` (with `V_k = jωλ_k` for a
 stranded terminal) by the Galerkin energy identity, but only as exactly as the
 quadratures agree: `G`, the port columns `c` and the loss integral use their own
-rules, which are exact on affine elements and approximate on curved ones, so on
-a curved mesh the balance holds to quadrature error. Stranded regions do not
-conduct in the field solve, so they add nothing to either side.
+rules. They are exact for polynomial integrands of sufficient order on affine
+elements, but 3D azimuthal paths are rational even on affine elements.
+Curved mappings also require a separate quadrature-convergence study. The new
+shared radial policy applies to 2D axisymmetry, not general 3D conductor paths.
+Stranded regions add no Joule loss themselves, but their terminal power can
+supply eddy-current loss in other conductors.
 
 **Conductors touching an `n × A = 0` wall.** `n × A = 0` makes the tangential
 `E = −jωA` vanish on the wall, so the wall behaves like a perfect electrical
