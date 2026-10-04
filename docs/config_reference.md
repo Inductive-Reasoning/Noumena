@@ -373,9 +373,12 @@ geometry). It says where the conductor's current flows:
 - `electrodes`: an open conductor (a bus bar, a lead). Current enters through
   the `input` boundary group and leaves through `output`. Both must lie on a
   `dirichlet` (`n × A = 0`) boundary, the only place current can enter or
-  leave the model consistently. The current returns between them along that
-  boundary, so both must lie on one connected piece of it; electrodes on
-  pieces that do not touch are rejected.
+  leave the model consistently. Both must lie on one connected piece of it:
+  otherwise a closed loop on the remaining `n × H = 0` boundary runs around
+  the conductor between the pieces, and by Ampère's law (tangential H is zero
+  along it) no net current could pass through it. Such a model has no
+  solution and is rejected. Only part of the walls need be `dirichlet`, as
+  long as that part joins the electrodes.
 
 Whatever the type, a terminal's current must balance in its conductor: be
 divergence-free, and leave it only through its electrodes. Setup measures how

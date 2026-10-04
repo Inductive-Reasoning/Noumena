@@ -425,12 +425,16 @@ private:
 					"The electrodes of terminal '" + name + "' must lie on a "
 					"'dirichlet' (n x A = 0) boundary; for a closed loop use a 'cut'.");
 			}
-			// The current returns between the electrodes along that wall, so
-			// they must share one connected piece of it. A potential that is 1
-			// on one piece and 0 on the others has a gradient the n x A = 0
-			// space contains, and testing the field equation with it demands
-			// zero net current into the piece: with the electrodes apart, the
-			// solve would contradict the imposed current without failing.
+			// The electrodes must share one connected piece of that wall. If
+			// they do not, a closed loop on the rest of the boundary (n x H = 0)
+			// runs between the pieces around the conductor: tangential H is
+			// zero along it, so by Ampere's law no net current can pass through
+			// it, yet all of the terminal's current does. The problem then has
+			// no solution, and the solve would return a wrong field without
+			// failing. (Discretely: a potential that is 1 on one piece and 0 on
+			// the others has a gradient the n x A = 0 space contains, and
+			// testing the field equation with it demands zero net current into
+			// the piece.)
 			const std::vector<int> pieces = WallPieces();
 			std::set<int> touched;
 			for (int be = 0; be < mesh.GetNBE(); ++be) {
@@ -444,9 +448,13 @@ private:
 			}
 			MFEM_VERIFY(touched.size() <= 1,
 				"The electrodes of terminal '" + name + "' lie on separate pieces of the "
-				"'dirichlet' (n x A = 0) boundary that do not touch. The current returns "
-				"between its electrodes along that boundary, so both must lie on one "
-				"connected piece of it.");
+				"'dirichlet' (n x A = 0) boundary that do not touch. A closed loop can "
+				"then be drawn on the rest of the boundary, which is n x H = 0, between "
+				"the pieces and around the conductor. Tangential H is zero along it, so "
+				"by Ampere's law no net current can pass through the loop, yet all of "
+				"the terminal's current does: the problem has no solution. Join the "
+				"electrodes by a connected 'dirichlet' region, e.g. make the walls "
+				"between them 'dirichlet' too.");
 			return std::make_unique<ConductionPath>(mesh, config.Order, conductor,
 													conductivity, d, input, output, none);
 		}
