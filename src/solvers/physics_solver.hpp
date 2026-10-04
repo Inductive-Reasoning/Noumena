@@ -6,6 +6,8 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include "mfem.hpp"
 #include "../core/problem_config.hpp"
 #include "../io/field_export.hpp"
@@ -145,8 +147,6 @@ protected:
     // previously used here squares-roots its tolerance argument, so a
     // configured 1e-12 used to mean 1e-6 for these solvers only.)
     //
-    // Non-convergence is reported rather than silent: mfem::PCG returned the
-    // last iterate without comment, which reads exactly like a converged run.
     void SolveSpdIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
                              const mfem::Vector& B, mfem::Vector& X) const {
         mfem::CGSolver cg;
@@ -157,22 +157,26 @@ protected:
         cg.SetMaxIter(config.SolverMaxIter);
         cg.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
         cg.Mult(B, X);
+        RequireConverged(cg, "CG");
+    }
 
+    // Report a finished Krylov solve. Non-convergence is an error: the last
+    // iterate of a solve that missed solver_tolerance is not a result, and
+    // passing it on as one (with a warning that is easily missed) would put
+    // an unconverged field into every output and coupling matrix.
+    void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name) const {
         std::ostringstream msg;
         msg << std::scientific << std::setprecision(3);
-        if (cg.GetConverged()) {
-            msg << "CG converged in " << cg.GetNumIterations()
-                << " iterations (relative residual " << cg.GetFinalRelNorm() << ").";
-            Reporter().Diagnostic(msg.str());
-        }
-        else {
-            msg << "CG did not converge: relative residual " << cg.GetFinalRelNorm()
-                << " after " << cg.GetNumIterations() << " iterations, above "
+        if (!solver.GetConverged()) {
+            msg << name << " did not converge: relative residual " << solver.GetFinalRelNorm()
+                << " after " << solver.GetNumIterations() << " iterations, above "
                    "solver_tolerance " << config.SolverTolerance << ". Raise "
-                   "solver_max_iter, loosen solver_tolerance, or use the direct "
-                   "solver; results may be inaccurate.";
-            Reporter().Warning(msg.str());
+                   "solver_max_iter, loosen solver_tolerance, or use the direct solver.";
+            throw std::runtime_error(msg.str());
         }
+        msg << name << " converged in " << solver.GetNumIterations()
+            << " iterations (relative residual " << solver.GetFinalRelNorm() << ").";
+        Reporter().Diagnostic(msg.str());
     }
 
     // Eigen's simplicial LDL^T is fine for 2D meshes but its fill-in grows much

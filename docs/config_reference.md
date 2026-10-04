@@ -115,9 +115,11 @@ by AMS on `K + ωM_σ` (MPI/HYPRE build only). AMS smooths with hybrid
 Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
 loses strength; the iteration counts differ accordingly. The 3D MQS `direct` solver is a
 sparse LU of the complex system, refactored per frequency; no MUMPS or other
-parallel direct solver is included. In every solver `solver_tolerance` is the relative
-residual `||b - Ax|| / ||b||`; a run that does not reach it within
-`solver_max_iter` iterations prints a warning.
+parallel direct solver is included. In every iterative solver `solver_tolerance` is the
+relative residual the Krylov method monitors, which it measures through the
+preconditioner (CG in the preconditioner's norm, GMRES on the preconditioned
+residual), so the raw `||b - Ax|| / ||b||` can be larger. A solve that does not
+reach it within `solver_max_iter` iterations stops the run with an error.
 
 `frequency` is **not** valid here. It belongs on each scenario; see
 [`scenarios`](#scenarios).

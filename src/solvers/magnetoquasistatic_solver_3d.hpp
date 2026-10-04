@@ -503,22 +503,7 @@ private:
 		gmres.SetMaxIter(config.SolverMaxIter);
 		gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 		gmres.Mult(rhs, x);
-
-		std::ostringstream msg;
-		msg << std::scientific << std::setprecision(3);
-		if (gmres.GetConverged()) {
-			msg << "GMRES converged in " << gmres.GetNumIterations()
-				<< " iterations (relative residual " << gmres.GetFinalRelNorm() << ").";
-			Reporter().Diagnostic(msg.str());
-		}
-		else {
-			msg << "GMRES did not converge: relative residual " << gmres.GetFinalRelNorm()
-				<< " after " << gmres.GetNumIterations() << " iterations, above "
-				   "solver_tolerance " << config.SolverTolerance << ". Raise "
-				   "solver_max_iter, loosen solver_tolerance, or use the direct "
-				   "solver; results may be inaccurate.";
-			Reporter().Warning(msg.str());
-		}
+		RequireConverged(gmres, "GMRES");
 #else
 		(void)rhs;
 		(void)x;

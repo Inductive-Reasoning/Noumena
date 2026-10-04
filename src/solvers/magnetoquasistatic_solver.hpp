@@ -569,8 +569,10 @@ public:
 			gmres.SetOperator(*A_op.Ptr());
 			gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 			gmres.SetRelTol(config.SolverTolerance);
+			gmres.SetAbsTol(0.0);
 			gmres.SetMaxIter(config.SolverMaxIter);
 			gmres.Mult(B_vec, X_vec);
+			RequireConverged(gmres, "GMRES");
 		}
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh

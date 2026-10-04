@@ -2598,8 +2598,8 @@ TEST_CASE("Magnetostatic loop inductance matches the analytic ring value",
 // reproduce the direct factorization on both scalar static operators: the
 // axisymmetric r-weighted diffusion operator (coaxial capacitance) and the
 // axisymmetric curl-curl operator with its 1/r term (loop inductance). With
-// solver_tolerance a true relative residual of 1e-12, agreement well below
-// the discretization error is expected.
+// solver_tolerance 1e-12, agreement well below the discretization error is
+// expected.
 TEST_CASE("Multigrid PCG and the direct solver agree on the 2D static operators",
           "[solvers][linear_solver][amg]") {
     auto solve = [](auto make_solver, json config, const std::string& matrix_file,
@@ -2657,6 +2657,48 @@ TEST_CASE("Multigrid PCG and the direct solver agree on the 2D static operators"
 // a real stiffness solve with a prescribed current density. At a low enough
 // frequency the skin depth dwarfs the conductor, so the MQS inductance must
 // collapse onto the magnetostatic DC value.
+// A solve that misses solver_tolerance within solver_max_iter is an error, not
+// a warning: its last iterate must not reach the outputs. One iteration is far
+// short of convergence on either operator.
+TEST_CASE("An iterative solve that does not converge stops the run",
+          "[solvers][linear_solver]") {
+    using Catch::Matchers::ContainsSubstring;
+
+    SECTION("CG on axisymmetric electrostatics") {
+        const std::string mesh_file = "test_unconverged_coax.mesh";
+        CreateCoaxMesh(mesh_file, 0.01, 0.03, 0.05, 64, 16);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["amr"]["enabled"] = false;
+        config["simulation"]["order"] = 3;
+        config["simulation"]["linear_solver"] = "iterative";
+        config["simulation"]["solver_max_iter"] = 1;
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        REQUIRE_THROWS_WITH(solver.Run(), ContainsSubstring("CG did not converge"));
+        fs::remove(mesh_file);
+    }
+
+    SECTION("GMRES on axisymmetric MQS") {
+        const std::string mesh_file = "test_unconverged_loop.mesh";
+        CreateCurrentLoopMesh(mesh_file);
+        json config = MakeCurrentLoopConfig("magnetoquasistatics", mesh_file, 5.8e7);
+        config["simulation"]["linear_solver"] = "iterative";
+        config["simulation"]["solver_max_iter"] = 1;
+        config["terminals"] = json::array({
+            {{"name", "LoopCurrent"}, {"quantity", "current"},
+             {"conductor_type", "massive"}, {"entity_group", "LoopDomain"}}});
+        config["scenarios"] = json::array({
+            {{"name", "loop"}, {"frequency", 50.0}, {"excitations", json::array({
+                {{"terminal", "LoopCurrent"}, {"value", 1.0}}})}}});
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        REQUIRE_THROWS_WITH(solver.Run(), ContainsSubstring("GMRES did not converge"));
+        fs::remove(mesh_file);
+    }
+}
+
 TEST_CASE("Magnetoquasistatic loop inductance matches the analytic ring value at low frequency",
           "[solvers][analytic][mqs][coupling][axisymmetric]") {
     const std::string mesh_file = "test_current_loop_mqs.mesh";
