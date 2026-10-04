@@ -34,8 +34,14 @@ For non-MFEM readers, `/mesh/vertices` is a double array `[vertex, component]`.
   tetrahedron 4, cube 5, prism 6, pyramid 7).
 
 Mesh attributes are `dimension`, `space_dimension`, and `coordinate_units = "m"`.
-Corner connectivity alone is not a high-order geometry description; use the
-MFEM serialization for curved meshes.
+Corner connectivity alone is not a high-order geometry description. A curved
+mesh (for example one read from a second-order Gmsh file) also has
+`/mesh/nodes`, laid out like a field group: `kind = "geometry"` and a `values`
+dataset holding the node coordinates as a `space_dimension`-component field,
+with the same attributes as field values (including `space`, below). The
+element's geometry is then `x(xi) = sum_k nodes[dof_k] * phi_k(xi)`, the same
+expansion used for fields. `/mesh/nodes` is absent for straight-sided meshes,
+whose elements are the affine maps of their corner vertices.
 
 ### Scenario fields
 
@@ -60,6 +66,35 @@ the corner-vertex array. Derived fields are projected into L2 order
 
 MQS stores `A_Real`, `A_Imag`, `B_Real`, `B_Imag`, `B_Magnitude`, and `P_Loss`.
 Phasors use the peak-amplitude convention; `P_Loss` is time-averaged loss density.
+
+### Finite element spaces
+
+Each field's `values` dataset also has a string `space` attribute naming a
+group under `/spaces`, one per finite element collection (for example
+`/spaces/H1_2D_P2`). Spaces depend only on the collection and the mesh, so
+every scenario shares them. They let readers without MFEM evaluate a field
+inside any element, at any order:
+
+- `element_dof_offsets`: one-dimensional integer array, one start offset per
+  mesh element plus a final sentinel, in `/mesh/elements` order.
+- `element_dofs`: the concatenated scalar DOF indices of each element, in the
+  element's local DOF order. A negative entry `d` means DOF `-1 - d` with its
+  sign flipped (MFEM's convention; H1 and L2 never use it). For a vector field,
+  component `c` of DOF `d` is at `c * ndofs + d` when `ordering` is `byNODES`,
+  or at `d * vector_dimension + c` when it is `byVDIM`.
+- `ndofs` attribute: the number of scalar DOFs.
+- `reference_nodes/<geometry>`: double array `[local DOF, dimension]` giving
+  where each local DOF sits on the reference element, keyed by MFEM geometry
+  code (triangle `2`), with an integer `order` attribute.
+
+The reference triangle has vertices `(0,0)`, `(1,0)`, `(0,1)`, matching the
+element's vertex order in `/mesh/elements`. Reference nodes are written only
+for nodal, value-mapped elements (MFEM's default H1 and L2 bases): a DOF is the
+field's value at its node, so the element's shape functions are the Lagrange
+polynomials on those nodes, and the field at reference point `x` is
+`sum_k sign_k * values[dof_k] * phi_k(x)`. The nodes are exported rather than
+named because they depend on the basis type (Gauss-Lobatto for H1,
+Gauss-Legendre for L2 by default).
 
 ### Coupling matrices
 

@@ -248,3 +248,74 @@ TEST_CASE("Field HDF5 writes numeric primary and projected derived data", "[hdf5
 	REQUIRE(ordering == static_cast<int>(vector_space.GetOrdering()));
 	REQUIRE(collection_name == l2_collection.Name());
 }
+
+TEST_CASE("Field HDF5 spaces and curved mesh nodes describe each element's DOFs", "[hdf5][io][fields]") {
+	const TemporaryHdf5File temporary;
+	auto mesh = mfem::Mesh::MakeCartesian2D(3, 2, mfem::Element::TRIANGLE);
+	// Curve the mesh so the geometry is genuinely high order.
+	mesh.SetCurvature(3);
+	mfem::GridFunction& geometry = *mesh.GetNodes();
+	mfem::VectorFunctionCoefficient bend(2, [](const mfem::Vector& x, mfem::Vector& y) {
+		y(0) = x(0) + 0.05 * std::sin(3.0 * x(1));
+		y(1) = x(1) + 0.05 * std::sin(2.0 * x(0));
+	});
+	geometry.ProjectCoefficient(bend);
+
+	// Order 3 has two DOFs per edge, so a wrong edge orientation would show.
+	mfem::H1_FECollection collection(3, 2);
+	mfem::FiniteElementSpace space(&mesh, &collection);
+	mfem::GridFunction primary(&space);
+	mfem::FunctionCoefficient smooth([](const mfem::Vector& x) { return std::cos(x(0)) * std::exp(x(1)); });
+	primary.ProjectCoefficient(smooth);
+	FieldExportSet fields;
+	fields.AddPrimary("potential", primary);
+	ProblemConfig config;
+	config.Order = 3;
+	Hdf5ResultsWriter writer(temporary.path, mesh, config);
+	Scenario scenario;
+	writer.WriteScenario("scenario_000000", "Base", scenario, fields);
+
+	HighFive::File file(temporary.path.string(), HighFive::File::ReadOnly);
+
+	// Checks the documented contract: the coefficient that element e's DOF k names
+	// is the field's value at reference node k of element e.
+	auto check = [&](const std::string& values_path, const mfem::GridFunction& field) {
+		auto dataset = file.getDataSet(values_path);
+		std::vector<double> values;
+		dataset.read(values);
+		std::string space_path;
+		int vdim = 0, ordering = -1;
+		dataset.getAttribute("space").read(space_path);
+		dataset.getAttribute("vector_dimension").read(vdim);
+		dataset.getAttribute("ordering").read(ordering);
+		REQUIRE(vdim == field.VectorDim());
+		const auto space_group = file.getGroup(space_path);
+		std::vector<int> offsets, dofs;
+		space_group.getDataSet("element_dof_offsets").read(offsets);
+		space_group.getDataSet("element_dofs").read(dofs);
+		std::vector<std::vector<double>> nodes;
+		space_group.getDataSet("reference_nodes/" + std::to_string(mfem::Geometry::TRIANGLE)).read(nodes);
+		const int ndofs = static_cast<int>(values.size()) / vdim;
+		REQUIRE(offsets.size() == static_cast<std::size_t>(mesh.GetNE() + 1));
+		mfem::Vector expected;
+		for (int element = 0; element < mesh.GetNE(); ++element) {
+			REQUIRE(offsets[element + 1] - offsets[element] == static_cast<int>(nodes.size()));
+			for (int k = 0; k < static_cast<int>(nodes.size()); ++k) {
+				mfem::IntegrationPoint point;
+				point.Set2(nodes[k][0], nodes[k][1]);
+				field.GetVectorValue(element, point, expected);
+				const int dof = dofs[offsets[element] + k];
+				REQUIRE(dof >= 0);
+				for (int c = 0; c < vdim; ++c) {
+					const double stored = ordering == mfem::Ordering::byNODES
+						? values[c * ndofs + dof] : values[dof * vdim + c];
+					REQUIRE(std::abs(stored - expected(c)) < 1.0e-12);
+				}
+			}
+		}
+	};
+
+	check("scenarios/scenario_000000/fields/potential/values", primary);
+	REQUIRE(file.exist("mesh/nodes/values"));
+	check("mesh/nodes/values", geometry);
+}
