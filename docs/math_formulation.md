@@ -119,12 +119,11 @@ u = ½ ε |E⃗|²
 - **Dirichlet:** `V = V₀` on `∂Ω_D` (e.g., electrode surfaces)
 - **Neumann:** `n̂ · (ε ∇V) = g` on `∂Ω_N`. The configured `value`
   is this outward natural flux and is added to the weak-form boundary RHS.
+  A zero value is the implicit natural condition and requires no assembled term.
 - **Robin:** `n̂ · (ε ∇V) + α V = g` on `∂Ω_R`, with `α = robin_coefficient`
   ≥ 0 and `g = value`. It adds `∫ α V v dS` to the operator (under the
   geometry's measure) and `∫ g v dS` to the RHS. Charge extraction uses the
   domain stiffness alone, so the Robin term never enters `Q = K₀ V`.
-  A zero value is the implicit natural condition and requires no assembled term.
-- **Robin:** Reserved in the input schema but not yet implemented by the solvers.
 
 For axisymmetric problems, a nonzero Neumann load is integrated with the
 meridional boundary measure `2πr ds`, the same full measure carried by the
@@ -241,7 +240,7 @@ u = ½ B⃗ · H⃗ = ½ ν |B⃗|²
   formulation,
   `g = ν[n_r(∂A_φ/∂r + A_φ/r) + n_z ∂A_φ/∂z]`. The `A_φ/r` contribution is
   part of the radial natural flux and cannot be replaced by `n̂ · (ν∇A_φ)`.
-- **Robin:** Reserved in the input schema but not yet implemented.
+- **Robin:** Electrostatics only; the magnetic solvers reject it.
 
 For an axisymmetric magnetic problem that reaches `r = 0`, regularity requires
 `A_φ = 0` on the axis. The solver detects that boundary and applies this
@@ -464,7 +463,7 @@ Same essential/natural split as magnetostatics:
   boundary value is currently zero.
 - **Neumann:** The configured real outward natural flux is assembled into the
   real field RHS. A zero value remains implicit.
-- **Robin:** Reserved in the input schema but not yet implemented.
+- **Robin:** Electrostatics only; the magnetic solvers reject it.
 
 ### 3D Form
 
