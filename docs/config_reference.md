@@ -338,7 +338,7 @@ Array of objects naming drive/measurement sites.
 | `entity_group` | string | yes | -- | Role depends on `quantity` |
 | `conductor_type` | string | no | `massive` | `massive`, `stranded` |
 | `direction` | object | 3D magnetic current terminals | -- | Current path of a 3D conductor; see below |
-| `turns` | integer | no | `1` | Turns of a `stranded` magnetic winding; see below |
+| `turns` | number | no | `1` | Turns of a `stranded` magnetic winding; see below |
 
 | `quantity` | Required group role | Realization |
 |------------|---------------------|-------------|
@@ -364,8 +364,9 @@ value) or the conductivity does. A `massive` conductor therefore needs a
 material with positive `sigma`, in every solver; a multi-turn coil is
 `stranded`.
 
-`turns` is the number of turns `N` of a `stranded` winding, and is rejected
-on any other terminal (a massive conductor is a single turn). The terminal's
+`turns` is the number of turns `N` of a `stranded` winding, any positive
+number (an effective turn count need not be an integer), and is rejected on
+any other terminal (a massive conductor is a single turn). The terminal's
 excitation is the current in each turn, so the winding carries `N I`
 ampere-turns, and its flux linkage, coupling-matrix entries and impedances are
 those of all `N` turns: its self inductance and resistance scale as `N^2`,

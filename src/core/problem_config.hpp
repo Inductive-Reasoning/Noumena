@@ -103,8 +103,9 @@ struct Terminal {
 	// Stranded magnetic terminals only (validated): the winding's turns. Its
 	// excitation is the current in each turn, so the source is Turns times
 	// that current, and its flux linkage and coupling entries are the
-	// winding's.
-	int Turns = 1;
+	// winding's. It need not be an integer: N only scales the source and the
+	// flux linkage, so an effective (e.g. averaged) turn count is fine.
+	double Turns = 1.0;
 };
 
 // One scenario's setting of one terminal.

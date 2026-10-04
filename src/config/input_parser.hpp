@@ -423,7 +423,7 @@ private:
 											   {{"massive",  ConductorType::Massive},
 												{"stranded", ConductorType::Stranded}});
 				terminal.EntityGroupName = Get(t, "entity_group", std::string{});
-				terminal.Turns = t.value("turns", 1);
+				terminal.Turns = t.value("turns", 1.0);
 				if (t.contains("direction")) {
 					terminal.Direction = GetCurrentDirection(t["direction"]);
 				}

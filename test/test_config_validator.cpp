@@ -883,12 +883,17 @@ TEST_CASE("ConfigValidator validates excitation phases and winding turns",
 		ConfigValidator validator;
 		REQUIRE(validator.Validate(stranded));
 
-		json zero = stranded;
-		zero["terminals"][0]["turns"] = 0;
-		REQUIRE(errors(zero, "terminals[0].turns"));
 		json fractional = stranded;
 		fractional["terminals"][0]["turns"] = 2.5;
-		REQUIRE(errors(fractional, "terminals[0].turns"));
+		REQUIRE(validator.Validate(fractional));
+		for (const double bad : { 0.0, -3.0 }) {
+			json invalid = stranded;
+			invalid["terminals"][0]["turns"] = bad;
+			REQUIRE(errors(invalid, "terminals[0].turns"));
+		}
+		json text = stranded;
+		text["terminals"][0]["turns"] = "300";
+		REQUIRE(errors(text, "terminals[0].turns"));
 
 		json massive = ValidMqsConfig();
 		massive["terminals"][0]["turns"] = 2;

@@ -476,7 +476,7 @@ TEST_CASE("A stranded winding's turns scale its impedances", "[solvers][mqs][3d]
 	const bool three_d = GENERATE(false, true);
 	INFO((three_d ? "3d" : "axisymmetric"));
 
-	auto impedance = [&](int turns) {
+	auto impedance = [&](double turns) {
 		json config = MakeAnnulusConfig(spec, three_d, 1, "magnetoquasistatics");
 		config["simulation"]["linear_solver"] = "direct";
 		config["scenarios"] = FrequencyScenarios({ 2000.0 });
@@ -491,8 +491,8 @@ TEST_CASE("A stranded winding's turns scale its impedances", "[solvers][mqs][3d]
 		return SolveImpedance(solver, "turns.h5");
 	};
 
-	constexpr int N = 3;
-	const ImpedanceSweep one = impedance(1);
+	constexpr double N = 2.5;  // effective turns need not be whole
+	const ImpedanceSweep one = impedance(1.0);
 	const ImpedanceSweep wound = impedance(N);
 	const double factor[2][2] = { { 1.0, N }, { N, N * N } };
 	for (int i = 0; i < 2; ++i) {

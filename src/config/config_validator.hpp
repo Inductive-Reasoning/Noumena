@@ -252,7 +252,7 @@ private:
             CheckFieldType(terminal, "conductor_type", prefix + ".conductor_type", ExpectedType::String);
             CheckFieldType(terminal, "entity_group", prefix + ".entity_group", ExpectedType::String);
             CheckFieldType(terminal, "direction", prefix + ".direction", ExpectedType::Object);
-            CheckFieldType(terminal, "turns", prefix + ".turns", ExpectedType::Integer);
+            CheckFieldType(terminal, "turns", prefix + ".turns", ExpectedType::Number);
         });
 
         CheckObjectArrayTypes(config, "boundary_conditions", [&](const json& boundary, const std::string& prefix) {
@@ -1072,11 +1072,12 @@ private:
 
             // A massive conductor is a single turn: its current is sigma E
             // over the whole cross-section.
-            if (t.contains("turns") && t["turns"].is_number_integer()) {
+            if (t.contains("turns") && t["turns"].is_number()) {
                 const bool magnetic = type == "magnetostatics" || type == "magnetoquasistatics";
-                if (t["turns"].get<long long>() < 1) {
-                    AddError(prefix + ".turns", "Must be at least 1");
-                } else if (t["turns"].get<long long>() != 1 &&
+                const double turns = t["turns"].get<double>();
+                if (!std::isfinite(turns) || !(turns > 0.0)) {
+                    AddError(prefix + ".turns", "Must be finite and positive");
+                } else if (turns != 1.0 &&
                            (!magnetic || conductor != "stranded")) {
                     AddError(prefix + ".turns",
                         "Turns apply only to stranded magnetic terminals; a massive "

@@ -93,7 +93,7 @@ protected:
 		/// Stranded: the cross-section A_cs = integral |w|. Massive: the DC
 		/// conductance G = integral sigma |w|^2.
 		double PathIntegral = 0.0;
-		int Turns = 1;                        // stranded only; massive is 1
+		double Turns = 1.0;                   // stranded only; massive is 1
 	};
 
 	/// Terminal conductors in config.Terminals (name) order. Rebuilt per mesh
