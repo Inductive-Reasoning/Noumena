@@ -224,6 +224,12 @@ silent underintegration. This is a convergence estimator, not a rigorous
 curved-map positivity certificate; sampled vertices and all quadrature
 points must have admissible radii. Axis-touching elements test regular
 moments because divergent axis basis directions are eliminated.
+The magnetic solver passes the mesh-relative `AxisGeometry::tolerance` to
+assembly and loss quadrature, matching the essential axis classification even
+for tiny signed mesh-generator roundoff. Physical integration coordinates are
+never clamped: every sampled interior radius must still be strictly positive.
+Standalone integrators default to exact-axis classification unless given the
+mesh tolerance; unrestricted annular `1/r` moments retain convergence checks.
 
 Conductivity mass, port load C, conductance G, and independently integrated
 Joule loss use that same policy and positive weights. In particular a

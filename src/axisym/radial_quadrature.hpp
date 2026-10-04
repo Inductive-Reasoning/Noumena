@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 #include "mfem.hpp"
+#include "axis_geometry.hpp"
 
 namespace axisym {
 
@@ -35,7 +36,8 @@ inline const mfem::IntegrationRule& PositiveRule(mfem::Geometry::Type geometry, 
 }
 
 inline const mfem::IntegrationRule& RadialRule(const mfem::FiniteElement& fe,
-    const mfem::ElementTransformation& transformation) {
+    const mfem::ElementTransformation& transformation,
+    mfem::real_t axis_tolerance = 0.0) {
     auto& t = const_cast<mfem::ElementTransformation&>(transformation);
     const auto geometry = fe.GetGeomType();
     const int degree = 2 * fe.GetOrder() + 2;
@@ -49,8 +51,9 @@ inline const mfem::IntegrationRule& RadialRule(const mfem::FiniteElement& fe,
     const auto& vertices = *mfem::Geometries.GetVertices(geometry);
     for (int i = 0; i < vertices.GetNPoints(); ++i) {
         t.Transform(vertices.IntPoint(i), position);
-        if (position(0) < 0) throw std::runtime_error("Negative radius in radial quadrature.");
-        touches_axis = touches_axis || position(0) == 0.0;
+        if (position(0) < -axis_tolerance)
+            throw std::runtime_error("Negative radius in radial quadrature.");
+        touches_axis = touches_axis || IsOnAxisGeometry(position(0), axis_tolerance);
     }
     auto moments = [&](const mfem::IntegrationRule& rule) {
         std::vector<double> values((degree + 1) * (degree + 1) * 3, 0.0);
@@ -69,8 +72,9 @@ inline const mfem::IntegrationRule& RadialRule(const mfem::FiniteElement& fe,
                     const int k = 3 * (i * (degree + 1) + j);
                     values[k] += w * monomial;
                     values[k + 1] += w * monomial * r;
-                    // Singular eliminated axis basis functions have no finite
-                    // integral. Test regular moments there instead.
+                    // The solver's mesh tolerance also classifies the essential
+                    // axis DOFs. Test regular moments for that constrained space,
+                    // not unrestricted 1/r moments; never alter physical r.
                     values[k + 2] += w * monomial * (touches_axis ? r : 1 / r);
                     monomial *= ip.y;
                 }
@@ -100,12 +104,15 @@ inline const mfem::IntegrationRule& RadialRule(const mfem::FiniteElement& fe,
 // C integrates sigma v in the r-z cross-section, independently of M and G.
 class PortLoadIntegrator : public mfem::DomainLFIntegrator {
 public:
-    explicit PortLoadIntegrator(mfem::Coefficient& coefficient)
-        : mfem::DomainLFIntegrator(coefficient) {}
+    explicit PortLoadIntegrator(mfem::Coefficient& coefficient,
+        mfem::real_t axis_tolerance = 0.0)
+        : mfem::DomainLFIntegrator(coefficient), axis_tolerance_(axis_tolerance) {}
     void AssembleRHSElementVect(const mfem::FiniteElement& fe,
         mfem::ElementTransformation& t, mfem::Vector& result) override {
-        SetIntRule(&RadialRule(fe, t));
+        SetIntRule(&RadialRule(fe, t, axis_tolerance_));
         mfem::DomainLFIntegrator::AssembleRHSElementVect(fe, t, result);
     }
+private:
+    mfem::real_t axis_tolerance_;
 };
 }

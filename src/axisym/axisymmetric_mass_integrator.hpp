@@ -19,11 +19,13 @@ class AxisymmetricMassIntegrator : public mfem::BilinearFormIntegrator
 {
 private:
    mfem::Coefficient *Q; // Conductivity (sigma)
+   mfem::real_t axis_tolerance_;
 
 public:
    explicit AxisymmetricMassIntegrator(
-      mfem::Coefficient &q, const mfem::IntegrationRule *ir = nullptr)
-      : mfem::BilinearFormIntegrator(ir), Q(&q)
+      mfem::Coefficient &q, const mfem::IntegrationRule *ir = nullptr,
+      mfem::real_t axis_tolerance = 0.0)
+      : mfem::BilinearFormIntegrator(ir), Q(&q), axis_tolerance_(axis_tolerance)
    {
       MFEM_ASSERT(Q != nullptr, "Coefficient cannot be null");
    }
@@ -90,6 +92,7 @@ protected:
       const mfem::FiniteElement &test_fe,
       const mfem::ElementTransformation &Trans) const override
    {
-      return &GetRule(trial_fe, test_fe, Trans);
+      return trial_fe.GetDim() == 1 ? &GetRule(trial_fe, test_fe, Trans)
+         : &axisym::RadialRule(trial_fe, Trans, axis_tolerance_);
    }
 };

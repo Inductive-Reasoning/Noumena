@@ -48,8 +48,8 @@
 class AxisymmetricCurlCurlIntegrator : public mfem::BilinearFormIntegrator
 {
 public:
-   // @param axis_tolerance  Scale-relative radius below which flux recovery takes
-   //                        the axis limit; use axisym::AxisGeometry::tolerance so the
+   // @param axis_tolerance  Scale-relative radius used by quadrature and flux
+   //                        recovery; use axisym::AxisGeometry::tolerance so the
    //                        integrator shares the mesh's axis policy.
    explicit AxisymmetricCurlCurlIntegrator(
       mfem::Coefficient &reluctivity,
@@ -327,7 +327,7 @@ protected:
       const mfem::FiniteElement &test_fe,
       const mfem::ElementTransformation &Trans) const override
    {
-      return &GetRule(trial_fe, test_fe, Trans);
+      return &axisym::RadialRule(trial_fe, Trans, axis_tolerance_);
    }
 
 private:

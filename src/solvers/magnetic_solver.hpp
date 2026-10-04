@@ -42,6 +42,10 @@ protected:
 	std::unique_ptr<mfem::PWConstCoefficient> nu_coeff;
 	std::unique_ptr<mfem::PWConstCoefficient> sigma_coeff;
 
+	// Shared by axis regularity, field assembly/recovery, and loss quadrature.
+	// Planar and 3D runs leave this at its default.
+	axisym::AxisGeometry axisymmetric_mesh;
+
 	MagneticSolverBase(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
 
 	static double Reluctivity(const Material& m) {
@@ -225,7 +229,8 @@ private:
 			const mfem::FiniteElement& fe = *fespace->GetFE(e);
 			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
 			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-				? axisym::RadialRule(fe, T) : mfem::IntRules.Get(fe.GetGeomType(), order);
+				? axisym::RadialRule(fe, T, axisymmetric_mesh.tolerance)
+				: mfem::IntRules.Get(fe.GetGeomType(), order);
 			for (int q = 0; q < ir.GetNPoints(); ++q) {
 				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
 				T.SetIntPoint(&ip);
@@ -252,13 +257,6 @@ private:
  */
 class MagneticSolver : public MagneticSolverBase {
 protected:
-
-	// Radial extent and scale-relative axis tolerance of the (r,z) mesh. Owned
-	// here rather than by PhysicsSolver because every consumer is magnetic: the
-	// tolerance feeds the curl-curl 1/r axis limit and the B-field recovery,
-	// and TouchesAxis drives the A_phi = 0 regularity condition. Planar runs
-	// leave it at its default.
-	axisym::AxisGeometry axisymmetric_mesh;
 
 	// Boundary attributes lying entirely on r = 0. Discovered here rather than
 	// during geometric classification because only an A_phi formulation needs a

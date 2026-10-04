@@ -9,6 +9,8 @@
 #include "axisym/axisymmetric_lf_integrator.hpp"
 #include "axisym/axisymmetric_mass_integrator.hpp"
 #include "axisym/axisymmetric_boundary_lf_integrator.hpp"
+#include "axisym/axisymmetric_mesh_validation.hpp"
+#include "axisym/magnetic_axis_boundary.hpp"
 #include "core/constants.hpp"
 
 #include <algorithm>
@@ -331,8 +333,57 @@ TEST_CASE("Radial quadrature checks curved radii and reports unresolved geometry
       reference += ip.weight * std::log((a + 1) / a);
    }
    REQUIRE(integral == Catch::Approx(reference).epsilon(1e-10));
-   auto unresolved = MakeRadialBand(1e-12, 1.0);
+   auto unresolved = MakeRadialBand(1e-8, 1.0);
+   REQUIRE(axisym::ValidateMesh(*unresolved).relation == axisym::AxisRelation::Annular);
    REQUIRE_THROWS(CurlCurlEnergy(*unresolved));
+}
+
+TEST_CASE("Radial quadrature shares the constrained magnetic axis tolerance",
+          "[axisymmetric][quadrature][axis]") {
+   for (auto type : {mfem::Element::TRIANGLE, mfem::Element::QUADRILATERAL})
+   for (int order : {1, 2})
+   for (double height : {1.0, 1000.0})
+   for (double offset : {-1e-12 * height, 0.0, 1e-12 * height}) {
+      auto mesh = mfem::Mesh::MakeCartesian2D(2, 4, type, true, 1.0, height);
+      for (int v = 0; v < mesh.GetNV(); ++v) mesh.GetVertex(v)[0] += offset;
+      const auto geometry = axisym::ValidateMesh(mesh);
+      REQUIRE(geometry.TouchesAxis());
+      mfem::H1_FECollection collection(order, 2);
+      mfem::FiniteElementSpace space(&mesh, &collection);
+      mfem::Array<int> essential;
+      space.GetEssentialTrueDofs(axisym::FindAxisBoundaryMarker(mesh, geometry), essential);
+      REQUIRE(essential.Size() > 0);
+      mfem::GridFunction potential(&space);
+      mfem::FunctionCoefficient profile([=](const mfem::Vector& x) { return x(0) - offset; });
+      potential.ProjectCoefficient(profile);
+      for (int i = 0; i < essential.Size(); ++i) potential(essential[i]) = 0.0;
+      mfem::ConstantCoefficient one(1.0);
+      mfem::BilinearForm stiffness(&space), mass(&space);
+      stiffness.AddDomainIntegrator(new AxisymmetricCurlCurlIntegrator(one, geometry.tolerance));
+      mass.AddDomainIntegrator(new AxisymmetricMassIntegrator(one, nullptr, geometry.tolerance));
+      REQUIRE_NOTHROW(stiffness.Assemble());
+      stiffness.Finalize();
+      REQUIRE_NOTHROW(mass.Assemble());
+      mass.Finalize();
+      mfem::Vector product(potential.Size());
+      stiffness.SpMat().Mult(potential, product);
+      REQUIRE(potential * product == Catch::Approx(2 * Constants::TWO_PI * height).epsilon(1e-8));
+      mass.SpMat().Mult(potential, product);
+      REQUIRE(potential * product == Catch::Approx(Constants::TWO_PI * height / 4).epsilon(1e-8));
+      REQUIRE(mesh.GetVertex(0)[0] == offset);
+   }
+}
+
+TEST_CASE("Axis tolerance does not admit nonpositive integration radii",
+          "[axisymmetric][quadrature][axis]") {
+   auto mesh = MakeRadialBand(-0.1, 1.0);
+   mfem::H1_FECollection collection(1, 2);
+   mfem::FiniteElementSpace space(mesh.get(), &collection);
+   auto& t = *mesh->GetElementTransformation(0);
+   REQUIRE_THROWS(axisym::RadialRule(*space.GetFE(0), t, 1e-10));
+   // Even when vertices fall within a supplied tolerance, physical interior
+   // coordinates must remain strictly positive.
+   REQUIRE_THROWS(axisym::RadialRule(*space.GetFE(0), t, 0.2));
 }
 
 TEST_CASE("Axisymmetric boundary load includes radial measure",

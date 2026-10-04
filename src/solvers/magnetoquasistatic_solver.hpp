@@ -130,7 +130,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         mfem::LinearForm port_lf(fespace);
         port_lf.AddDomainIntegrator(
             geometry == GeometryType::Axisymmetric
-                ? new axisym::PortLoadIntegrator(conductivity)
+                ? new axisym::PortLoadIntegrator(conductivity, axisymmetric_mesh.tolerance)
                 : new mfem::DomainLFIntegrator(conductivity), port_marker);
         port_lf.Assemble();
 
@@ -180,7 +180,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
             if (!attrs.count(mesh.GetAttribute(e))) { continue; }
             mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
             const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-                ? axisym::RadialRule(*fespace->GetFE(e), *T)
+                ? axisym::RadialRule(*fespace->GetFE(e), *T, axisymmetric_mesh.tolerance)
                 : mfem::IntRules.Get(mesh.GetElementBaseGeometry(e),
                     2 * config.Order + T->OrderW() + 2);
             for (int i = 0; i < ir.GetNPoints(); ++i) {
@@ -439,6 +439,8 @@ public:
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
+		if (geometry == GeometryType::Axisymmetric)
+			return new AxisymmetricMassIntegrator(*sigma_coeff, nullptr, axisymmetric_mesh.tolerance);
 		return Geometry().NewMassIntegrator(*sigma_coeff);
 	}
 

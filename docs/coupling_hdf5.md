@@ -26,6 +26,12 @@ pass remains incomplete and must not be consumed as a complete result.
 For ParaView, Gmsh and CSV destinations, `run_status.json` provides the same
 completion flag and count plus the current artifact names. Files left from
 older passes/runs are not current unless listed there and the run is complete.
+Each sidecar lists only entries emitted into its own directory: ParaView
+subdirectories, Gmsh `.msh` files, or individual probe `.csv` files.
+Accepted scenario counts are independent of these lists. Coupling runs with
+field export disabled therefore have empty artifact lists, even when stale
+field files remain from an earlier run. Every configured sidecar is reset to
+incomplete with zero accepted scenarios and no artifacts at the next mesh pass.
 
 ### Mesh
 

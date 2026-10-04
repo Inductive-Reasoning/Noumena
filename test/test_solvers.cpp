@@ -256,6 +256,24 @@ TEST_CASE("Axisymmetric magnetic solvers enforce zero A_phi on the axis",
         REQUIRE_NOTHROW(solver.Setup());
     }
 
+    SECTION("signed axis roundoff is accepted throughout magnetic solves") {
+        for (const std::string physics : {"magnetostatics", "magnetoquasistatics"})
+        for (double offset : {-1e-12, 1e-12}) {
+            auto config = magnetic_config(physics, 0.0);
+            config["terminals"] = json::array({{
+                {"name", "Drive"}, {"quantity", "current"}, {"entity_group", "Domain"},
+                {"conductor_type", "stranded"}}});
+            config["scenarios"][0]["excitations"] = json::array({
+                {{"terminal", "Drive"}, {"value", 1.0}}});
+            mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+            for (int v = 0; v < mesh.GetNV(); ++v) mesh.GetVertex(v)[0] += offset;
+            auto solver = SolverFactory::Instance().Create(mesh, DecodeConfig(config));
+            REQUIRE_NOTHROW(solver->Setup());
+            REQUIRE_NOTHROW(solver->Run());
+            REQUIRE_NOTHROW(solver->SaveAnalysis());
+        }
+    }
+
     SECTION("magnetostatics rejects a nonzero value at an axis corner") {
         json config = magnetic_config("magnetostatics", 0.0);
         add_horizontal_dirichlet(config, 1.0);
@@ -4103,10 +4121,18 @@ TEST_CASE("Solvers share output destinations and coupling field policy", "[solve
             bool fields_enabled = false;
             bool formats_enabled = true;
             bool field_analysis = false;
+            bool rerun_without_fields = false;
             SECTION("coupling fields default to disabled") {}
             SECTION("coupling fields can be enabled") {
                 source["output"]["export_fields_for_coupling_matrix"] = true;
                 fields_enabled = true;
+            }
+            SECTION("a field-disabled rerun invalidates old artifacts in every destination") {
+                source["output"]["export_fields_for_coupling_matrix"] = true;
+                source["output"]["probes"] = json::array({
+                    {{"name", "center"}, {"points", {{0.1, 0.05}}}}});
+                fields_enabled = true;
+                rerun_without_fields = true;
             }
             SECTION("field analysis supports HDF5 alone") {
                 source["simulation"]["analysis_type"] = "field";
@@ -4162,6 +4188,50 @@ TEST_CASE("Solvers share output destinations and coupling field policy", "[solve
                     : "scenario_000000_CouplingMatrix_Drive_A_Drive_A";
                 REQUIRE(fs::exists(root / "out/vtk" / artifact / (artifact + ".pvd")));
                 REQUIRE(fs::exists(root / "out/msh" / (artifact + ".msh")));
+            }
+            if (rerun_without_fields) {
+                const auto decoded = DecodeConfig(source);
+                const std::vector<fs::path> directories{
+                    *decoded.Output.ParaviewDirectory, decoded.Output.Gmsh->Directory,
+                    decoded.Output.ProbeDirectory};
+                for (const auto& directory : directories) {
+                    std::ifstream input(directory / "run_status.json");
+                    const auto status = json::parse(input);
+                    REQUIRE(status["complete"] == true);
+                    REQUIRE(status["accepted_scenarios"] == (mqs ? 2 : 1));
+                    REQUIRE_FALSE(status["artifacts"].empty());
+                    for (const auto& artifact : status["artifacts"])
+                        REQUIRE(fs::exists(directory / artifact.get<std::string>()));
+                }
+                source["output"]["export_fields_for_coupling_matrix"] = false;
+                {
+                    mfem::Mesh mesh(mesh_file.c_str(), 1, 0);
+                    auto solver = SolverFactory::Instance().Create(mesh, DecodeConfig(source));
+                    solver->Setup();
+                    solver->Run();
+                    solver->SaveAnalysis();
+                }
+                for (const auto& directory : directories) {
+                    std::ifstream input(directory / "run_status.json");
+                    const auto status = json::parse(input);
+                    REQUIRE(status["complete"] == true);
+                    REQUIRE(status["accepted_scenarios"] == (mqs ? 2 : 1));
+                    REQUIRE(status["artifacts"].empty());
+                }
+                // BeginMesh invalidates all configured destinations before a
+                // fresh run has accepted any scenarios, including without HDF5.
+                source["output"].erase("hdf5");
+                mfem::Mesh mesh(mesh_file.c_str(), 1, 0);
+                const auto no_archive = DecodeConfig(source);
+                ResultWriter writer(mesh, no_archive);
+                writer.BeginMesh();
+                for (const auto& directory : directories) {
+                    std::ifstream input(directory / "run_status.json");
+                    const auto status = json::parse(input);
+                    REQUIRE(status["complete"] == false);
+                    REQUIRE(status["accepted_scenarios"] == 0);
+                    REQUIRE(status["artifacts"].empty());
+                }
             }
             fs::remove_all(root);
         }

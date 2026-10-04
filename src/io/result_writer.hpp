@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -17,7 +18,11 @@ public:
 
 	void BeginMesh() {
 		next_scenario_ = 0;
+		accepted_scenarios_ = 0;
 		artifacts_.clear();
+		if (config_.Output.ParaviewDirectory) artifacts_[*config_.Output.ParaviewDirectory];
+		if (config_.Output.Gmsh) artifacts_[config_.Output.Gmsh->Directory];
+		if (!config_.Output.Probes.empty()) artifacts_[config_.Output.ProbeDirectory];
 		WriteStatus(false);
 		hdf5_.reset();
 		if (config_.Output.Hdf5File) {
@@ -56,19 +61,23 @@ public:
 		const std::string artifact_name = id + "_" + label;
 		if (WantsFields() && config_.Output.ParaviewDirectory) {
 			fields_.WriteParaview(*config_.Output.ParaviewDirectory, artifact_name, fields);
+			artifacts_[*config_.Output.ParaviewDirectory].push_back(artifact_name);
 		}
 		if (WantsFields() && config_.Output.Gmsh) {
 			fields_.WriteGmsh(config_.Output.Gmsh->Directory / (artifact_name + ".msh"), fields,
 				gmsh_results::ParseMshVersion(config_.Output.Gmsh->Version));
+			artifacts_[config_.Output.Gmsh->Directory].push_back(artifact_name + ".msh");
 		}
 		std::vector<ProbeSamples> probes;
 		if (WantsFields() && probes_ && !probes_->Empty()) {
 			probes = probes_->Sample(fields);
 			ProbeSampler::WriteCsv(config_.Output.ProbeDirectory, artifact_name, probes,
 				config_.GeometryType == GeometryType::Axisymmetric);
+			for (const auto& probe : probes)
+				artifacts_[config_.Output.ProbeDirectory].push_back(artifact_name + "_" + probe.Name + ".csv");
 		}
 		if (hdf5_) hdf5_->WriteScenario(id, name, scenario, fields, probes, driven_terminal, losses);
-		artifacts_.push_back(artifact_name);
+		++accepted_scenarios_;
 		WriteStatus(false);
 		StatusReporter::Global().Diagnostic("Wrote " + id + " for scenario '" + name + "'"
 			+ (driven_terminal.empty() ? "" : ", terminal '" + driven_terminal + "'"));
@@ -86,18 +95,14 @@ private:
 	void WriteStatus(bool complete) const {
 		// Sidecars also invalidate artifacts left over from a preceding AMR pass
 		// or run when no HDF5 archive was requested.
-		std::vector<std::filesystem::path> directories;
-		if (config_.Output.ParaviewDirectory) directories.push_back(*config_.Output.ParaviewDirectory);
-		if (config_.Output.Gmsh) directories.push_back(config_.Output.Gmsh->Directory);
-		if (!config_.Output.Probes.empty()) directories.push_back(config_.Output.ProbeDirectory);
-		for (const auto& directory : directories) {
+		for (const auto& [directory, artifacts] : artifacts_) {
 			std::filesystem::create_directories(directory);
 			std::ofstream status(directory / "run_status.json", std::ios::trunc);
 			status << "{\"complete\":" << (complete ? "true" : "false")
-				<< ",\"accepted_scenarios\":" << artifacts_.size() << ",\"artifacts\":[";
-			for (size_t i = 0; i < artifacts_.size(); ++i) {
+				<< ",\"accepted_scenarios\":" << accepted_scenarios_ << ",\"artifacts\":[";
+			for (size_t i = 0; i < artifacts.size(); ++i) {
 				if (i) status << ',';
-				status << '"' << artifacts_[i] << '"';
+				status << '"' << artifacts[i] << '"';
 			}
 			status << "]}\n";
 			status.close();
@@ -110,5 +115,6 @@ private:
 	std::unique_ptr<Hdf5ResultsWriter> hdf5_;
 	std::unique_ptr<ProbeSampler> probes_;
 	std::size_t next_scenario_ = 0;
-	std::vector<std::string> artifacts_;
+	std::size_t accepted_scenarios_ = 0;
+	std::map<std::filesystem::path, std::vector<std::string>> artifacts_;
 };
