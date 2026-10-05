@@ -20,6 +20,7 @@
 #include "../axisym/radial_quadrature.hpp"
 #include "../coefficients/axisymmetric_conductance_coefficient.hpp"
 #include "../io/region_loss.hpp"
+#include "../linalg/complex_direct_solver.hpp"
 
 /**
  * @brief What every magnetic vector-potential solver shares, in 2D or 3D.
@@ -51,6 +52,17 @@ protected:
 		return 1.0 / (Constants::MU_0 * m.RelPermeability);
 	}
 	static double Conductivity(const Material& m) { return m.Conductivity; }
+
+	// The time-harmonic direct solve is fast only with STRUMPACK; say so when
+	// this build falls back to Eigen. See ComplexDirectSolver.
+	void WarnOnSlowComplexDirectSolve() const {
+		if (ComplexDirectSolver::kUsesStrumpack || config.LinearSolver != LinearSolverType::Direct) {
+			return;
+		}
+		Reporter().Warning("This build has no STRUMPACK (CMake option USE_STRUMPACK), so the "
+			"direct solve factors the packed real system with Eigen's SparseLU, which is 10 "
+			"to 60 times slower and needs 5 to 10 times the memory.");
+	}
 
 	void BuildReluctivity() {
 		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);

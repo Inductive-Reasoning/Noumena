@@ -41,8 +41,12 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 - **MPI** (OpenMPI, MPICH, or MS-MPI on Windows): only for the MPI build
   (`-DUSE_MPI=ON`), which adds HYPRE's BoomerAMG and AMS solvers
 - **HYPRE** (v3.0.0): built automatically in the MPI build, or supplied via `HYPRE_DIR`
-- **METIS** (5.x): optional in the MPI build, supplied via `METIS_DIR`; only
-  needed for multi-rank partitioning, which is not implemented yet
+- **STRUMPACK** (v8.0.0, BSD): the sparse direct solver of the MQS systems,
+  built automatically when a Fortran compiler, BLAS/LAPACK and METIS are found;
+  see [STRUMPACK](#strumpack)
+- **METIS** (5.x): needed by STRUMPACK, and in the MPI build for multi-rank
+  partitioning, which is not implemented yet; found on the default paths or
+  via `METIS_DIR`
 - **OpenMP**: threads the linear algebra (usually included with the compiler); see [Threads](#threads)
 - **Doxygen**: For generating API documentation
 - **Catch2**: For running tests (automatically downloaded)
@@ -55,6 +59,8 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 # Install dependencies
 sudo apt-get update
 sudo apt-get install -y cmake g++ git
+# For STRUMPACK (optional, recommended for MQS):
+sudo apt-get install -y gfortran libopenblas-dev libmetis-dev
 
 # Clone the repository
 git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
@@ -123,6 +129,30 @@ cd build
 cmake .. -G "MinGW Makefiles"
 mingw32-make -j
 ```
+
+## STRUMPACK
+
+The MQS solvers' `direct` linear solver factors the complex system with
+[STRUMPACK](https://github.com/pghysels/STRUMPACK), 10 to 60 times faster and
+with 5 to 10 times less memory than the fallback, Eigen's LU of the packed
+real form (measured on 2D and 3D MQS systems of 31k to 66k unknowns; a 66k
+3D system factors in about a second instead of 75 s). It is on by default
+(`USE_STRUMPACK`) and needs:
+
+- a Fortran compiler: gfortran, LLVM Flang or Intel ifx;
+- BLAS and LAPACK (OpenBLAS, MKL, ...);
+- METIS 5, on the default search paths or via `-DMETIS_DIR=<prefix>`.
+
+If any is missing, CMake warns and builds without it. The first configure
+fetches and builds STRUMPACK into `<build>/tpl/strumpack` (a minute or two,
+once); to use an existing installation pass `-DSTRUMPACK_ROOT=<prefix>`, and
+to build without it, `-DUSE_STRUMPACK=OFF`.
+
+On Windows, MSVC has no Fortran compiler. Use clang-cl with LLVM Flang (or
+Intel ifx) and a single-configuration generator such as Ninja, with
+BLAS/LAPACK (for example OpenBLAS) and METIS from vcpkg. STRUMPACK has been
+built and checked here with Clang and Flang 19 on Linux; the Windows toolchain
+itself has not been tested.
 
 ## MPI/HYPRE Build
 

@@ -26,7 +26,7 @@
 #include "../linalg/complex_block_layout.hpp"
 #include "../io/gmsh_results_writer.hpp"
 #include "amr_support.hpp"
-#include "../linalg/sparse_direct_solver.hpp"
+#include "../linalg/complex_direct_solver.hpp"
 
 class MagnetoquasistaticSolver : public MagneticSolver {
     enum class ImprintMode { Field, CouplingPerturbation };
@@ -48,7 +48,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	// the mesh or the active frequency changes; factored_omega records which
 	// frequency the current factors belong to.
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
-	std::unique_ptr<SparseLUSolver> direct_solver;
+	std::unique_ptr<ComplexDirectSolver> direct_solver;
 	mfem::real_t factored_omega = 0.0;
 
     // Coefficients
@@ -230,6 +230,7 @@ public:
         omega = Constants::TWO_PI * frequency;
 
         InitializeMagneticGeometry();
+        WarnOnSlowComplexDirectSolve();
         for (const auto& [term_name, term] : config.Terminals) {
             MFEM_VERIFY(term.DriveQuantity == Quantity::Current,
                 "Magnetoquasistatic terminal '" + term_name +
@@ -515,7 +516,7 @@ public:
             packed_matrix->EliminateRowCol(ess_packed_tdofs[i], mfem::Operator::DIAG_ONE);
         }
 
-        direct_solver = std::make_unique<SparseLUSolver>(*packed_matrix);
+        direct_solver = std::make_unique<ComplexDirectSolver>(*packed_matrix);
         factored_omega = omega;
     }
 

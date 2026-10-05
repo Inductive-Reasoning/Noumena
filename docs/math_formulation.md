@@ -517,7 +517,8 @@ effect, and `β/(ωσ) ≤ 10⁻⁶` bounds the charge-conservation error, not t
 error of fields or impedances, which also depends on the geometry; the tests
 do not include a study of the results' sensitivity to `β`.
 
-`direct` factors the packed real form once per frequency (sparse LU); `iterative` is GMRES with the
+`direct` factors the complex system once per frequency (STRUMPACK's multifrontal LU, or without
+it Eigen's sparse LU of the packed real form); `iterative` is GMRES with the
 block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
 exact inverse of the port corner.
 

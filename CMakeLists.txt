@@ -20,6 +20,11 @@ option(USE_OPENMP "Thread the linear algebra with OpenMP" ON)
 # the serial build needs no MPI installation. HYPRE is built automatically
 # unless HYPRE_DIR points at an existing install; see cmake/ParallelTPLs.cmake.
 option(USE_MPI "Build with MPI and HYPRE" OFF)
+# STRUMPACK factors the time-harmonic (MQS) systems for linear_solver
+# "direct", far faster than the Eigen fallback. It needs a Fortran compiler,
+# BLAS/LAPACK and METIS, and is left out with a warning if any is missing;
+# see cmake/Strumpack.cmake.
+option(USE_STRUMPACK "Factor the MQS systems with STRUMPACK" ON)
 
 # Compiler flags for different build types
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -201,7 +206,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(highfive)
 
+if(USE_STRUMPACK)
+    include(${CMAKE_SOURCE_DIR}/cmake/Strumpack.cmake)
+endif()
+
+# Links STRUMPACK into a target, and tells its code so, when the build has it.
+function(electromag_link_strumpack target)
+    if(ELECTROMAG_HAVE_STRUMPACK)
+        target_link_libraries(${target} PRIVATE STRUMPACK::strumpack)
+        target_compile_definitions(${target} PRIVATE MFEM_ELECTROMAG_STRUMPACK)
+    endif()
+endfunction()
+
 add_executable(mfem-electromag src/main.cpp)
+electromag_link_strumpack(mfem-electromag)
 target_link_libraries(mfem-electromag PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
 if(USE_MPI)
     target_link_libraries(mfem-electromag PRIVATE MPI::MPI_CXX)
@@ -302,6 +320,7 @@ if(BUILD_TESTING)
     # The test runner supplies its own main (test_main.cpp) so an MPI build
     # can initialize MPI and HYPRE around the Catch2 session.
     target_link_libraries(mfem_tests PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2)
+    electromag_link_strumpack(mfem_tests)
     if(USE_MPI)
         target_link_libraries(mfem_tests PRIVATE MPI::MPI_CXX)
     endif()

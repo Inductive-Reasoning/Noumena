@@ -99,7 +99,8 @@ right-hand side, and its accuracy does not depend on a residual tolerance.
 
 For `3d` the default is `iterative`. The direct solver's fill-in grows far
 faster in 3D (a P2 Laplacian took 346 s and 1.5 GB at 118k unknowns), and a
-warning is printed before a 3D direct factorization above 50k unknowns.
+warning is printed before a 3D direct factorization above 50k unknowns
+(200k complex unknowns for MQS with STRUMPACK, below).
 
 `iterative` means, for electrostatics and magnetostatics, conjugate gradients
 preconditioned by algebraic multigrid (AMGCL: smoothed aggregation with
@@ -113,9 +114,12 @@ hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
 constant under refinement; 3D MQS uses GMRES preconditioned block-diagonally
 by AMS on `K + ωM_σ` (MPI/HYPRE build only). AMS smooths with hybrid
 Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
-loses strength; the iteration counts differ accordingly. The 3D MQS `direct` solver is a
-sparse LU of the complex system, refactored per frequency; no MUMPS or other
-parallel direct solver is included. In every iterative solver `solver_tolerance` is the
+loses strength; the iteration counts differ accordingly. The MQS `direct`
+solver (2D and 3D) factors the complex system once per frequency with
+STRUMPACK, a multifrontal LU with METIS ordering, when the build includes it
+(CMake option `USE_STRUMPACK`, on by default; see the README). Without it,
+it falls back to Eigen's sparse LU of the packed real form, which is 10 to 60
+times slower and larger, and says so at startup. In every iterative solver `solver_tolerance` is the
 relative residual the Krylov method monitors, which it measures through the
 preconditioner (CG in the preconditioner's norm, GMRES on the preconditioned
 residual), so the raw `||b - Ax|| / ||b||` can be larger. A solve that does not

@@ -231,11 +231,11 @@ protected:
     // Eigen's simplicial LDL^T is fine for 2D meshes but its fill-in grows much
     // faster in 3D: measured on a P2 Laplacian, 14 s / 0.24 GB at 36k unknowns
     // and 346 s / 1.5 GB at 118k. Warn before a 3D factorization that size so
-    // the run does not just appear to hang.
-    void WarnOnLargeDirectSolve(int true_dofs) const {
-        constexpr int kLarge3DDirectDofs = 50000;
+    // the run does not just appear to hang. The time-harmonic solvers pass
+    // their own limit (see ComplexDirectSolver).
+    void WarnOnLargeDirectSolve(int true_dofs, int large = 50000) const {
         if (config.LinearSolver != LinearSolverType::Direct) return;
-        if (geometry != GeometryType::Cartesian3D || true_dofs <= kLarge3DDirectDofs) return;
+        if (geometry != GeometryType::Cartesian3D || true_dofs <= large) return;
         Reporter().Warning("Direct factorization of a 3D system with " +
             std::to_string(true_dofs) + " unknowns may take many minutes and "
             "gigabytes of memory. Set simulation.linear_solver to 'iterative' "

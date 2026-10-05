@@ -21,7 +21,7 @@
 #include "../coefficients/mqs_vector_electric_field.hpp"
 #include "../core/constants.hpp"
 #include "../linalg/serial_ams.hpp"
-#include "../linalg/sparse_direct_solver.hpp"
+#include "../linalg/complex_direct_solver.hpp"
 
 /**
  * @brief 3D time-harmonic magnetoquasistatics (eddy currents) in the vector
@@ -78,8 +78,8 @@
  * above round-off, with a warning if the floor binds.
  *
  * @par Linear solvers
- *  - "direct": the packed real form of the complex system, factored once per
- *    frequency by sparse LU and reused for every terminal column.
+ *  - "direct": the complex system factored once per frequency (see
+ *    ComplexDirectSolver) and reused for every terminal column.
  *  - "iterative" (MPI/HYPRE build only): GMRES preconditioned block-
  *    diagonally, with hypre's AMS on K + omega M_sigma for both the real and
  *    the imaginary field block (the frequency-robust choice for
@@ -116,6 +116,7 @@ public:
 	void Setup() override {
 		MFEM_VERIFY(!config.Scenarios.empty(),
 			"Magnetoquasistatic simulations require at least one frequency scenario.");
+		WarnOnSlowComplexDirectSolve();
 		for (const Region& region : config.Regions) {
 			MFEM_VERIFY(region.CurrentConstraint == RegionCurrentConstraint::None,
 				"Region '" + region.EntityGroupName + "' has current_constraint "
@@ -185,7 +186,8 @@ public:
 #endif
 		prepared_omega = 0.0;
 		if (config.LinearSolver == LinearSolverType::Direct) {
-			WarnOnLargeDirectSolve(2 * port_operator->Layout().HalfSize());
+			WarnOnLargeDirectSolve(port_operator->Layout().HalfSize(),
+								   ComplexDirectSolver::kLarge3DUnknowns);
 		}
 	}
 
@@ -287,7 +289,7 @@ private:
 	// Solver state for the active frequency (prepared_omega).
 	double prepared_omega = 0.0;
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
-	std::unique_ptr<SparseLUSolver> direct_solver;
+	std::unique_ptr<ComplexDirectSolver> direct_solver;
 
 #ifdef MFEM_USE_MPI
 	// Block-diagonal preconditioner of the packed system: AMS on
@@ -476,7 +478,7 @@ private:
 			for (int i = 0; i < ess_packed_tdofs.Size(); ++i) {
 				packed_matrix->EliminateRowCol(ess_packed_tdofs[i], mfem::Operator::DIAG_ONE);
 			}
-			direct_solver = std::make_unique<SparseLUSolver>(*packed_matrix);
+			direct_solver = std::make_unique<ComplexDirectSolver>(*packed_matrix);
 		}
 		else {
 #ifdef MFEM_USE_MPI
