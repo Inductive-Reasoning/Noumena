@@ -8,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -45,6 +46,10 @@ protected:
 	// table. sigma is zero on stranded conductors; see BuildConductivity().
 	std::unique_ptr<mfem::PWConstCoefficient> nu_coeff;
 	std::unique_ptr<mfem::PWConstCoefficient> sigma_coeff;
+
+	// Radial extent and axis tolerance of an axisymmetric mesh; empty otherwise,
+	// since a planar or 3D domain has no axis.
+	std::optional<axisym::AxisGeometry> axis_geometry;
 
 	MagneticSolverBase(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
 
@@ -240,7 +245,7 @@ private:
 			const mfem::FiniteElement& fe = *fespace->GetFE(e);
 			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
 			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-				? axisym::RadialRule(fe.GetGeomType(), order, T)
+				? axisym::RadialRule(fe.GetGeomType(), order, T, axis_geometry->tolerance)
 				: mfem::IntRules.Get(fe.GetGeomType(), order);
 			for (int q = 0; q < ir.GetNPoints(); ++q) {
 				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
@@ -268,18 +273,6 @@ private:
  */
 class MagneticSolver : public MagneticSolverBase {
 protected:
-
-	// Radial extent and scale-relative axis tolerance of the (r,z) mesh. Owned
-	// here rather than by PhysicsSolver because every consumer is magnetic: the
-	// tolerance feeds the curl-curl 1/r axis limit and the B-field recovery,
-	// and TouchesAxis drives the A_phi = 0 regularity condition. Planar runs
-	// leave it at its default.
-	axisym::AxisGeometry axisymmetric_mesh;
-
-	// Boundary attributes lying entirely on r = 0. Discovered here rather than
-	// during geometric classification because only an A_phi formulation needs a
-	// dedicated axis attribute; an electrostatic run on the same mesh does not.
-	mfem::Array<int> axis_boundary;
 
 	MagneticSolver(mfem::Mesh& m, const ProblemConfig& c) : MagneticSolverBase(m, c) {}
 
@@ -311,11 +304,11 @@ protected:
 	// single-valued; a scalar potential carries no such constraint, so an
 	// electrostatic run has no use for either report.
 	void ValidateMagneticAxisymmetricGeometry() {
-		axisymmetric_mesh = ValidateAxisymmetricGeometry();
-		if (geometry != GeometryType::Axisymmetric) { return; }
+		axis_geometry = ValidateAxisymmetricGeometry();
+		if (!axis_geometry) { return; }
 
 		Reporter().Diagnostic(
-			axisymmetric_mesh.TouchesAxis()
+			axis_geometry->TouchesAxis()
 				? "Axisymmetric domain touches the symmetry axis: "
 				  "axis regularity A_phi = 0 will be enforced."
 				: "Axisymmetric domain is annular: no axis condition required.");
@@ -325,47 +318,40 @@ protected:
 
 	// The 1/r integrands (curl-curl, a massive conductor's conductance and
 	// drive-field loss) are integrated by a geometry-aware rule whose order is
-	// set by s = r_min/h per element (radial_quadrature.hpp). 1/r is rational,
-	// so the added order is capped, and an element that is both very thin
-	// radially and very close to the axis falls outside the accuracy target.
-	// Such an element is rare and always a meshing choice, but the resulting
-	// error is silent, so report it once. The electrostatic r-weighted
-	// diffusion integrand is polynomial and is integrated exactly, so no
-	// equivalent concern exists there.
+	// set per element by the ratio q_min/(q_max - q_min) of r with any axis
+	// contact factored out (radial_quadrature.hpp). 1/r is rational, so the
+	// added order is capped, and an element below kResolvedRadiusRatio falls
+	// outside the accuracy target: off the axis, one radially wide compared with
+	// its distance from it; on the axis, a sliver whose far side nearly touches
+	// it. Such an element is a meshing choice, but the resulting error is
+	// silent, so report it once. The electrostatic r-weighted diffusion
+	// integrand is polynomial and is integrated exactly, so no equivalent
+	// concern exists there.
 	void WarnOnUnderResolvedRadialQuadrature() {
 		int worst_element = -1;
 		double worst_ratio = std::numeric_limits<double>::max();
 
 		for (int e = 0; e < mesh.GetNE(); ++e) {
-			double min_radius = 0.0;
-			double radial_width = 0.0;
-			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
-
-			// Elements meeting the axis are excluded by design: there the
-			// divergent directions are removed by the A_phi = 0 constraint.
-			if (!(radial_width > 0.0)) { continue; }
-			if (axisymmetric_mesh.IsOnAxisGeometry(min_radius)) { continue; }
-
-			const double ratio = min_radius / radial_width;
+			const double ratio = axisym::RadialResolution(
+				*mesh.GetElementTransformation(e), axis_geometry->tolerance);
 			if (ratio < worst_ratio) {
 				worst_ratio = ratio;
 				worst_element = e;
 			}
 		}
 
-		if (worst_element < 0) { return; }
-		if (worst_ratio >= axisym::kResolvedRadiusRatio) {
+		if (worst_element < 0 || worst_ratio >= axisym::kResolvedRadiusRatio) {
 			return;
 		}
 
 		std::ostringstream msg;
 		msg << std::setprecision(3)
-			<< "Element " << worst_element << " has r_min/width = " << worst_ratio
+			<< "Element " << worst_element << " has radial ratio " << worst_ratio
 			<< ", below the ratio " << axisym::kResolvedRadiusRatio
 			<< " at which the 1/r quadrature reaches its accuracy target. The "
-			   "capped rule integrates such elements approximately; widen the "
-			   "innermost radial band or move it away from the axis if near-axis "
-			   "accuracy matters.";
+			   "capped rule integrates such elements approximately; refine "
+			   "radially near the axis, or avoid slivers touching it, if "
+			   "near-axis accuracy matters.";
 		Reporter().Warning(msg.str());
 	}
 
@@ -376,22 +362,25 @@ protected:
 	void BuildEssentialBoundaryMarker() override {
 		PhysicsSolver::BuildEssentialBoundaryMarker();
 
-		if (geometry != GeometryType::Axisymmetric) { return; }
+		if (!axis_geometry) { return; }
 
-		axis_boundary = axisym::FindAxisBoundaryMarker(mesh, axisymmetric_mesh);
+		axis_boundary = axisym::FindAxisBoundaryMarker(mesh, *axis_geometry);
 
 		MFEM_VERIFY(ess_bdr.Size() == axis_boundary.Size(),
 			"Axis boundary marker does not match the mesh boundary attributes.");
 		MergeMarker(ess_bdr, axis_boundary);
 	}
 
+	// Boundary attributes lying entirely on r = 0; only an A_phi formulation
+	// needs the axis tagged on its own.
+	mfem::Array<int> axis_boundary;
+
 	// Axis regularity, verification half: a nonzero Dirichlet value on the axis
 	// contradicts the A_phi = 0 constraint imposed above. The constraint would
 	// silently win, so the configuration is rejected instead. Requires the FE
 	// space, so call after BuildOperators().
 	void ValidateMagneticAxisBoundaryValues() const {
-		if (geometry != GeometryType::Axisymmetric ||
-			!axisymmetric_mesh.TouchesAxis()) return;
+		if (!axis_geometry || !axis_geometry->TouchesAxis()) return;
 
 		MFEM_VERIFY(fespace,
 			"Magnetic axis boundary validation requires a finite element space.");
@@ -428,7 +417,7 @@ protected:
 	mfem::BilinearFormIntegrator* MakeStiffnessIntegrator() const {
 		if (geometry == GeometryType::Axisymmetric) {
 			return new AxisymmetricCurlCurlIntegrator(
-				*nu_coeff, axisymmetric_mesh.tolerance);
+				*nu_coeff, axis_geometry->tolerance);
 		}
 		else {
 			return new mfem::DiffusionIntegrator(*nu_coeff);
@@ -495,7 +484,7 @@ protected:
 			const mfem::Geometry::Type shape = mesh.GetElementBaseGeometry(e);
 			const int order = 2 * config.Order + T->OrderW() + 2;
 			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-				? axisym::RadialRule(shape, order, *T)
+				? axisym::RadialRule(shape, order, *T, axis_geometry->tolerance)
 				: mfem::IntRules.Get(shape, order);
 			for (int i = 0; i < ir.GetNPoints(); ++i) {
 				const mfem::IntegrationPoint& ip = ir.IntPoint(i);
@@ -520,7 +509,7 @@ protected:
 			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
 			double min_radius = 0.0, radial_width = 0.0;
 			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
-			MFEM_VERIFY(min_radius > axisymmetric_mesh.tolerance,
+			MFEM_VERIFY(min_radius > axis_geometry->tolerance,
 				"Massive conductor '" + name + "' touches the symmetry axis. Its DC "
 				"conductance integral sigma/(2*pi*r) is divergent; model it as a "
 				"stranded conductor or move it off the axis.");

@@ -201,15 +201,17 @@ exists and is finite, and the axial flux density has the exact limit
 `B_z → 2 ∂A_φ/∂r`.
 
 **Individual basis functions are not.** A single Lagrange shape function need
-not vanish at `r = 0`, so no such limit exists for it, and `∫ N_j N_k / r`
-genuinely diverges logarithmically for the shape functions that do not vanish
-there. There is nothing to substitute.
+not vanish at `r = 0`, so no such limit exists for it. Along an axis edge,
+the integral of `N_j N_k / r` genuinely diverges logarithmically when both
+functions have nonzero trace there. At an isolated axis vertex, the shrinking
+area makes this integral finite, but generally nonpolynomial. Neither case
+justifies substituting the constrained-solution limit into individual shapes.
 
 Assembly therefore does **not** clamp or substitute anything. Standard interior
 quadrature keeps `r > 0` even on elements that touch the axis, so the `1/r` term
 is integrated as written. Regularity is delivered instead by essential-BC
 elimination of `A_φ = 0` on the axis, which removes exactly the divergent basis
-directions. The `B_z → 2 ∂A_φ/∂r` limit is applied only during field recovery
+directions along axis edges. The `B_z → 2 ∂A_φ/∂r` limit is applied only during field recovery
 (`ComputeElementFlux` and `MagneticFieldCoefficient`), which operates on the
 constrained solution where the limit is valid.
 
@@ -222,8 +224,25 @@ factor: the curl-curl term, a massive conductor's DC conductance
 `G = ∫σ/(2πr) dA` (exactly `σh ln(b/a)/(2π)` for a rectangular ring) and the loss
 of its drive field `V/(2πr)`. Its weights are positive and its points interior
 at every order: on triangles past MFEM's highest positive-weight table (order
-25) it is a collapsed Gauss rule. The added order is capped at 120, which binds
+25) it is a collapsed Gauss rule, and MFEM's order-16 triangle table, which has
+a point on an edge, is skipped. The added order is capped at 120, which binds
 only where `r_min/h < 10⁻²`; the solver warns about such elements.
+Refining the innermost band radially reduces `h` and improves this ratio;
+widening it would make the quadrature harder.
+
+An element meeting the axis has that contact factored out first: `r = λ q`,
+where `λ` is the reference distance from the axis edge or isolated axis
+vertex, and `q` is smooth and positive. Along an axis edge the retained shape
+functions vanish and cancel `λ`. At an isolated axis vertex — a triangle or
+quadrilateral corner — a rule collapsed onto that vertex has a Jacobian
+proportional to `λ`. Either way what remains is a polynomial times `1/q`, and
+the estimate above, applied to `q` instead of `r`, sets the added order. An
+element clear of the axis is just `λ = 1`, so one rule covers affine,
+bilinear and curved elements alike, and the warning judges every element by
+the same ratio. Axis contact uses the solver's mesh-scale tolerance, so
+roundoff-level axis coordinates are treated as contact; the radius itself is
+never clamped. `q` is sampled, not bounded, so on strongly curved maps the
+order is a heuristic rather than a guaranteed error bound.
 
 ### Derived Quantities
 

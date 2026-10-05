@@ -200,8 +200,8 @@ public:
 	double ComputePeakFieldMagnitude() const override {
 		if (!A) { return 0.0; }
 
-		MagneticFieldCoefficient B_axi(A.get(), axisymmetric_mesh.tolerance);
-		const bool axi = (geometry == GeometryType::Axisymmetric);
+		std::optional<MagneticFieldCoefficient> B_axi;
+		if (axis_geometry) { B_axi.emplace(A.get(), axis_geometry->tolerance); }
 
 		double peak = 0.0;
 		mfem::Vector B;
@@ -212,7 +212,7 @@ public:
 			for (int i = 0; i < nodes.GetNPoints(); ++i) {
 				const mfem::IntegrationPoint& ip = nodes.IntPoint(i);
 				T->SetIntPoint(&ip);
-				if (axi) { B_axi.Eval(B, *T, ip); }  // true |B| incl. A/r term
+				if (B_axi) { B_axi->Eval(B, *T, ip); }  // true |B| incl. A/r term
 				else { A->GetGradient(*T, B); }   // |B| == |grad(A)| (planar)
 				const double mag = B.Norml2();
 				if (mag > peak) { peak = mag; }
@@ -339,7 +339,7 @@ public:
 
 		if (geometry == GeometryType::Axisymmetric) {
 			fields.AddVector("B", std::make_unique<MagneticFieldCoefficient>(
-				A.get(), axisymmetric_mesh.tolerance));
+				A.get(), axis_geometry->tolerance));
 		}
 		else {
 			fields.AddVector("B", std::make_unique<PlanarMagneticFieldCoefficient>(A.get()));

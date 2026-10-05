@@ -244,6 +244,229 @@ TEST_CASE("Curl-curl quadrature degrades only past its documented ratio",
    REQUIRE(relative_error < 1.0e-3);
 }
 
+TEST_CASE("Axis-vertex curl-curl quadrature resolves the retained stiffness",
+          "[axisymmetric][quadrature][axis]")
+{
+   const int first_vertex = GENERATE(0, 1, 2);
+   const int degree = GENERATE(1, 2, 3);
+   const double axis_radius = GENERATE(0.0, 1.0e-18);
+   mfem::Mesh mesh(2, 3, 1, 0, 2);
+   mesh.AddVertex(axis_radius, 0.0);
+   mesh.AddVertex(1.0, 0.0);
+   mesh.AddVertex(1.0, 1.0);
+   mesh.AddTriangle(first_vertex, (first_vertex + 1) % 3,
+                    (first_vertex + 2) % 3, 1);
+   mesh.FinalizeTriMesh(1, 0, true);
+
+   mfem::H1_FECollection collection(degree, 2);
+   mfem::FiniteElementSpace space(&mesh, &collection);
+   const mfem::FiniteElement &element = *space.GetFE(0);
+   mfem::ElementTransformation &transformation = *mesh.GetElementTransformation(0);
+   mfem::ConstantCoefficient one(1.0);
+   const mfem::real_t tolerance = axisym::ValidateMesh(mesh).tolerance;
+   AxisymmetricCurlCurlIntegrator integrator(one, tolerance);
+   const auto &rule = AxisymmetricCurlCurlIntegrator::GetRule(
+      element, element, transformation, tolerance);
+   REQUIRE(rule.GetNPoints() <= 25);
+   double weight = 0.0;
+   for (int point = 0; point < rule.GetNPoints(); ++point)
+   {
+      const auto &ip = rule.IntPoint(point);
+      REQUIRE(ip.weight > 0.0);
+      REQUIRE(ip.x > 0.0);
+      REQUIRE(ip.y > 0.0);
+      REQUIRE(ip.x + ip.y < 1.0);
+      weight += ip.weight;
+   }
+   REQUIRE(weight == Catch::Approx(0.5).epsilon(1.0e-13));
+   mfem::DenseMatrix matrix;
+   integrator.AssembleElementMatrix(element, transformation, matrix);
+
+   mfem::Vector potential(element.GetDof());
+   mfem::Vector position(2);
+   for (int node = 0; node < element.GetDof(); ++node)
+   {
+      transformation.Transform(element.GetNodes().IntPoint(node), position);
+      potential(node) = position(0) - position(1);
+   }
+   mfem::Vector product(potential.Size());
+   matrix.Mult(potential, product);
+   CAPTURE(first_vertex, degree, axis_radius);
+   REQUIRE(potential * product ==
+           Catch::Approx(Constants::TWO_PI * 10.0 / 9.0).epsilon(1.0e-11));
+}
+
+TEST_CASE("Axis-vertex quadrature resolves the radius across the far side",
+          "[axisymmetric][quadrature][axis]")
+{
+   // The far-side radii span [inner_radius, 1]; the smallest case sits at the
+   // documented resolved ratio, below which the capped rule only warns.
+   const int first_vertex = GENERATE(0, 1, 2);
+   const double inner_radius = GENERATE(0.5, 0.1, 0.0101);
+   const bool reverse_radii = GENERATE(false, true);
+   const double first_radius = reverse_radii ? 1.0 : inner_radius;
+   const double second_radius = reverse_radii ? inner_radius : 1.0;
+   mfem::Mesh mesh(2, 3, 1, 0, 2);
+   mesh.AddVertex(0.0, 0.0);
+   mesh.AddVertex(first_radius, 0.0);
+   mesh.AddVertex(second_radius, 1.0);
+   mesh.AddTriangle(first_vertex, (first_vertex + 1) % 3,
+                    (first_vertex + 2) % 3, 1);
+   mesh.FinalizeTriMesh(1, 0, true);
+
+   auto &transformation = *mesh.GetElementTransformation(0);
+   const auto &rule = axisym::RadialRule(mfem::Geometry::TRIANGLE, 3, transformation, 0.0);
+   mfem::Vector position(2);
+   double integral = 0.0;
+   for (int point = 0; point < rule.GetNPoints(); ++point)
+   {
+      const auto &ip = rule.IntPoint(point);
+      transformation.SetIntPoint(&ip);
+      transformation.Transform(ip, position);
+      integral += ip.weight * transformation.Weight() / position(0);
+   }
+   const double exact = first_radius * std::log(1.0 / inner_radius) / (1.0 - inner_radius);
+   CAPTURE(first_vertex, inner_radius, reverse_radii);
+   REQUIRE(integral == Catch::Approx(exact).epsilon(1.0e-10));
+}
+
+TEST_CASE("Curved axis-vertex quadrature resolves the mapped radial factor",
+          "[axisymmetric][quadrature][axis]")
+{
+   mfem::Mesh mesh(2, 3, 1, 0, 2);
+   mesh.AddVertex(0.0, 0.0);
+   mesh.AddVertex(1.0, 0.0);
+   mesh.AddVertex(1.0, 1.0);
+   mesh.AddTriangle(0, 1, 2, 1);
+   mesh.FinalizeTriMesh(1, 0, true);
+   mesh.SetCurvature(2);
+   mfem::VectorFunctionCoefficient deformation(
+      2, [](const mfem::Vector &position, mfem::Vector &mapped) {
+         mapped(0) = position(0) * (1.0 + 0.5 * position(0));
+         mapped(1) = position(1);
+      });
+   mesh.Transform(deformation);
+   auto &transformation = *mesh.GetElementTransformation(0);
+   const auto &rule = axisym::RadialRule(mfem::Geometry::TRIANGLE, 3, transformation, 0.0);
+   REQUIRE(rule.GetNPoints() < 400);
+   mfem::Vector position(2);
+   double integral = 0.0;
+   for (int point = 0; point < rule.GetNPoints(); ++point)
+   {
+      const auto &ip = rule.IntPoint(point);
+      transformation.SetIntPoint(&ip);
+      transformation.Transform(ip, position);
+      integral += ip.weight * transformation.Weight() / position(0);
+   }
+   REQUIRE(integral == Catch::Approx(2.0 - 2.0 * std::log(1.5)).epsilon(1.0e-10));
+}
+
+TEST_CASE("Axis-vertex quadrature on quadrilaterals collapses onto the vertex",
+          "[axisymmetric][quadrature][axis]")
+{
+   // Parallelogram touching the axis only at one corner; every corner in turn.
+   const int first_vertex = GENERATE(0, 1, 2, 3);
+   mfem::Mesh mesh(2, 4, 1, 0, 2);
+   mesh.AddVertex(0.0, 0.0);
+   mesh.AddVertex(1.0, 0.0);
+   mesh.AddVertex(1.5, 1.0);
+   mesh.AddVertex(0.5, 1.0);
+   int corners[4];
+   for (int k = 0; k < 4; ++k) { corners[k] = (first_vertex + k) % 4; }
+   mesh.AddQuad(corners, 1);
+   mesh.FinalizeQuadMesh(1, 0, true);
+   auto &transformation = *mesh.GetElementTransformation(0);
+   CAPTURE(first_vertex);
+
+   // integral dA / r = int_0^1 ln((1 + y/2) / (y/2)) dy.
+   const auto &rule = axisym::RadialRule(mfem::Geometry::SQUARE, 3, transformation, 0.0);
+   mfem::Vector position(2);
+   double integral = 0.0;
+   for (int point = 0; point < rule.GetNPoints(); ++point)
+   {
+      const auto &ip = rule.IntPoint(point);
+      REQUIRE(ip.weight > 0.0);
+      transformation.SetIntPoint(&ip);
+      transformation.Transform(ip, position);
+      integral += ip.weight * transformation.Weight() / position(0);
+   }
+   REQUIRE(integral ==
+           Catch::Approx(3.0 * std::log(1.5) + std::log(2.0)).epsilon(1.0e-10));
+
+   // Retained stiffness for a Q3 basis: collapsing a square onto a corner
+   // doubles the polynomial degree along the collapsed direction.
+   mfem::H1_FECollection collection(3, 2);
+   mfem::FiniteElementSpace space(&mesh, &collection);
+   const mfem::FiniteElement &element = *space.GetFE(0);
+   mfem::ConstantCoefficient one(1.0);
+   AxisymmetricCurlCurlIntegrator automatic(one, 0.0), reference(one, 0.0);
+   reference.SetIntRule(&axisym::CollapsedRule(mfem::Geometry::SQUARE,
+                                               (4 - first_vertex) % 4, 120, 120));
+   mfem::DenseMatrix automatic_matrix, reference_matrix;
+   automatic.AssembleElementMatrix(element, transformation, automatic_matrix);
+   reference.AssembleElementMatrix(element, transformation, reference_matrix);
+   REQUIRE(RelativeDifference(automatic_matrix, reference_matrix) < 1.0e-11);
+}
+
+TEST_CASE("Axis-edge curl-curl quadrature integrates the constrained field",
+          "[axisymmetric][quadrature][axis]")
+{
+   const auto type = GENERATE(mfem::Element::QUADRILATERAL, mfem::Element::TRIANGLE);
+   const double axis_radius = GENERATE(0.0, 1.0e-18);
+   const bool warped = GENERATE(false, true);
+   auto mesh = MakeRadialBand(axis_radius, 1.0, type);
+   if (warped)
+   {
+      for (int vertex = 0; vertex < mesh->GetNV(); ++vertex)
+      {
+         double *position = mesh->GetVertex(vertex);
+         position[0] *= 1.0 + position[1];
+      }
+   }
+   const mfem::real_t tolerance = axisym::ValidateMesh(*mesh).tolerance;
+   mfem::H1_FECollection collection(2, 2);
+   mfem::FiniteElementSpace space(mesh.get(), &collection);
+   // A warped map leaves r / lambda = 1 + z: rational, but needing only a
+   // modest added order, not the cap.
+   const auto &rule = AxisymmetricCurlCurlIntegrator::GetRule(
+      *space.GetFE(0), *space.GetFE(0), *mesh->GetElementTransformation(0), tolerance);
+   REQUIRE(rule.GetNPoints() < 400);
+   mfem::ConstantCoefficient one(1.0);
+   mfem::BilinearForm form(&space);
+   form.AddDomainIntegrator(new AxisymmetricCurlCurlIntegrator(one, tolerance));
+   form.Assemble();
+   form.Finalize();
+   mfem::GridFunction potential(&space);
+   mfem::FunctionCoefficient field([](const mfem::Vector &position) {
+      return position(0) * (1.0 + position(1));
+   });
+   potential.ProjectCoefficient(field);
+   mfem::Vector product(potential.Size());
+   form.SpMat().Mult(potential, product);
+      const double exact = warped ? 279.0 / 20.0 : 59.0 / 12.0;
+      CAPTURE(type, axis_radius, warped);
+   REQUIRE(potential * product ==
+         Catch::Approx(Constants::TWO_PI * exact).epsilon(1.0e-11));
+}
+
+TEST_CASE("Positive triangle rules keep every point strictly interior",
+          "[axisymmetric][quadrature]")
+{
+   // An edge point sits at r = 0 when that edge is the axis.
+   for (int order = 0; order <= 40; ++order)
+   {
+      const auto &rule = axisym::PositiveRule(mfem::Geometry::TRIANGLE, order);
+      CAPTURE(order);
+      REQUIRE(rule.GetOrder() >= order);
+      for (int point = 0; point < rule.GetNPoints(); ++point)
+      {
+         const auto &ip = rule.IntPoint(point);
+         REQUIRE(ip.weight > 0.0);
+         REQUIRE(std::min({ip.x, ip.y, 1.0 - ip.x - ip.y}) > 0.0);
+      }
+   }
+}
+
 TEST_CASE("Axisymmetric boundary load includes radial measure",
 		  "[axisymmetric][quadrature][boundary]")
 {
@@ -284,7 +507,7 @@ TEST_CASE("Curl-curl quadrature on triangles stays positive past the tabulated o
    // alternating in sign (minimum -1.5e17 at order 125); the collapsed Gauss
    // rule has positive weights at interior points.
    const mfem::IntegrationRule &rule =
-      AxisymmetricCurlCurlIntegrator::GetRule(element, element, transformation);
+      AxisymmetricCurlCurlIntegrator::GetRule(element, element, transformation, 0.0);
    REQUIRE(rule.GetOrder() > axisym::kMaxTabulatedTriangleOrder);
    for (int i = 0; i < rule.GetNPoints(); ++i)
    {

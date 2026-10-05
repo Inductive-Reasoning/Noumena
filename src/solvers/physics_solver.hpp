@@ -6,6 +6,7 @@
 #include <complex>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -18,7 +19,7 @@
 #include "../io/result_writer.hpp"
 #include "../io/status_reporter.hpp"
 #include "amr_support.hpp"
-#include "../axisym/axisymmetric_mesh_validation.hpp"
+#include "../axisym/axis_geometry.hpp"
 #include "geometry_model.hpp"
 #include "../core/marked_boundary_condition.hpp"
 
@@ -389,10 +390,10 @@ protected:
     // The scan is RETURNED rather than cached here: nothing in a general
     // physics solve consumes the radial extent or the axis tolerance. Both are
     // read only by the A_phi formulations, which hold onto the result
-    // themselves. Returns a default-constructed value for planar runs.
-    axisym::AxisGeometry ValidateAxisymmetricGeometry()
+    // themselves. A planar run has no axis, hence no result.
+    std::optional<axisym::AxisGeometry> ValidateAxisymmetricGeometry()
     {
-        if (geometry != GeometryType::Axisymmetric) { return {}; }
+        if (geometry != GeometryType::Axisymmetric) { return std::nullopt; }
 
         const axisym::AxisGeometry info = axisym::ValidateMesh(mesh);
 

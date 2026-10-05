@@ -18,13 +18,11 @@
  *
  * Assembles, with the full axisymmetric measure (see axisymmetric_measure.hpp):
  *
- *   integral nu * [dA/dz * dv/dz
- *                  + (dA/dr + A/r) * (dv/dr + v/r)] * 2*pi*r dr dz
+ *   integral nu * [dA_phi/dz * dv/dz + (dA_phi/dr + A_phi/r) * (dv/dr + v/r)] * 2*pi*r dr dz
  *
  * This follows from
  *
- *   curl(A_phi e_phi) = -dA_phi/dz e_r
- *                       + (dA_phi/dr + A_phi/r) e_z.
+ *   curl(A_phi e_phi) = -dA_phi/dz e_r + (dA_phi/dr + A_phi/r) e_z.
  *
  * IMPORTANT:
  *   Enforce the essential BC A_phi = 0 on the symmetry axis r = 0 (regularity).
@@ -64,37 +62,38 @@ public:
    static const mfem::IntegrationRule &GetRule(
       const mfem::FiniteElement &trial_fe,
       const mfem::FiniteElement &test_fe,
-      const mfem::ElementTransformation &Trans)
+      const mfem::ElementTransformation &Trans,
+      mfem::real_t axis_tolerance)
    {
       // Polynomial part: integrated exactly by the usual order estimate.
       const int gradient_order = Trans.OrderGrad(&trial_fe)
          + Trans.OrderGrad(&test_fe) + Trans.Order();
       const int radial_reaction_order = trial_fe.GetOrder()
          + test_fe.GetOrder() + Trans.Order() + Trans.OrderW();
-      const int polynomial_order =
-         std::max(gradient_order, radial_reaction_order);
+      const int polynomial_order = std::max(gradient_order, radial_reaction_order);
 
       // The N_j N_k / r part: see radial_quadrature.hpp.
-      return axisym::RadialRule(trial_fe.GetGeomType(), polynomial_order, Trans);
+      return axisym::RadialRule(trial_fe.GetGeomType(), polynomial_order, Trans,
+                   axis_tolerance);
    }
 
    void AssembleElementMatrix(const mfem::FiniteElement &el,
                               mfem::ElementTransformation &Trans,
-                              mfem::DenseMatrix &elmat) override
+                              /*out*/ mfem::DenseMatrix &elmat) override
    {
-      const int nd  = el.GetDof();
+      const int ndof  = el.GetDof();
       const int dim = el.GetDim();
 
       MFEM_VERIFY(dim == 2 && Trans.GetSpaceDim() == 2,
          "AxisymmetricCurlCurlIntegrator expects a 2D (r,z) finite element.");
 
-      elmat.SetSize(nd);
+      elmat.SetSize(ndof);
       elmat = 0.0;
 
       // Thread-safe scratch (local)
-      mfem::Vector      shape(nd);
-      mfem::DenseMatrix dshape_ref(nd, dim);
-      mfem::DenseMatrix dshape_phys(nd, dim);
+      mfem::Vector      shape(ndof);
+      mfem::DenseMatrix dshape_ref(ndof, dim);
+      mfem::DenseMatrix dshape_phys(ndof, dim);
       mfem::Vector      pos(dim);
 
       const mfem::IntegrationRule *ir = GetIntegrationRule(el, Trans);
@@ -122,20 +121,20 @@ public:
          const mfem::real_t w = ip.weight * Trans.Weight()
             * Axisymmetric::Measure(r) * nu;
 
-         el.CalcShape(ip, shape);
-         el.CalcDShape(ip, dshape_ref);
+         el.CalcShape(ip, /*out*/ shape);
+         el.CalcDShape(ip, /*out*/ dshape_ref);
 
-         // Map row-oriented reference derivatives to physical derivatives
-         // using MFEM's dshape_phys = dshape_ref * InvJ convention.
-         Mult(dshape_ref, Trans.InverseJacobian(), dshape_phys);
+         // Map row-oriented reference derivatives to physical derivatives.
+         // dshape_phys = dshape_ref * InvJ
+         Mult(dshape_ref, Trans.InverseJacobian(), /*out*/ dshape_phys);
 
-         for (int j = 0; j < nd; j++)
+         for (int j = 0; j < ndof; j++)
          {
             const mfem::real_t Nj     = shape(j);
             const mfem::real_t dNj_dr = dshape_phys(j, 0);
             const mfem::real_t dNj_dz = dshape_phys(j, 1);
 
-            for (int k = j; k < nd; k++)
+            for (int k = j; k < ndof; k++)
             {
                const mfem::real_t Nk     = shape(k);
                const mfem::real_t dNk_dr = dshape_phys(k, 0);
@@ -155,7 +154,7 @@ public:
       }
 
       // Symmetrize
-      for (int j = 0; j < nd; j++)
+      for (int j = 0; j < ndof; j++)
       {
          for (int k = 0; k < j; k++)
          {
@@ -172,13 +171,13 @@ public:
        bool with_coef = false,
        const mfem::IntegrationRule* ir = nullptr) override
    {
-       const int nd = el.GetDof();
+       const int ndof = el.GetDof();
        const int dim = el.GetDim();
        const int space_dim = Trans.GetSpaceDim();
 
        MFEM_VERIFY(dim == 2 && space_dim == 2,
            "AxisymmetricCurlCurlIntegrator expects a 2D (r,z) mesh.");
-       MFEM_ASSERT(u.Size() == nd,
+       MFEM_ASSERT(u.Size() == ndof,
            "Element solution has an unexpected size.");
 
        if (!ir)
@@ -189,8 +188,8 @@ public:
        const int flux_nd = ir->GetNPoints();
        flux.SetSize(flux_nd * space_dim);
 
-       mfem::Vector shape(nd);
-       mfem::DenseMatrix dshape_ref(nd, dim);
+       mfem::Vector shape(ndof);
+       mfem::DenseMatrix dshape_ref(ndof, dim);
        // Inverse Jacobian: (dim x space_dim), NOT shaped like dshape.
        mfem::DenseMatrix inv_jacobian(dim, space_dim);
        mfem::Vector grad_ref(dim);
@@ -216,8 +215,7 @@ public:
            // curl(A_phi e_phi) in the (r,z) component ordering, with the axis
            // limit applied under the shared scale-relative tolerance.
            mfem::real_t B_r = -grad_phys(1);
-           mfem::real_t B_z = axisym::AxialFluxDensity(A_phi, grad_phys(0), r,
-                                                 axis_tolerance_);
+           mfem::real_t B_z = axisym::AxialFluxDensity(A_phi, grad_phys(0), r, axis_tolerance_);
 
            if (with_coef)
            {
@@ -305,7 +303,7 @@ protected:
       const mfem::FiniteElement &test_fe,
       const mfem::ElementTransformation &Trans) const override
    {
-      return &GetRule(trial_fe, test_fe, Trans);
+      return &GetRule(trial_fe, test_fe, Trans, axis_tolerance_);
    }
 
 private:

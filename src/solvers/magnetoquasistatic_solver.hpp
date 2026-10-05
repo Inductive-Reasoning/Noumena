@@ -218,7 +218,7 @@ public:
 			*sigma_coeff, A->real(), A->imag(), omega,
 			drive_re, drive_im,
 			geometry == GeometryType::Axisymmetric);
-		return IntegrateRegionLosses(density);
+        return IntegrateRegionLosses(density);
 	}
 
 public:
@@ -605,9 +605,11 @@ public:
     double ComputePeakFieldMagnitude() const override {
         if (!A) { return 0.0; }
 
-        MagneticFieldCoefficient B_axi_re(&A->real(), axisymmetric_mesh.tolerance);
-        MagneticFieldCoefficient B_axi_im(&A->imag(), axisymmetric_mesh.tolerance);
-        const bool axi = (geometry == GeometryType::Axisymmetric);
+        std::optional<MagneticFieldCoefficient> B_axi_re, B_axi_im;
+        if (axis_geometry) {
+            B_axi_re.emplace(&A->real(), axis_geometry->tolerance);
+            B_axi_im.emplace(&A->imag(), axis_geometry->tolerance);
+        }
 
         double peak = 0.0;
         mfem::Vector B_re;
@@ -619,9 +621,9 @@ public:
             for (int i = 0; i < nodes.GetNPoints(); ++i) {
                 const mfem::IntegrationPoint& ip = nodes.IntPoint(i);
                 T->SetIntPoint(&ip);
-                if (axi) {
-                    B_axi_re.Eval(B_re, *T, ip);
-                    B_axi_im.Eval(B_im, *T, ip);
+                if (axis_geometry) {
+                    B_axi_re->Eval(B_re, *T, ip);
+                    B_axi_im->Eval(B_im, *T, ip);
                 }  // true |B| incl. A/r term
                 else {
                     A->real().GetGradient(*T, B_re);
@@ -653,10 +655,10 @@ public:
 			// Axisymmetric B = Curl(A_phi) = (-dA/dz, 1/r*d(rA)/dr)
 			b_re = &fields.AddVector("B_Real",
 				std::make_unique<MagneticFieldCoefficient>(
-					&A->real(), axisymmetric_mesh.tolerance));
+					&A->real(), axis_geometry->tolerance));
 			b_im = &fields.AddVector("B_Imag",
 				std::make_unique<MagneticFieldCoefficient>(
-					&A->imag(), axisymmetric_mesh.tolerance));
+					&A->imag(), axis_geometry->tolerance));
 		}
 		else {
 			// Planar B = Curl(A_z) = (dA/dy, -dA/dx)
