@@ -56,6 +56,9 @@ inline mfem::Array<int> FindAxisBoundaryMarker(mfem::Mesh &mesh,
    for (int be = 0; be < mesh.GetNBE(); ++be)
    {
 	  const int attr = mesh.GetBdrAttribute(be);
+	  // MFEM accepts non-positive attributes with only a warning; no marker
+	  // can select such an element.
+	  if (attr <= 0) { continue; }
 	  total_count[attr - 1]++;
 
 	  mfem::ElementTransformation *trans = mesh.GetBdrElementTransformation(be);
