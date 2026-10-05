@@ -10,27 +10,13 @@
 #include "mfem.hpp"
 
 /**
- * @brief Geometric classification of a 2D (r,z) mesh relative to the symmetry
- *        axis r = 0.
+ * @brief Radial extent of a 2D (r,z) mesh, and the scale at which a radius
+ *        counts as on the symmetry axis r = 0.
  *
- * This header answers exactly one question: where does the mesh sit relative to
- * the axis, and at what scale should "on the axis" be judged? It is deliberately
- * free of physics and of any boundary-condition policy -- what a solver does
- * about an axis-touching domain depends on the formulation, so that decision
- * lives with the solver that makes it.
- *
- * Design rules encoded here:
- *   - The radial extent is inspected ONCE, at solver setup, rather than clamping
- *     r at every quadrature point. Clamping silently deforms the geometry and
- *     hides genuinely invalid input.
- *   - Tolerances are relative to the mesh bounding box, so axis classification
- *     is scale-free and does not itself impose a length unit.
- *
- * Note that this scale-freedom is GEOMETRIC ONLY. The physics is strictly SI
- * and requires mesh coordinates in metres (see core/constants.hpp): the radial
- * coordinate feeds the 2*pi*r measure as a physical length. A mesh in other
- * units will still classify correctly here and then produce silently wrong
- * absolute quantities downstream.
+ * Inspected once at solver setup rather than clamping r at each quadrature
+ * point, which would silently deform the geometry. The tolerance is relative to
+ * the mesh bounding box, so the axis test is scale-free; the physics is not, and
+ * needs coordinates in metres (see core/constants.hpp).
  */
 namespace axisym {
 
@@ -46,32 +32,19 @@ inline bool IsOnAxisGeometry(mfem::real_t r, mfem::real_t tolerance)
    return std::abs(r) <= tolerance;
 }
 
-/// How a mesh's radial extent relates to the symmetry axis.
-enum class AxisRelation
-{
-   NegativeRadius, ///< Part of the domain lies at r < 0: not a valid (r,z) mesh.
-   TouchesAxis,    ///< The closure of the domain reaches r = 0.
-   Annular         ///< The domain is bounded away from the axis (r_min > 0).
-};
-
-/**
- * @brief Result of the radial scan of an axisymmetric mesh.
- *
- * Cached by the solver at setup. This stays valid across conforming AMR:
- * refinement adds vertices inside existing elements, so the bounding box -- and
- * therefore @c tolerance and @c relation -- cannot change.
- */
+/// Radial extent of an (r,z) mesh. Stays valid across conforming AMR, which
+/// cannot change the bounding box.
 struct AxisGeometry
 {
    mfem::real_t min_r = 0.0;
    mfem::real_t max_r = 0.0;
    /// Mesh-scale-relative tolerance for axis proximity tests.
    mfem::real_t tolerance = 0.0;
-   AxisRelation relation = AxisRelation::Annular;
 
+   /// True when the closure of the domain reaches r = 0.
    [[nodiscard]] bool TouchesAxis() const
    {
-	  return relation == AxisRelation::TouchesAxis;
+	  return min_r <= tolerance;
    }
 
    /// True when @p r represents axis geometry at this mesh's scale.
@@ -82,26 +55,19 @@ struct AxisGeometry
 };
 
 /**
- * @brief Scan the physical radial coordinate over a 2D (r,z) mesh.
+ * @brief Scan the radial coordinate of a 2D (r,z) mesh, aborting on a
+ *        materially negative radius.
  *
- * Sampling is done through each element's transformation at the element's own
- * nodal points, so curved / high-order meshes are handled correctly. Checking
- * only mesh vertices is not sufficient: a curved edge can bulge across r = 0
- * while both of its endpoints stay non-negative.
- *
- * Pure classification: this never aborts on an unusual result, so callers can
- * inspect a negative-radius mesh and report it themselves.
+ * Samples each element's geometry nodes, not just its vertices: a curved edge
+ * can bulge across r = 0 while both endpoints stay non-negative.
  */
-inline AxisGeometry InspectAxisGeometry(mfem::Mesh &mesh)
+inline AxisGeometry ValidateMesh(mfem::Mesh &mesh)
 {
    MFEM_VERIFY(mesh.Dimension() == 2,
 			   "Axisymmetric geometry requires a 2D (r,z) mesh.");
+   MFEM_VERIFY(mesh.GetNE() > 0, "Axisymmetric mesh has no elements.");
 
    AxisGeometry info;
-   if (mesh.GetNE() == 0)
-   {
-	  return info;
-   }
 
    mfem::real_t min_r = std::numeric_limits<mfem::real_t>::max();
    mfem::real_t max_r = std::numeric_limits<mfem::real_t>::lowest();
@@ -148,18 +114,10 @@ inline AxisGeometry InspectAxisGeometry(mfem::Mesh &mesh)
 										std::numeric_limits<mfem::real_t>::min() });
    info.tolerance = kRelativeGeometryTolerance * scale;
 
-   if (min_r < -info.tolerance)
-   {
-	  info.relation = AxisRelation::NegativeRadius;
-   }
-   else if (min_r <= info.tolerance)
-   {
-	  info.relation = AxisRelation::TouchesAxis;
-   }
-   else
-   {
-	  info.relation = AxisRelation::Annular;
-   }
+   MFEM_VERIFY(min_r >= -info.tolerance,
+			   "Axisymmetric mesh extends to a negative radius (min r = " << min_r
+			   << "). The r coordinate is the mesh x coordinate and must be "
+			   "non-negative; check the mesh orientation or units.");
 
    return info;
 }

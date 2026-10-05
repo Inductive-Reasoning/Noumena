@@ -3,6 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
@@ -15,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <map>
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -107,6 +109,61 @@ TEST_CASE("Electrostatic solver applies natural-flux Neumann data",
 
     fs::remove(mesh_file);
 }
+
+// Robin condition eps dV/dn + alpha V = g on the right end of a strip grounded
+// on the left. The exact solution is linear, V = c x with
+// eps c + alpha c L = g, so P1 reproduces it exactly: this checks both the
+// Robin operator term and its data load, and the sign convention (outward
+// natural flux, the same as Neumann).
+TEST_CASE("Electrostatic solver applies Robin data and coefficient",
+          "[solvers][analytic][electrostatic][robin]") {
+    const std::string mesh_file = "test_electrostatic_robin.mesh";
+    constexpr double length = 0.2, height = 0.05, eps_r = 2.5, g = 4.0e-11;
+    constexpr int nx = 8, ny = 2;
+    CreatePlanarStripMesh(mesh_file, length, height, nx, ny);
+
+    const double eps = Constants::EPSILON_0 * eps_r;
+    const double alpha = 3.0 * eps / length;
+    json config = MakePlanarStripConfig(
+        "electrostatics", mesh_file, 1, {{"epsilon_r", eps_r}}, 0.0, 0.0);
+    config["boundary_conditions"][1]["type"] = "robin";
+    config["boundary_conditions"][1]["value"] = g;
+    config["boundary_conditions"][1]["robin_coefficient"] = alpha;
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config));
+    solver.Setup();
+    solver.Run();
+
+    const double slope = g / (eps + alpha * length);
+    const FieldExportSet fields = solver.CollectExportFields();
+    const mfem::IntegrationPoint point = TriangleCenter();
+    const int element = 2 * (nx - 1);  // next to the Robin end
+    const mfem::Vector physical =
+        PhysicalPoint(*FindField(fields, "V").primary, element, point);
+    REQUIRE(SamplePrimaryScalar(fields, "V", element, point) ==
+        Catch::Approx(slope * physical(0)).epsilon(1.0e-7));
+
+    SECTION("a negative coefficient is rejected") {
+        config["boundary_conditions"][1]["robin_coefficient"] = -alpha;
+        ElectrostaticSolver bad(mesh, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(bad.Setup(),
+            Catch::Matchers::ContainsSubstring("negative robin_coefficient"));
+    }
+
+    SECTION("magnetics still rejects Robin") {
+        json magnetic = MakePlanarStripConfig(
+            "magnetostatics", mesh_file, 1, {{"mu_r", 1.0}}, 0.0, 0.0);
+        magnetic["boundary_conditions"][1]["type"] = "robin";
+        magnetic["boundary_conditions"][1]["robin_coefficient"] = 1.0;
+        MagnetostaticSolver ms(mesh, DecodeConfig(magnetic));
+        REQUIRE_THROWS_WITH(ms.Setup(),
+            Catch::Matchers::ContainsSubstring("not implemented for magnetostatics"));
+    }
+
+    fs::remove(mesh_file);
+}
+
 
 TEST_CASE("Boundary closures and voltage terminals have distinct ownership",
           "[solvers][boundaries][overlap]") {
@@ -291,7 +348,7 @@ TEST_CASE("Magnetoquasistatic Neumann data loads only the real field",
     fs::remove(mesh_file);
 }
 
-TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
+TEST_CASE("Only electrostatics accepts Robin boundary conditions",
           "[solvers][boundaries][robin]") {
     const std::string mesh_file = "test_robin_rejection.mesh";
     CreatePlanarStripMesh(mesh_file, 0.1, 0.02, 2, 1);
@@ -307,12 +364,11 @@ TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
         return config;
     };
 
-    SECTION("electrostatics") {
+    SECTION("electrostatics assembles Robin") {
         mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
         ElectrostaticSolver solver(mesh, DecodeConfig(
             robin_config("electrostatics", {{"epsilon_r", 1.0}})));
-        REQUIRE_THROWS_WITH(solver.Setup(),
-            Catch::Matchers::ContainsSubstring("reserved but not implemented"));
+        REQUIRE_NOTHROW(solver.Setup());
     }
 
     SECTION("magnetostatics") {
@@ -320,7 +376,7 @@ TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
         MagnetostaticSolver solver(mesh, DecodeConfig(
             robin_config("magnetostatics", {{"mu_r", 1.0}})));
         REQUIRE_THROWS_WITH(solver.Setup(),
-            Catch::Matchers::ContainsSubstring("reserved but not implemented"));
+            Catch::Matchers::ContainsSubstring("not implemented for"));
     }
 
     SECTION("magnetoquasistatics") {
@@ -329,7 +385,7 @@ TEST_CASE("Solvers reject reserved Robin boundary conditions during setup",
             robin_config("magnetoquasistatics",
                          {{"mu_r", 1.0}, {"sigma", 0.0}})));
         REQUIRE_THROWS_WITH(solver.Setup(),
-            Catch::Matchers::ContainsSubstring("reserved but not implemented"));
+            Catch::Matchers::ContainsSubstring("not implemented for"));
     }
 
     fs::remove(mesh_file);
@@ -818,6 +874,8 @@ mfem::Vector SampleDerivedVector(const FieldExportSet& fields, const std::string
     REQUIRE(primary != exported.end());
     mfem::ElementTransformation* transformation =
         primary->primary->FESpace()->GetElementTransformation(element);
+    // Gradient-based coefficients read the point from the transformation.
+    transformation->SetIntPoint(&point);
     mfem::Vector value(field.vector->GetVDim());
     field.vector->Eval(value, *transformation, point);
     return value;
@@ -1474,7 +1532,7 @@ mfem::Vector AxisymmetricCurlCurlErrors(
     mfem::FiniteElementSpace flux_fes(
         &mesh, &flux_fec, mesh.SpaceDimension());
     AxisymmetricCurlCurlIntegrator integrator(
-        coefficient, axisym::InspectAxisGeometry(mesh).tolerance);
+        coefficient, axisym::ValidateMesh(mesh).tolerance);
     mfem::ZienkiewiczZhuEstimator estimator(
         integrator, solution, flux_fes);
     estimator.SetWithCoeff(with_coefficient);
@@ -1786,6 +1844,61 @@ TEST_CASE("Electrostatic capacitance matrix is analytic and reciprocal",
     fs::remove(mesh_file);
 }
 
+// Terminals at both ends of a strip whose long sides are Robin, so each
+// terminal's corner basis functions reach onto the Robin boundary. With the
+// other terminal grounded and no load, a terminal's capacitance is the energy
+// of its unit-drive solution under the whole operator, x^T (K0 + R) x: its
+// charge is the full residual of its DOFs, Robin terms included. A charge
+// taken from the domain stiffness K0 alone fails this.
+TEST_CASE("Robin boundaries next to a terminal enter its charge",
+          "[solvers][electrostatic][robin][coupling]") {
+    const std::string mesh_file = "test_robin_terminal.mesh";
+    const std::string matrix_file = "test_robin_terminal.h5";
+    constexpr double length = 0.2, height = 0.05;
+    const double alpha = 4.0 * Constants::EPSILON_0 / height;
+    CreatePlanarStripMesh(mesh_file, length, height, 4, 2);
+
+    json config = MakePlanarStripConfig(
+        "electrostatics", mesh_file, 2, {{"epsilon_r", 1.0}}, 0.0, 0.0);
+    config["simulation"]["analysis_type"] = "coupling_matrix";
+    config["entity_groups"].push_back({{"name", "Sides"}, {"dim", 1}, {"attribute_ids", {3}}});
+    config["boundary_conditions"] = json::array({
+        {{"name", "Sides"}, {"type", "robin"}, {"entity_group", "Sides"},
+         {"value", 0.0}, {"robin_coefficient", alpha}}});
+    config["terminals"] = json::array({
+        {{"name", "Left"}, {"quantity", "voltage"}, {"entity_group", "Left"}},
+        {{"name", "Right"}, {"quantity", "voltage"}, {"entity_group", "Right"}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    // The last coupling column drives Right at 1 V with Left grounded.
+    const mfem::GridFunction& x = *FindField(solver.CollectExportFields(), "V").primary;
+    solver.SaveAnalysis();
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+
+    mfem::ConstantCoefficient eps(Constants::EPSILON_0), robin(alpha);
+    mfem::Array<int> sides(mesh.bdr_attributes.Max());
+    sides = 0;
+    sides[3 - 1] = 1;
+    mfem::H1_FECollection collection(2, 2);
+    mfem::FiniteElementSpace space(&mesh, &collection);
+    mfem::BilinearForm K(&space);
+    K.AddDomainIntegrator(new mfem::DiffusionIntegrator(eps));
+    K.AddBoundaryIntegrator(new mfem::MassIntegrator(robin), sides);
+    K.Assemble();
+    K.Finalize();
+    mfem::Vector Kx(x.Size());
+    K.SpMat().Mult(x, Kx);
+
+    REQUIRE(matrix.values[1][1] == Catch::Approx(x * Kx).epsilon(1e-10));
+    REQUIRE(matrix.values[0][1] == Catch::Approx(matrix.values[1][0]).epsilon(1e-10));
+
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
 // A planar model is translationally invariant out of plane and assembles over
 // the cross-section alone, i.e. a unit depth, so every extracted coupling
 // quantity is per unit length. Axisymmetric assembly carries the full 2*pi*r
@@ -1824,6 +1937,413 @@ TEST_CASE("Coupling matrix units distinguish planar from axisymmetric",
         REQUIRE(probe.CouplingUnitLabel("H") == "[H]");
         REQUIRE(probe.CouplingUnitLabel("Ohm") == "[Ohm]");
     }
+
+    SECTION("3D results are absolute") {
+        probe.geometry = GeometryType::Cartesian3D;
+        REQUIRE(probe.CouplingUnitLabel("F") == "[F]");
+        REQUIRE(probe.CouplingUnitLabel("H") == "[H]");
+        REQUIRE(probe.CouplingUnitLabel("Ohm") == "[Ohm]");
+    }
+}
+
+namespace {
+// A 3D tetrahedral box [0,lx] x [0,ly] x [0,d] saved as an MFEM mesh. MFEM's
+// Cartesian generator labels the boundary faces 1 = bottom (z = 0) and
+// 6 = top (z = d); the four sides (2-5) are left natural.
+void CreateBoxTetMesh(const std::string& filename,
+                      double lx, double ly, double d, int nx, int ny, int nz) {
+    mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(
+        nx, ny, nz, mfem::Element::TETRAHEDRON, lx, ly, d);
+    std::ofstream out(filename);
+    out.precision(17);
+    mesh.Print(out);
+}
+
+json MakeBoxCapacitorConfig(const std::string& mesh_file, double epsilon_r) {
+    return json{
+        {"simulation", {
+            {"physics_type", "electrostatics"},
+            {"mesh", mesh_file},
+            {"order", 1},
+            {"geometry_type", "3d"},
+            {"analysis_type", "coupling_matrix"},
+            {"solver_tolerance", 1e-12},
+            {"solver_max_iter", 4000},
+            {"solver_print_level", 0}
+        }},
+        {"entity_groups", json::array({
+            {{"name", "Domain"}, {"dim", 3}, {"attribute_ids", {1}}},
+            {{"name", "Bottom"}, {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Top"},    {"dim", 2}, {"attribute_ids", {6}}}
+        })},
+        {"regions", json::array({
+            {{"name", "Domain"}, {"entity_group", "Domain"}, {"material", "Dielectric"}}
+        })},
+        {"materials", json::array({
+            {{"name", "Dielectric"}, {"properties", {{"epsilon_r", epsilon_r}}}}
+        })},
+        {"terminals", json::array({
+            {{"name", "Bottom"}, {"quantity", "voltage"}, {"entity_group", "Bottom"}},
+            {{"name", "Top"},    {"quantity", "voltage"}, {"entity_group", "Top"}}
+        })},
+        {"boundary_conditions", json::array()},
+        {"scenarios", json::array()}
+    };
+}
+} // namespace
+
+// First 3D end-to-end check. Between two parallel plates with natural (zero
+// normal flux) side walls the exact potential is linear in z, which P1
+// tetrahedra represent exactly, so the extracted capacitance must equal
+// eps*A/d to solver precision -- and be labeled in farads, not F/m.
+TEST_CASE("3D parallel-plate capacitance is exact and absolute",
+          "[solvers][analytic][electrostatic][coupling][3d]") {
+    const std::string mesh_file = "test_3d_box_capacitor.mesh";
+    const std::string matrix_file = "coupling_electrostatics_3d.h5";
+    constexpr double lx = 0.2, ly = 0.1, d = 0.05, eps_r = 3.0;
+    CreateBoxTetMesh(mesh_file, lx, ly, d, 2, 2, 2);
+
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+    REQUIRE(mesh->Dimension() == 3);
+    ElectrostaticSolver solver(*mesh, DecodeConfig(
+        MakeBoxCapacitorConfig(mesh_file, eps_r), matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+    REQUIRE(matrix.labels == std::vector<std::string>{"Bottom", "Top"});
+    const double analytic = Constants::EPSILON_0 * eps_r * lx * ly / d;
+    REQUIRE(matrix.values[0][0] == Catch::Approx(analytic).epsilon(1e-8));
+    REQUIRE(matrix.values[1][1] == Catch::Approx(analytic).epsilon(1e-8));
+    REQUIRE(matrix.values[0][1] == Catch::Approx(-analytic).epsilon(1e-8));
+    REQUIRE(matrix.values[1][0] == Catch::Approx(-analytic).epsilon(1e-8));
+
+    HighFive::File file(matrix_file, HighFive::File::ReadOnly);
+    std::string geometry, units;
+    file.getGroup("/coupling").getAttribute("geometry_type").read(geometry);
+    file.getDataSet("/coupling/Capacitance/values").getAttribute("units").read(units);
+    REQUIRE(geometry == "3d");
+    REQUIRE(units == "F");
+
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+namespace {
+// Spherical shell a <= |x| <= b as a curved (order-2 geometry) hexahedral
+// "cubed sphere": six patches of n x n equiangular cells, nr radial layers.
+// Boundary attribute 1 is the inner sphere, 2 the outer one.
+//
+// The mesh is first built with straight edges, then given quadratic geometry
+// whose nodes are pushed radially onto their intended sphere. A node's
+// intended radius is recovered by snapping |x| to the nearest radial lattice
+// value (layer radii and layer midpoints): the chord sag is far smaller than
+// half a layer, so the snap is unambiguous.
+void CreateSphericalShellMesh(const std::string& filename, double a, double b,
+                              int n, int nr) {
+    std::map<std::array<long long, 3>, int> index;
+    std::vector<std::array<double, 3>> verts;
+    auto vertex = [&](const std::array<double, 3>& x) {
+        std::array<long long, 3> key;
+        for (int c = 0; c < 3; ++c) { key[c] = std::llround(x[c] * 1e9); }
+        const auto it = index.find(key);
+        if (it != index.end()) { return it->second; }
+        verts.push_back(x);
+        return index[key] = static_cast<int>(verts.size()) - 1;
+    };
+    auto point = [&](int axis, int sign, int i, int j, int k) {
+        const double pi4 = std::atan(1.0);
+        const double u = std::tan(pi4 * (-1.0 + 2.0 * i / n));
+        const double v = std::tan(pi4 * (-1.0 + 2.0 * j / n));
+        std::array<double, 3> d{};
+        d[axis] = sign;
+        d[(axis + 1) % 3] = u;
+        d[(axis + 2) % 3] = v;
+        const double len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        const double r = a + (b - a) * k / nr;
+        for (auto& c : d) { c *= r / len; }
+        return vertex(d);
+    };
+
+    struct Hex { int v[8]; };
+    struct Quad { int v[4]; int attr; };
+    std::vector<Hex> hexes;
+    std::vector<Quad> quads;
+    for (int axis = 0; axis < 3; ++axis) {
+        for (int sign : { -1, 1 }) {
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    for (int k = 0; k < nr; ++k) {
+                        hexes.push_back({ {
+                            point(axis, sign, i, j, k), point(axis, sign, i + 1, j, k),
+                            point(axis, sign, i + 1, j + 1, k), point(axis, sign, i, j + 1, k),
+                            point(axis, sign, i, j, k + 1), point(axis, sign, i + 1, j, k + 1),
+                            point(axis, sign, i + 1, j + 1, k + 1), point(axis, sign, i, j + 1, k + 1) } });
+                    }
+                    quads.push_back({ { point(axis, sign, i, j, 0), point(axis, sign, i + 1, j, 0),
+                                        point(axis, sign, i + 1, j + 1, 0), point(axis, sign, i, j + 1, 0) }, 1 });
+                    quads.push_back({ { point(axis, sign, i, j, nr), point(axis, sign, i + 1, j, nr),
+                                        point(axis, sign, i + 1, j + 1, nr), point(axis, sign, i, j + 1, nr) }, 2 });
+                }
+            }
+        }
+    }
+
+    // Half the patches come out left-handed; MFEM cannot reorient hexahedra,
+    // so mirror those here (swap the 1<->3 and 5<->7 corners).
+    for (auto& h : hexes) {
+        const auto& o = verts[h.v[0]];
+        std::array<double, 3> e[3];
+        const int corner[3] = { h.v[1], h.v[3], h.v[4] };
+        for (int d = 0; d < 3; ++d) {
+            for (int c = 0; c < 3; ++c) { e[d][c] = verts[corner[d]][c] - o[c]; }
+        }
+        const double det =
+            e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) -
+            e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0]) +
+            e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
+        if (det < 0.0) {
+            std::swap(h.v[1], h.v[3]);
+            std::swap(h.v[5], h.v[7]);
+        }
+    }
+
+    mfem::Mesh mesh(3, static_cast<int>(verts.size()), static_cast<int>(hexes.size()),
+                    static_cast<int>(quads.size()), 3);
+    for (const auto& x : verts) { mesh.AddVertex(x[0], x[1], x[2]); }
+    for (const auto& h : hexes) { mesh.AddHex(h.v, 1); }
+    for (const auto& q : quads) { mesh.AddBdrQuad(q.v, q.attr); }
+    mesh.FinalizeHexMesh(/*generate_edges=*/1, /*refine=*/0, /*fix_orientation=*/true);
+
+    mesh.SetCurvature(2);
+    const double half_layer = 0.5 * (b - a) / nr;
+    mesh.Transform([&](const mfem::Vector& x, mfem::Vector& y) {
+        const double r = x.Norml2();
+        const double snapped = a + half_layer * std::round((r - a) / half_layer);
+        y = x;
+        y *= snapped / r;
+    });
+
+    std::ofstream out(filename);
+    out.precision(17);
+    mesh.Print(out);
+}
+
+json MakeSphereConfig(const std::string& mesh_file, const json& outer_bc,
+                      bool outer_terminal) {
+    json terminals = json::array({
+        {{"name", "Inner"}, {"quantity", "voltage"}, {"entity_group", "Inner"}}});
+    if (outer_terminal) {
+        terminals.push_back(
+            {{"name", "Outer"}, {"quantity", "voltage"}, {"entity_group", "Outer"}});
+    }
+    return json{
+        {"simulation", {
+            {"physics_type", "electrostatics"},
+            {"mesh", mesh_file},
+            {"order", 2},
+            {"geometry_type", "3d"},
+            {"analysis_type", "coupling_matrix"},
+            {"solver_tolerance", 1e-12},
+            {"solver_max_iter", 4000},
+            {"solver_print_level", 0}
+        }},
+        {"entity_groups", json::array({
+            {{"name", "Domain"}, {"dim", 3}, {"attribute_ids", {1}}},
+            {{"name", "Inner"},  {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Outer"},  {"dim", 2}, {"attribute_ids", {2}}}
+        })},
+        {"regions", json::array({
+            {{"name", "Domain"}, {"entity_group", "Domain"}, {"material", "Vacuum"}}
+        })},
+        {"materials", json::array({
+            {{"name", "Vacuum"}, {"properties", {{"epsilon_r", 1.0}}}}
+        })},
+        {"terminals", terminals},
+        {"boundary_conditions", outer_bc.is_null() ? json::array() : json::array({outer_bc})},
+        {"scenarios", json::array()}
+    };
+}
+
+double SolveSphereCapacitance(const std::string& mesh_file, const json& config,
+                              const std::string& matrix_file) {
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+    ElectrostaticSolver solver(*mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+    const double c = ReadHdf5Matrix(matrix_file, "Capacitance").values[0][0];
+    fs::remove(matrix_file);
+    return c;
+}
+} // namespace
+
+// Concentric spheres held at 1 V and 0 V: C = 4*pi*eps0 * a*b / (b - a). Exercises
+// curved 3D geometry, the 3D measure and absolute units on a non-trivial field.
+TEST_CASE("3D concentric-sphere capacitance matches the analytic value",
+          "[solvers][analytic][electrostatic][coupling][3d]") {
+    const std::string mesh_file = "test_3d_sphere_shell.mesh";
+    const std::string matrix_file = "coupling_sphere_shell.h5";
+    constexpr double a = 0.1, b = 0.3;
+    CreateSphericalShellMesh(mesh_file, a, b, 6, 6);
+
+    json config = MakeSphereConfig(mesh_file, nullptr, /*outer_terminal=*/true);
+    config["simulation"]["linear_solver"] = "direct";
+    const double analytic = 2.0 * Constants::TWO_PI * Constants::EPSILON_0 * a * b / (b - a);
+    REQUIRE(SolveSphereCapacitance(mesh_file, config, matrix_file) ==
+            Catch::Approx(analytic).epsilon(2e-3));
+
+    SECTION("the default ('3d' -> multigrid PCG) agrees with the direct solve") {
+        json iterative = config;
+        iterative["simulation"].erase("linear_solver");
+        REQUIRE(SolveSphereCapacitance(mesh_file, iterative, matrix_file) ==
+                Catch::Approx(SolveSphereCapacitance(mesh_file, config, matrix_file))
+                    .epsilon(1e-8));
+    }
+    fs::remove(mesh_file);
+}
+
+// An isolated sphere of radius a in free space has C = 4*pi*eps0*a. Its exact
+// potential V = a/r satisfies eps dV/dn + (eps/R) V = 0 on any sphere r = R,
+// so a Robin far-field boundary with coefficient eps0/R truncates the domain
+// with no modeling error, while grounding the same boundary (Dirichlet) gives
+// the concentric-sphere value 4*pi*eps0 * a*R/(R - a) -- 50% high for R = 3a.
+TEST_CASE("3D Robin far-field boundary recovers the isolated-sphere capacitance",
+          "[solvers][analytic][electrostatic][robin][3d]") {
+    const std::string mesh_file = "test_3d_sphere_farfield.mesh";
+    const std::string matrix_file = "coupling_sphere_farfield.h5";
+    constexpr double a = 0.1, R = 0.3;
+    CreateSphericalShellMesh(mesh_file, a, R, 6, 6);
+    const double isolated = 2.0 * Constants::TWO_PI * Constants::EPSILON_0 * a;
+
+    const json robin = {{"name", "FarField"}, {"type", "robin"},
+                        {"entity_group", "Outer"}, {"value", 0.0},
+                        {"robin_coefficient", Constants::EPSILON_0 / R}};
+    const double c_robin = SolveSphereCapacitance(
+        mesh_file, MakeSphereConfig(mesh_file, robin, false), matrix_file);
+    REQUIRE(c_robin == Catch::Approx(isolated).epsilon(2e-3));
+
+    const json grounded = {{"name", "Ground"}, {"type", "dirichlet"},
+                           {"entity_group", "Outer"}, {"value", 0.0}};
+    const double c_dirichlet = SolveSphereCapacitance(
+        mesh_file, MakeSphereConfig(mesh_file, grounded, false), matrix_file);
+    REQUIRE(c_dirichlet == Catch::Approx(isolated * R / (R - a)).epsilon(2e-3));
+
+    fs::remove(mesh_file);
+}
+
+// Every output format end to end on a 3D run: the ParaView collection, the
+// Gmsh results file (second-order tetrahedra, read back by MFEM's own Gmsh
+// reader), and the HDF5 mesh description.
+TEST_CASE("3D field run writes ParaView, Gmsh and HDF5 output",
+          "[solvers][output][3d]") {
+    const fs::path root = fs::temp_directory_path() / "mfem_output_3d";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const std::string mesh_file = (root / "box.mesh").string();
+    CreateBoxTetMesh(mesh_file, 0.2, 0.1, 0.05, 2, 2, 2);
+
+    json config = MakeBoxCapacitorConfig(mesh_file, 2.0);
+    config["simulation"]["analysis_type"] = "field";
+    config["simulation"]["order"] = 2;
+    config["scenarios"] = json::array({
+        {{"name", "Drive"}, {"excitations", json::array({{{"terminal", "Top"}, {"value", 1.0}}})}}});
+    config["output"] = {{"directory", (root / "out").string()},
+        {"paraview", {{"directory", "vtk"}}}, {"gmsh", {{"directory", "msh"}}},
+        {"hdf5", {{"file", "run.h5"}}}};
+
+    int elements = 0;
+    {
+        const auto mesh = mesh_io::LoadMesh(mesh_file);
+        elements = mesh->GetNE();
+        auto solver = SolverFactory::Instance().Create(*mesh, DecodeConfig(config));
+        solver->Setup();
+        solver->Run();
+        solver->SaveAnalysis();
+    }
+
+    const std::string artifact = "scenario_000000_Drive";
+    REQUIRE(fs::exists(root / "out/vtk" / artifact / "Cycle000000/proc000000.vtu"));
+
+    const fs::path msh = root / "out/msh" / (artifact + ".msh");
+    REQUIRE(fs::exists(msh));
+    std::ifstream in(msh);
+    mfem::Mesh reloaded(in, 1, 0);
+    REQUIRE(reloaded.Dimension() == 3);
+    REQUIRE(reloaded.GetNE() == elements);
+
+    HighFive::File archive((root / "out/run.h5").string(), HighFive::File::ReadOnly);
+    int dimension = 0;
+    std::string geometry;
+    archive.getGroup("mesh").getAttribute("dimension").read(dimension);
+    archive.getAttribute("geometry_type").read(geometry);
+    REQUIRE(dimension == 3);
+    REQUIRE(geometry == "3d");
+
+    fs::remove_all(root);
+}
+
+TEST_CASE("Solvers reject a mesh whose dimension contradicts geometry_type",
+          "[solvers][geometry][3d]") {
+    const std::string box_file = "test_3d_dimension_box.mesh";
+    CreateBoxTetMesh(box_file, 1.0, 1.0, 1.0, 1, 1, 1);
+    const auto box = mesh_io::LoadMesh(box_file);
+
+    SECTION("a planar run on a 3D mesh") {
+        json config = MakeBoxCapacitorConfig(box_file, 1.0);
+        config["simulation"]["geometry_type"] = "planar";
+        ElectrostaticSolver solver(*box, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("requires a 2D mesh"));
+    }
+
+    SECTION("a 3D run on a 2D mesh") {
+        const std::string strip_file = "test_3d_dimension_strip.mesh";
+        CreatePlanarStripMesh(strip_file, 0.1, 0.02, 2, 1);
+        json config = MakePlanarStripConfig(
+            "electrostatics", strip_file, 1, {{"epsilon_r", 1.0}}, 0.0, 1.0);
+        config["simulation"]["geometry_type"] = "3d";
+        mfem::Mesh strip(strip_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(strip, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("requires a 3D mesh"));
+        fs::remove(strip_file);
+    }
+
+    SECTION("3D magnetics is not yet implemented") {
+        json config = MakeBoxCapacitorConfig(box_file, 1.0);
+        config["simulation"]["physics_type"] = "magnetostatics";
+        config["terminals"] = json::array();
+        MagnetostaticSolver solver(*box, DecodeConfig(config));
+        REQUIRE_THROWS_WITH(solver.Setup(),
+            Catch::Matchers::ContainsSubstring("H(curl)"));
+    }
+
+    fs::remove(box_file);
+}
+
+TEST_CASE("Mesh loader accepts a tetrahedral mesh and marks it for refinement",
+          "[mesh_loader][3d]") {
+    const std::string mesh_file = "test_3d_loader_box.mesh";
+    CreateBoxTetMesh(mesh_file, 1.0, 1.0, 1.0, 2, 2, 2);
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+
+    REQUIRE(mesh->Dimension() == 3);
+    REQUIRE(mesh->CheckElementOrientation(false) == 0);
+    REQUIRE(mesh->CheckBdrElementOrientation(false) == 0);
+
+    // Conforming bisection of tets needs the refinement marking applied by
+    // Finalize(refine=true); refining must leave the mesh conforming.
+    mfem::Array<int> marked;
+    marked.Append(0);
+    const int before = mesh->GetNE();
+    REQUIRE_NOTHROW(amr::RefineConforming(*mesh, marked));
+    REQUIRE(mesh->GetNE() > before);
+    REQUIRE_FALSE(mesh->Nonconforming());
+    REQUIRE(mesh->CheckElementOrientation(false) == 0);
+
+    fs::remove(mesh_file);
 }
 
 TEST_CASE("Electrostatic coupling ignores fixed Neumann background",
@@ -1907,6 +2427,45 @@ TEST_CASE("Axisymmetric capacitance matches the analytic coaxial value",
 // particular discretization. That cannot distinguish "correct and converging"
 // from "wrong but inside the tolerance at nr = 64". This sweep refines the
 // radial direction and measures the order of accuracy instead.
+// Axisymmetric Robin: a coaxial annulus r_i <= r <= r_o, inner conductor at
+// 1 V, Robin condition eps dV/dr + alpha V = 0 at r_o. With V = 1 + A ln(r/r_i),
+// A = -alpha / (eps/r_o + alpha ln(r_o/r_i)), and the inner charge per the
+// full revolved measure is Q = -2*pi*h*eps*A. The alpha -> infinity limit is
+// the grounded coax. Exercises the 2*pi*r boundary mass term.
+TEST_CASE("Axisymmetric Robin boundary matches the analytic coaxial charge",
+          "[solvers][analytic][electrostatic][robin][axisymmetric]") {
+    const std::string mesh_file = "test_coax_robin.mesh";
+    const std::string matrix_file = "coupling_coax_robin.h5";
+    constexpr double r_inner = 0.01, r_outer = 0.03, height = 0.05;
+    CreateCoaxMesh(mesh_file, r_inner, r_outer, height, 64, 1);
+
+    const double eps = Constants::EPSILON_0;
+    const double alpha = 2.0 * eps / r_outer;
+    json config = MakeCoaxAmrConfig(mesh_file, 1);
+    config["simulation"]["amr"]["enabled"] = false;
+    config["simulation"]["order"] = 2;
+    config["simulation"]["analysis_type"] = "coupling_matrix";
+    config["terminals"] = json::array({
+        {{"name", "Inner"}, {"quantity", "voltage"}, {"entity_group", "Inner"}}});
+    config["boundary_conditions"] = json::array({
+        {{"name", "FarField"}, {"type", "robin"}, {"entity_group", "Outer"},
+         {"value", 0.0}, {"robin_coefficient", alpha}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    const double A = -alpha / (eps / r_outer + alpha * std::log(r_outer / r_inner));
+    const double analytic = -Constants::TWO_PI * height * eps * A;
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+    REQUIRE(matrix.values[0][0] == Catch::Approx(analytic).epsilon(1e-4));
+
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
 TEST_CASE("Axisymmetric coaxial capacitance converges at the expected order",
           "[solvers][analytic][electrostatic][coupling][axisymmetric][convergence]") {
     constexpr double r_inner = 0.01;
@@ -1961,6 +2520,122 @@ TEST_CASE("Axisymmetric coaxial capacitance converges at the expected order",
 
 }
 
+// A coaxial annulus a <= r <= b holding two dielectrics, eps1 inside r1 and
+// eps2 outside, with the inner conductor at V0 and the outer grounded. Gauss's
+// law makes the displacement D_r = q / r in both, so E_r = q / (eps r) and V
+// is logarithmic in each layer:
+//
+//   V = V0 - (q / eps1) ln(r / a)   (a <= r <= r1)
+//   V = (q / eps2) ln(b / r)        (r1 <= r <= b)
+//   q = V0 / (ln(r1 / a) / eps1 + ln(b / r1) / eps2)
+//
+// and the capacitance of a length h is the series of the two layers,
+// C = 2 pi h q / V0. Checked pointwise in V and E (r eps E_r constant across
+// the interface, E_z zero) and in C, for one material (eps1 = eps2) and two.
+// At second order V is accurate to 4e-6 at the sampled points and its
+// gradient to 2e-4; the tolerances leave a margin of about 3.
+TEST_CASE("Axisymmetric coax with one or two dielectrics matches the closed form",
+          "[solvers][analytic][electrostatic][axisymmetric][materials][interface]") {
+    constexpr double a = 0.01, b = 0.03, h = 0.05, V0 = 1.0;
+    constexpr int nr = 32;
+    const double r1 = 0.5 * (a + b);  // the interface: column nr / 2
+    const auto [eps_r1, eps_r2] = GENERATE(std::pair{ 1.0, 1.0 }, std::pair{ 2.0, 5.0 });
+    INFO("eps_r " << eps_r1 << " inside, " << eps_r2 << " outside");
+    const double eps1 = Constants::EPSILON_0 * eps_r1, eps2 = Constants::EPSILON_0 * eps_r2;
+    const double q = V0 / (std::log(r1 / a) / eps1 + std::log(b / r1) / eps2);
+
+    const std::string mesh_file = "test_coax_layers.mesh";
+    const std::string matrix_file = "test_coax_layers.h5";
+    CreateCoaxMesh(mesh_file, a, b, h, nr, 1, nr / 2);
+    json config = MakeCoaxAmrConfig(mesh_file, 1);
+    config["simulation"]["amr"]["enabled"] = false;
+    config["simulation"]["order"] = 2;
+    config["entity_groups"].push_back({{"name", "OuterDielectric"}, {"dim", 2}, {"attribute_ids", {2}}});
+    config["regions"] = json::array({
+        {{"name", "Inner"}, {"entity_group", "Dielectric"}, {"material", "Inner"}},
+        {{"name", "Outer"}, {"entity_group", "OuterDielectric"}, {"material", "Outer"}}});
+    config["materials"] = json::array({
+        {{"name", "Inner"}, {"properties", {{"epsilon_r", eps_r1}}}},
+        {{"name", "Outer"}, {"properties", {{"epsilon_r", eps_r2}}}}});
+
+    {
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        solver.Run();
+        const FieldExportSet fields = solver.CollectExportFields();
+        const mfem::GridFunction& V = *FindField(fields, "V").primary;
+        double worst_V = 0.0, worst_D = 0.0, worst_Ez = 0.0;
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            const mfem::IntegrationPoint center = TriangleCenter();
+            const double r = PhysicalPoint(V, e, center)(0);
+            const bool inside = r < r1;
+            const double exact = inside ? V0 - q / eps1 * std::log(r / a) : q / eps2 * std::log(b / r);
+            const mfem::Vector E = SampleDerivedVector(fields, "E", e, center);
+            worst_V = std::max(worst_V, std::abs(V.GetValue(e, center) - exact) / V0);
+            worst_D = std::max(worst_D, std::abs((inside ? eps1 : eps2) * E(0) * r - q) / q);
+            worst_Ez = std::max(worst_Ez, std::abs(E(1)) / (q / (eps1 * a)));
+        }
+        INFO("worst relative error: V " << worst_V << ", r eps E_r " << worst_D << ", E_z " << worst_Ez);
+        REQUIRE(worst_V < 1e-5);
+        REQUIRE(worst_D < 6e-4);
+        REQUIRE(worst_Ez < 2e-5);
+    }
+
+    config["simulation"]["analysis_type"] = "coupling_matrix";
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+    const double C = Constants::TWO_PI * h * q / V0;
+    REQUIRE(matrix.values[0][0] == Catch::Approx(C).epsilon(1e-7));
+    REQUIRE(matrix.values[0][1] == Catch::Approx(-C).epsilon(1e-7));
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// The interface must not cost the discretization its order: with the
+// interface on a mesh line, the two-layer capacitance converges at O(h^2) for
+// order-1 elements, as the single-material one does above.
+TEST_CASE("Two-layer coaxial capacitance converges at the expected order",
+          "[solvers][analytic][electrostatic][axisymmetric][materials][convergence]") {
+    constexpr double a = 0.01, b = 0.03, h = 0.05;
+    const double r1 = 0.5 * (a + b);
+    const double eps1 = 2.0 * Constants::EPSILON_0, eps2 = 5.0 * Constants::EPSILON_0;
+    const double C = Constants::TWO_PI * h /
+        (std::log(r1 / a) / eps1 + std::log(b / r1) / eps2);
+
+    std::vector<double> errors;
+    for (const int nr : {8, 16, 32}) {
+        const std::string mesh_file = "test_coax_layers_" + std::to_string(nr) + ".mesh";
+        const std::string matrix_file = "test_coax_layers_convergence.h5";
+        CreateCoaxMesh(mesh_file, a, b, h, nr, 1, nr / 2);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["amr"]["enabled"] = false;
+        config["simulation"]["analysis_type"] = "coupling_matrix";
+        config["entity_groups"].push_back({{"name", "OuterDielectric"}, {"dim", 2}, {"attribute_ids", {2}}});
+        config["regions"] = json::array({
+            {{"name", "Inner"}, {"entity_group", "Dielectric"}, {"material", "Inner"}},
+            {{"name", "Outer"}, {"entity_group", "OuterDielectric"}, {"material", "Outer"}}});
+        config["materials"] = json::array({
+            {{"name", "Inner"}, {"properties", {{"epsilon_r", 2.0}}}},
+            {{"name", "Outer"}, {"properties", {{"epsilon_r", 5.0}}}}});
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+        errors.push_back(std::abs(ReadHdf5Matrix(matrix_file, "Capacitance").values[0][0] - C) / C);
+        fs::remove(matrix_file);
+        fs::remove(mesh_file);
+    }
+    INFO("relative errors " << errors[0] << ", " << errors[1] << ", " << errors[2]);
+    REQUIRE(ObservedOrder(errors[0], errors[1]) > 1.9);
+    REQUIRE(ObservedOrder(errors[1], errors[2]) > 1.9);
+}
+
 // The inductance matrix must be built from each MEASURED terminal's winding
 // functional, not from the driving scenario's source. Reusing the drive makes
 // every row of a column identical, which the asymmetry checks below reject.
@@ -1982,8 +2657,8 @@ TEST_CASE("Magnetostatic inductance matrix is reciprocal and distinguishes rows"
         {{"name", "CoilB"}, {"entity_group", "CoilB"}, {"material", "Material"}}
     });
     config["terminals"] = json::array({
-        {{"name", "CoilA"}, {"quantity", "current"}, {"entity_group", "CoilA"}},
-        {{"name", "CoilB"}, {"quantity", "current"}, {"entity_group", "CoilB"}}
+        {{"name", "CoilA"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilA"}},
+        {{"name", "CoilB"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilB"}}
     });
 
     mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
@@ -2014,7 +2689,7 @@ TEST_CASE("Magnetostatic loop inductance matches the analytic ring value",
 
     json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
     config["terminals"] = json::array({
-        {{"name", "LoopCurrent"}, {"quantity", "current"},
+        {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
          {"entity_group", "LoopDomain"}}
     });
 
@@ -2038,11 +2713,178 @@ TEST_CASE("Magnetostatic loop inductance matches the analytic ring value",
     fs::remove(mesh_file);
 }
 
+// The multigrid-preconditioned CG path (linear_solver "iterative") must
+// reproduce the direct factorization on both scalar static operators: the
+// axisymmetric r-weighted diffusion operator (coaxial capacitance) and the
+// axisymmetric curl-curl operator with its 1/r term (loop inductance). With
+// solver_tolerance 1e-12, agreement well below the discretization error is
+// expected.
+TEST_CASE("Multigrid PCG and the direct solver agree on the 2D static operators",
+          "[solvers][linear_solver][amg]") {
+    auto solve = [](auto make_solver, json config, const std::string& matrix_file,
+                    const std::string& quantity, const std::string& solver_type) {
+        config["simulation"]["linear_solver"] = solver_type;
+        config["simulation"]["solver_tolerance"] = 1e-12;
+        auto solver = make_solver(config, matrix_file);
+        solver->Setup();
+        solver->Run();
+        solver->SaveAnalysis();
+        const auto matrix = ReadHdf5Matrix(matrix_file, quantity);
+        fs::remove(matrix_file);
+        return matrix;
+    };
+
+    SECTION("axisymmetric electrostatics") {
+        const std::string mesh_file = "test_amg_coax.mesh";
+        CreateCoaxMesh(mesh_file, 0.01, 0.03, 0.05, 64, 4);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["amr"]["enabled"] = false;
+        config["simulation"]["order"] = 2;
+        config["simulation"]["analysis_type"] = "coupling_matrix";
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        auto make = [&mesh](const json& c, const std::string& archive) {
+            return std::make_unique<ElectrostaticSolver>(mesh, DecodeConfig(c, archive));
+        };
+        const auto direct = solve(make, config, "amg_coax.h5", "Capacitance", "direct");
+        const auto iterative = solve(make, config, "amg_coax.h5", "Capacitance", "iterative");
+        RequireMatricesEqual(iterative, direct, 1e-8);
+        fs::remove(mesh_file);
+    }
+
+    SECTION("axisymmetric magnetostatics") {
+        const std::string mesh_file = "test_amg_loop.mesh";
+        CreateCurrentLoopMesh(mesh_file);
+        json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
+        config["terminals"] = json::array({
+            {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
+             {"entity_group", "LoopDomain"}}});
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        auto make = [&mesh](const json& c, const std::string& archive) {
+            return std::make_unique<MagnetostaticSolver>(mesh, DecodeConfig(c, archive));
+        };
+        const auto direct = solve(make, config, "amg_loop.h5", "Inductance", "direct");
+        const auto iterative = solve(make, config, "amg_loop.h5", "Inductance", "iterative");
+        RequireMatricesEqual(iterative, direct, 1e-8);
+        REQUIRE(iterative.values[0][0] ==
+            Catch::Approx(AnalyticLoopInductance()).epsilon(0.005));
+        fs::remove(mesh_file);
+    }
+}
+
 // Same analytic reference, but through the MQS assembly, which is a different
 // code path: a complex block system with a massive port constraint rather than
 // a real stiffness solve with a prescribed current density. At a low enough
 // frequency the skin depth dwarfs the conductor, so the MQS inductance must
 // collapse onto the magnetostatic DC value.
+// A solve that misses solver_tolerance within solver_max_iter is an error, not
+// a warning: its last iterate must not reach the outputs. One iteration is far
+// short of convergence on either operator.
+TEST_CASE("An iterative solve that does not converge stops the run",
+          "[solvers][linear_solver]") {
+    using Catch::Matchers::ContainsSubstring;
+
+    SECTION("CG on axisymmetric electrostatics") {
+        const std::string mesh_file = "test_unconverged_coax.mesh";
+        CreateCoaxMesh(mesh_file, 0.01, 0.03, 0.05, 64, 16);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["amr"]["enabled"] = false;
+        config["simulation"]["order"] = 3;
+        config["simulation"]["linear_solver"] = "iterative";
+        config["simulation"]["solver_max_iter"] = 1;
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        REQUIRE_THROWS_WITH(solver.Run(), ContainsSubstring("CG did not converge"));
+        fs::remove(mesh_file);
+    }
+
+    SECTION("GMRES on axisymmetric MQS") {
+        const std::string mesh_file = "test_unconverged_loop.mesh";
+        CreateCurrentLoopMesh(mesh_file);
+        json config = MakeCurrentLoopConfig("magnetoquasistatics", mesh_file, 5.8e7);
+        config["simulation"]["linear_solver"] = "iterative";
+        config["simulation"]["solver_max_iter"] = 1;
+        config["terminals"] = json::array({
+            {{"name", "LoopCurrent"}, {"quantity", "current"},
+             {"conductor_type", "massive"}, {"entity_group", "LoopDomain"}}});
+        config["scenarios"] = json::array({
+            {{"name", "loop"}, {"frequency", 50.0}, {"excitations", json::array({
+                {{"terminal", "LoopCurrent"}, {"value", 1.0}}})}}});
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        REQUIRE_THROWS_WITH(solver.Run(), ContainsSubstring("GMRES did not converge"));
+        fs::remove(mesh_file);
+    }
+}
+
+// Every connected piece of a scalar model needs something that fixes its
+// potential (a Dirichlet boundary, a terminal, the axis of an axisymmetric
+// magnetic run, or a Robin boundary with a positive coefficient); otherwise its
+// operator is singular and setup must say so rather than solve.
+TEST_CASE("Setup rejects a model with nothing to fix its potential",
+          "[solvers][validation]") {
+    using Catch::Matchers::ContainsSubstring;
+    const std::string mesh_file = "test_reference.mesh";
+    auto setup = [](mfem::Mesh& mesh, const json& config) {
+        SolverFactory::Instance().Create(mesh, DecodeConfig(config))->Setup();
+    };
+
+    SECTION("pure Neumann electrostatics") {
+        CreatePlanarStripMesh(mesh_file, 0.2, 0.05, 4, 2);
+        json config = MakePlanarStripConfig(
+            "electrostatics", mesh_file, 1, {{"epsilon_r", 1.0}}, 0.0, 0.0);
+        for (auto& bc : config["boundary_conditions"]) { bc["type"] = "neumann"; }
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_THROWS_WITH(setup(mesh, config), ContainsSubstring("Nothing fixes the potential"));
+
+        // A Robin boundary with a positive coefficient fixes it.
+        config["boundary_conditions"][1]["type"] = "robin";
+        config["boundary_conditions"][1]["robin_coefficient"] = 1e-10;
+        REQUIRE_NOTHROW(setup(mesh, config));
+    }
+
+    SECTION("a disconnected piece with no reference of its own") {
+        // Two triangles that share no edge: Left (attribute 1) bounds the
+        // first, Right (attribute 2) the second; only Left is Dirichlet.
+        {
+            std::ofstream out(mesh_file);
+            out << "MFEM mesh v1.0\n\ndimension\n2\n\nelements\n2\n"
+                   "1 2 0 1 2\n1 2 3 4 5\n\nboundary\n6\n"
+                   "1 1 0 1\n1 1 1 2\n1 1 2 0\n2 1 3 4\n2 1 4 5\n2 1 5 3\n\n"
+                   "vertices\n6\n2\n0 0\n1 0\n0 1\n2 0\n3 0\n2 1\n";
+        }
+        json config = MakePlanarStripConfig(
+            "electrostatics", mesh_file, 1, {{"epsilon_r", 1.0}}, 1.0, 0.0);
+        config["boundary_conditions"].erase(1);
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_THROWS_WITH(setup(mesh, config), ContainsSubstring("containing element 1"));
+    }
+
+    SECTION("an axisymmetric magnetic annulus away from the axis") {
+        CreateCoaxMesh(mesh_file, 0.01, 0.03, 0.05, 8, 4);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["physics_type"] = "magnetostatics";
+        config["simulation"].erase("amr");
+        config["materials"][0]["properties"] = {{"mu_r", 1.0}};
+        config["terminals"] = json::array();
+        config["scenarios"][0]["excitations"] = json::array();
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_THROWS_WITH(setup(mesh, config), ContainsSubstring("Nothing fixes the potential"));
+    }
+
+    SECTION("the axis of an axisymmetric magnetic run is a reference") {
+        CreatePlanarStripMesh(mesh_file, 0.2, 0.05, 4, 2);  // reaches r = 0
+        json config = MakePlanarStripConfig(
+            "magnetostatics", mesh_file, 1, {{"mu_r", 1.0}}, 0.0, 0.0);
+        config["simulation"]["geometry_type"] = "axisymmetric";
+        config["boundary_conditions"] = json::array();
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        REQUIRE_NOTHROW(setup(mesh, config));
+    }
+    fs::remove(mesh_file);
+}
+
 TEST_CASE("Magnetoquasistatic loop inductance matches the analytic ring value at low frequency",
           "[solvers][analytic][mqs][coupling][axisymmetric]") {
     const std::string mesh_file = "test_current_loop_mqs.mesh";
@@ -2095,7 +2937,7 @@ TEST_CASE("Magnetostatic loop inductance is mesh-format independent (Netgen)",
 
     json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
     config["terminals"] = json::array({
-        {{"name", "LoopCurrent"}, {"quantity", "current"},
+        {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
          {"entity_group", "LoopDomain"}}
     });
 
@@ -2143,8 +2985,8 @@ TEST_CASE("Magnetostatic coupling ignores fixed Neumann background",
         {{"name", "CoilB"}, {"entity_group", "CoilB"}, {"material", "Material"}}
     });
     config["terminals"] = json::array({
-        {{"name", "CoilA"}, {"quantity", "current"}, {"entity_group", "CoilA"}},
-        {{"name", "CoilB"}, {"quantity", "current"}, {"entity_group", "CoilB"}}
+        {{"name", "CoilA"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilA"}},
+        {{"name", "CoilB"}, {"quantity", "current"}, {"conductor_type", "stranded"}, {"entity_group", "CoilB"}}
     });
 
     auto solve = [&]() {
@@ -3178,6 +4020,115 @@ TEST_CASE("MQS loss excludes non-conducting and stranded regions",
 // quantity, the other reads a solved port unknown - so they agree only to
 // discretization error rather than to round-off. The tolerance below was
 // measured on this mesh, not assumed.
+// The DC conductance of a massive axisymmetric ring of rectangular section,
+// a <= r <= b and height h, is G = sigma h ln(b/a) / (2 pi), which grows
+// without bound as a -> 0: its 1/r integrand needs a rule sized by each
+// element's distance from the axis, not by the basis degree. At a very low
+// frequency the port resistance is 1/G. The rings range down to an innermost
+// element whose inner radius is 1% of its width, the resolved limit, on
+// quadrilaterals and on triangles.
+TEST_CASE("MQS massive ring conductance matches the exact value near the axis",
+          "[solvers][analytic][mqs][axisymmetric][quadrature]") {
+    constexpr double sigma = 5.8e7, width = 0.04, height = 0.02;
+    constexpr int nr = 4;
+    const std::string matrix_file = "test_ring_conductance.h5";
+    const mfem::Element::Type type = GENERATE(mfem::Element::QUADRILATERAL,
+                                              mfem::Element::TRIANGLE);
+    const json config = {
+        {"simulation", {{"physics_type", "magnetoquasistatics"}, {"mesh", "unused"},
+            {"order", 2}, {"geometry_type", "axisymmetric"},
+            {"analysis_type", "coupling_matrix"}, {"solver_print_level", 0}}},
+        {"entity_groups", json::array({
+            {{"name", "Ring"}, {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Walls"}, {"dim", 1}, {"attribute_ids", {1, 2, 3, 4}}}})},
+        {"regions", json::array({{{"name", "Ring"}, {"entity_group", "Ring"}, {"material", "Copper"}}})},
+        {"materials", json::array({
+            {{"name", "Copper"}, {"properties", {{"mu_r", 1.0}, {"sigma", sigma}}}}})},
+        {"boundary_conditions", json::array({
+            {{"name", "Walls"}, {"type", "dirichlet"}, {"entity_group", "Walls"}, {"value", 0.0}}})},
+        {"terminals", json::array({
+            {{"name", "Ring"}, {"quantity", "current"}, {"conductor_type", "massive"},
+             {"entity_group", "Ring"}}})},
+        {"scenarios", json::array({
+            {{"name", "dc"}, {"frequency", 1e-6}, {"excitations", json::array()}}})}};
+
+    for (double ratio : {1.0, 0.1, 0.01, 0.0025}) {  // a / (b - a)
+        const double a = ratio * width;
+        mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(nr, 2, type, true, width, height);
+        for (int v = 0; v < mesh.GetNV(); ++v) { mesh.GetVertex(v)[0] += a; }
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+        const double resistance = ReadHdf5Matrix(matrix_file, "Resistance").values[0][0];
+        const double exact = sigma * height * std::log((a + width) / a) / Constants::TWO_PI;
+        INFO((type == mfem::Element::TRIANGLE ? "triangles" : "quadrilaterals")
+             << ", a/(b-a) = " << ratio);
+        REQUIRE(1.0 / resistance == Catch::Approx(exact).epsilon(1e-8));
+        fs::remove(matrix_file);
+    }
+}
+
+// A massive conductor carries its DC conduction distribution in every solver:
+// in 2D magnetostatics as in MQS at low frequency, where it is the limit of
+// the port-driven current. Around the axis that distribution falls off as 1/r,
+// so for a thick ring (b/a = 3) it differs measurably from a stranded
+// winding's uniform current.
+TEST_CASE("A massive ring has one inductance in magnetostatics and low-frequency MQS",
+          "[solvers][mqs][axisymmetric][coupling]") {
+    const std::string matrix_file = "test_thick_ring.h5";
+    // r in [0, 1], z in [-0.5, 0.5]; the ring is 0.1 <= r <= 0.3, |z| <= 0.1.
+    auto make_mesh = [] {
+        mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(20, 20, mfem::Element::QUADRILATERAL);
+        for (int v = 0; v < mesh.GetNV(); ++v) { mesh.GetVertex(v)[1] -= 0.5; }
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            mfem::Vector c;
+            mesh.GetElementCenter(e, c);
+            mesh.SetAttribute(e, c(0) > 0.1 && c(0) < 0.3 && std::abs(c(1)) < 0.1 ? 2 : 1);
+        }
+        mesh.SetAttributes();
+        return mesh;
+    };
+    auto inductance = [&](const std::string& physics, const std::string& type) {
+        json config = {
+            {"simulation", {{"physics_type", physics}, {"mesh", "unused"}, {"order", 2},
+                {"geometry_type", "axisymmetric"}, {"analysis_type", "coupling_matrix"},
+                {"solver_print_level", 0}}},
+            {"entity_groups", json::array({
+                {{"name", "Air"}, {"dim", 2}, {"attribute_ids", {1}}},
+                {{"name", "Ring"}, {"dim", 2}, {"attribute_ids", {2}}},
+                {{"name", "Far"}, {"dim", 1}, {"attribute_ids", {1, 2, 3}}}})},
+            {"regions", json::array({
+                {{"name", "Air"}, {"entity_group", "Air"}, {"material", "Air"}},
+                {{"name", "Ring"}, {"entity_group", "Ring"}, {"material", "Copper"}}})},
+            {"materials", json::array({
+                {{"name", "Air"}, {"properties", {{"mu_r", 1.0}}}},
+                {{"name", "Copper"}, {"properties", {{"mu_r", 1.0}, {"sigma", 5.8e7}}}}})},
+            {"boundary_conditions", json::array({
+                {{"name", "Far"}, {"type", "dirichlet"}, {"entity_group", "Far"}, {"value", 0.0}}})},
+            {"terminals", json::array({
+                {{"name", "Ring"}, {"quantity", "current"}, {"conductor_type", type},
+                 {"entity_group", "Ring"}}})},
+            {"scenarios", json::array({
+                {{"name", "drive"}, {"frequency", 1e-6}, {"excitations", json::array()}}})}};
+        if (physics == "magnetostatics") { config["scenarios"][0].erase("frequency"); }
+        mfem::Mesh mesh = make_mesh();
+        auto solver = SolverFactory::Instance().Create(mesh, DecodeConfig(config, matrix_file));
+        solver->Setup();
+        solver->Run();
+        solver->SaveAnalysis();
+        const double L = ReadHdf5Matrix(matrix_file, "Inductance").values[0][0];
+        fs::remove(matrix_file);
+        return L;
+    };
+
+    const double magnetostatic = inductance("magnetostatics", "massive");
+    const double mqs = inductance("magnetoquasistatics", "massive");
+    const double stranded = inductance("magnetostatics", "stranded");
+    REQUIRE(magnetostatic == Catch::Approx(mqs).epsilon(1e-8));
+    REQUIRE(std::abs(magnetostatic - stranded) > 1e-2 * stranded);
+}
+
 TEST_CASE("MQS total Joule loss balances the delivered port power",
           "[solvers][mqs][loss][balance][axisymmetric]") {
     const std::string mesh_file = "test_mqs_power_balance.mesh";
@@ -3214,13 +4165,12 @@ TEST_CASE("MQS total Joule loss balances the delivered port power",
     const auto [v_re, v_im] = solver.GetPortVoltage("TurnA");
     const double delivered = 0.5 * v_re * current;
 
-    // Measured: the relative gap is 3.0e-3 on this mesh, falling to 7.4e-4 when
-    // the radial resolution is doubled - a factor of 4.0 for a 2x refinement,
-    // i.e. clean second-order convergence to exact balance. That convergence is
-    // what establishes the identity actually holds; the coarser mesh is kept
-    // here because the finer one costs about two minutes to solve. The bound
-    // sits just above the measured value so a real regression cannot hide in it.
-    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(4.0e-3));
+    // The balance is an identity of the discrete solution (testing the field
+    // equation with the solution itself), so it holds as exactly as the port
+    // conductance and the loss integral are integrated. Both carry the drive
+    // field's 1/r and use the geometry-aware radial rule; with a fixed-order
+    // rule this gap was 3e-3 here and shrank only with mesh refinement.
+    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(1e-8));
 
     // The scope decision is load-bearing, not cosmetic. The shield and the
     // undriven turn own no net port current, so restricting the total to the
@@ -3234,6 +4184,200 @@ TEST_CASE("MQS total Joule loss balances the delivered port power",
     REQUIRE(driven_only > 0.0);
     REQUIRE(std::abs(delivered - driven_only) > 0.01 * delivered);
 
+    fs::remove(mesh_file);
+}
+
+// With both turns driven at once, the delivered power includes their mutual
+// terms, (1/2) Re sum_k V_k I_k*, and must still equal the total loss of every
+// conducting region: the identity holds for any combination of drives.
+TEST_CASE("MQS loss balances the power of several terminals driven together",
+          "[solvers][mqs][loss][balance][axisymmetric]") {
+    const std::string mesh_file = "test_mqs_multiport_balance.mesh";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+    config["simulation"]["analysis_type"] = "field";
+    config["simulation"]["order"] = 2;
+    const std::map<std::string, double> currents = {{"TurnA", 1.0}, {"TurnB", -0.6}};
+    json excitations = json::array();
+    for (const auto& [name, current] : currents) {
+        excitations.push_back({{"terminal", name}, {"value", current}});
+    }
+    config["scenarios"] = json::array({
+        {{"name", "drive"}, {"frequency", 1000.0}, {"excitations", excitations}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+    solver.Setup();
+    solver.Run();
+
+    double total_loss = 0.0;
+    for (const auto& loss : solver.ComputeRegionLosses()) { total_loss += loss.Power; }
+    double delivered = 0.0;
+    for (const auto& [name, current] : currents) {
+        delivered += 0.5 * solver.GetPortVoltage(name).first * current;
+    }
+    REQUIRE(total_loss > 0.0);
+    REQUIRE(delivered == Catch::Approx(total_loss).epsilon(1e-8));
+    fs::remove(mesh_file);
+}
+
+// A passive network's impedance matrix is reciprocal (R and L symmetric) and
+// dissipative: R is positive semidefinite (no drive extracts net power) and
+// L positive definite (every drive stores energy).
+TEST_CASE("MQS coupling matrices are reciprocal and passive",
+          "[solvers][mqs][coupling][axisymmetric]") {
+    const std::string mesh_file = "test_mqs_passivity.mesh";
+    const std::string matrix_file = "test_mqs_passivity.h5";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+    config["simulation"]["order"] = 2;
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    for (const std::string quantity : {"Resistance", "Inductance"}) {
+        const auto m = ReadHdf5Matrix(matrix_file, quantity).values;
+        INFO(quantity);
+        REQUIRE(m[0][1] == Catch::Approx(m[1][0]).epsilon(1e-8));
+        // A symmetric 2 x 2 matrix is semidefinite when its diagonal and
+        // determinant are; positive definite when they are positive.
+        const double det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+        REQUIRE(m[0][0] > 0.0);
+        REQUIRE(m[1][1] > 0.0);
+        REQUIRE(det > 0.0);
+    }
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// A frequency sweep refactors one direct solver at each frequency, reusing
+// its ordering (the field block's pattern does not change with frequency);
+// each point must still be exactly the single-frequency solve.
+TEST_CASE("MQS frequency sweep reuses the direct factorization's ordering exactly",
+          "[solvers][mqs][coupling][linear_solver]") {
+    const std::string mesh_file = "test_mqs_sweep_reuse.mesh";
+    const std::string matrix_file = "test_mqs_sweep_reuse.h5";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    auto solve = [&](const json& frequency) {
+        json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+        config["simulation"]["order"] = 2;
+        config["simulation"]["linear_solver"] = "direct";
+        config["scenarios"][0]["frequency"] = frequency;
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+    };
+    const std::vector<double> frequencies = { 50.0, 1000.0, 20000.0 };
+    solve(frequencies);
+    std::vector<CouplingMatrix> R, L;
+    for (int k = 0; k < 3; ++k) {
+        R.push_back(ReadHdf5Matrix(matrix_file, "Resistance", k));
+        L.push_back(ReadHdf5Matrix(matrix_file, "Inductance", k));
+    }
+    for (int k = 0; k < 3; ++k) {
+        INFO(frequencies[k] << " Hz");
+        solve(frequencies[k]);
+        const auto R1 = ReadHdf5Matrix(matrix_file, "Resistance");
+        const auto L1 = ReadHdf5Matrix(matrix_file, "Inductance");
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                REQUIRE(R[k].values[i][j] == Catch::Approx(R1.values[i][j]).epsilon(1e-10));
+                REQUIRE(L[k].values[i][j] == Catch::Approx(L1.values[i][j]).epsilon(1e-10));
+            }
+        }
+    }
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// The 2D MQS iterative solver is GMRES preconditioned by AMG on
+// K + omega M_sigma for each field block and the exact port-corner inverse
+// (MqsBlockPreconditioner). It must reproduce the direct solve, with two
+// massive ports and a passive shield, over two decades of frequency, within a
+// bounded number of iterations: it takes 38 at 50 Hz and 130 at 5 kHz to the
+// 1e-12 tolerance, where unpreconditioned GMRES does not converge in 5000.
+TEST_CASE("2D MQS impedances agree between the preconditioned GMRES and direct solvers",
+          "[solvers][mqs][coupling][linear_solver][amg]") {
+    const std::string mesh_file = "test_mqs_gmres_2d.mesh";
+    const std::string matrix_file = "test_mqs_gmres_2d.h5";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    auto solve = [&](const std::string& linear_solver) {
+        json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+        config["simulation"]["order"] = 2;
+        config["simulation"]["linear_solver"] = linear_solver;
+        config["simulation"]["solver_max_iter"] = 300;
+        config["scenarios"][0]["frequency"] = std::vector<double>{ 50.0, 5000.0 };
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+        std::vector<CouplingMatrix> Z;
+        for (int k = 0; k < 2; ++k) {
+            Z.push_back(ReadHdf5Matrix(matrix_file, "Resistance", k));
+            Z.push_back(ReadHdf5Matrix(matrix_file, "Inductance", k));
+        }
+        return Z;
+    };
+    const auto direct = solve("direct");
+    const auto iterative = solve("iterative");
+    for (size_t m = 0; m < direct.size(); ++m) {
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                REQUIRE(iterative[m].values[i][j] ==
+                    Catch::Approx(direct[m].values[i][j]).epsilon(1e-8));
+            }
+        }
+    }
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// At a permeability jump the tangential H and the normal B are continuous. In
+// a planar strip whose layers are side by side (interface x = const), with A_z
+// dropping by A0 across them, B = -dA/dx y-hat is tangential to the interface,
+// so H_y = B_y / mu must be one value in both layers: H = A0 / (mu_l w_l +
+// mu_r w_r). P1 reproduces the piecewise-linear A exactly. (Normal B, here
+// B_x = dA/dy, is the tangential derivative of the continuous A along the
+// interface, continuous by construction.)
+TEST_CASE("Magnetostatic field satisfies the permeability interface conditions",
+          "[solvers][analytic][magnetostatic][materials][interface]") {
+    const std::string mesh_file = "test_permeability_interface.mesh";
+    constexpr double length = 0.2, height = 0.05, a0 = 1e-3;
+    constexpr double mu_r_left = 1.0, mu_r_right = 50.0;
+    constexpr int nx = 8, ny = 2, interface_column = nx / 2;
+    CreateLayeredStripMesh(mesh_file, length, height, nx, ny, interface_column);
+
+    json config = MakePlanarStripConfig("magnetostatics", mesh_file, 1, {{"mu_r", mu_r_left}}, a0, 0.0);
+    config["entity_groups"].push_back({{"name", "RightLayer"}, {"dim", 2}, {"attribute_ids", {2}}});
+    config["regions"].push_back({{"name", "RightLayer"}, {"entity_group", "RightLayer"}, {"material", "Iron"}});
+    config["materials"].push_back({{"name", "Iron"}, {"properties", {{"mu_r", mu_r_right}}}});
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    MagnetostaticSolver solver(mesh, DecodeConfig(config));
+    solver.Setup();
+    solver.Run();
+
+    const FieldExportSet fields = solver.CollectExportFields();
+    const mfem::IntegrationPoint center = TriangleCenter();
+    const mfem::Vector left = SampleDerivedVector(fields, "B", 2 * (interface_column - 1), center);
+    const mfem::Vector right = SampleDerivedVector(fields, "B", 2 * interface_column, center);
+    const double mu_left = Constants::MU_0 * mu_r_left, mu_right = Constants::MU_0 * mu_r_right;
+    const double width_left = length * interface_column / nx, width_right = length - width_left;
+    const double H = a0 / (mu_left * width_left + mu_right * width_right);
+
+    REQUIRE(left(1) / mu_left == Catch::Approx(H).epsilon(1e-8));
+    REQUIRE(right(1) / mu_right == Catch::Approx(H).epsilon(1e-8));
+    REQUIRE(std::abs(left(0)) < 1e-8 * std::abs(left(1)));
+    REQUIRE(std::abs(right(0)) < 1e-8 * std::abs(right(1)));
     fs::remove(mesh_file);
 }
 
@@ -3766,7 +4910,7 @@ TEST_CASE("Magnetostatic far-field truncation error converges as the boundary re
                  {"entity_group", "FarField"}, {"value", 0.0}}
             })},
             {"terminals", json::array({
-                {{"name", "Coil"}, {"quantity", "current"},
+                {{"name", "Coil"}, {"quantity", "current"}, {"conductor_type", "stranded"},
                  {"entity_group", "CoilDomain"}}
             })},
             {"scenarios", json::array({

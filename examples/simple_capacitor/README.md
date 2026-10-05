@@ -66,7 +66,7 @@ cmake -S . -B build
 cmake --build build --config Release
 
 # Run simulation
-./build/mfem-electromag examples/simple_capacitor/config.json
+./build/noumena examples/simple_capacitor/config.json
 ```
 
 This config includes `"output": {"paraview": {}}`, so collections are written

@@ -8,15 +8,26 @@ unbounded domain. The mesh is not unbounded. Today the only way to close it is
 to put the far boundary at some finite distance `D` and impose a homogeneous
 Dirichlet condition (`A_phi = 0` or `V = 0`) there.
 
-That condition is exact only at infinity. At any finite `D` it is wrong, and it
-is wrong in a specific direction: forcing the potential to zero too early
-removes field energy that physically extends past the boundary, so terminal
-quantities derived from that energy come out **low**.
+That condition is exact only at infinity. At any finite `D` it changes the
+answer, and the direction depends on the quantity:
+
+- **Magnetics, `A_phi = 0` (n x A = 0):** flux may not cross the wall, so the
+  returning flux is squeezed inside it and inductances come out **low**.
+- **Electrostatics, `V = 0`:** a grounded wall at finite distance is a nearer
+  return electrode, so a terminal's capacitance at fixed voltage comes out
+  **high**. For a sphere of radius `a` inside a grounded sphere of radius `D`,
+  `C_D = 4 pi eps a D / (D - a)`, above the isolated `4 pi eps a`.
+
+For a compact source the error falls off with the source's leading
+multipole. A current loop is a magnetic dipole: the wall adds a nearly uniform
+field of order `mu0 m / D^3` at the source, so its inductance error decays as
+`(a/D)^3`. A conductor with net charge is an electric monopole, whose
+capacitance error decays only as `a/D` (the sphere formula above).
 
 This is a modelling error, not a discretization error. Refining the mesh does
-not reduce it — you can drive the FE error to round-off and still be off by a
-percent because the domain itself is wrong. That distinction matters when
-interpreting any validation result against a closed-form reference.
+not reduce it, and a sweep over `D` that remeshes as it goes mixes the two:
+separating them needs the source region's mesh held fixed while only the
+exterior grows.
 
 ## What we measured
 
@@ -36,38 +47,34 @@ computed self-inductance against Grover's ring formula
 | 8.0 | 80 | 6.0252e-07 | -0.04% |
 | 16.0 | 160 | 6.0261e-07 | -0.03% |
 
-Three conclusions:
+Every entry is low, as expected of `A_phi = 0`. But the sweep remeshed at
+every `D`, so these are total errors, and they do not follow the dipole law:
+from `D/a = 10` to `20` the error should fall eightfold and only halves, and
+at `D/a = 160`, where truncation is about `(a/D)^3 ~ 2e-7`, it is still
+-0.03%. Beyond `D/a ~ 5` the table is dominated by something other than
+truncation -- the discretization of the remeshed domain, or the accuracy of
+the ring formula itself -- and it cannot be extrapolated to a free-space limit
+or used to judge the ring formula.
 
-1. **The error is one-sided and decays as `1/D`.** Every entry is negative and
-   halving the error requires doubling the domain. That is a poor exchange rate:
-   the extra volume is nearly all air, and in 2D axisymmetric geometry the
-   element count grows with it even under aggressive radial grading.
-
-2. **The limit is the analytic value.** Richardson-extrapolating consecutive
-   pairs under the assumed `L(D) = L_inf - C/D` model gives `L_inf = 6.0265e-07 H`,
-   within **-0.013%** of Grover's formula. The solver reproduces the closed form
-   to about a part in 10^4 once truncation is removed.
-
-3. **The GMD approximation is not a meaningful contributor here.** An earlier
-   reading of this example attributed the residual jointly to truncation and to
-   the geometric-mean-distance substitution in the ring formula. The
-   extrapolation above refutes that: the GMD form is accurate to ~0.01% for this
-   aspect ratio, and essentially the entire observed deviation is boundary
-   truncation. Do not blame the analytic reference for what the mesh boundary is
-   doing.
+The controlled study is in `test/test_coaxial_rings.cpp`: the rings sit in a
+sphere of radius `D`, and the two homogeneous walls bracket the free-space
+value from either side (n x A = 0 low, n x H = 0 high, adding uniform fields
+of -2 and +1 times `mu0 m / (4 pi D^3)`), so their weighted mean cancels the
+`(a/D)^3` term.
 
 ## Current state of the code
 
-- Dirichlet-at-a-distance is the only supported far-field closure.
-- `BoundaryConditionType::Robin` exists in `src/core/problem_config.hpp` and is
-  accepted by the parser, but is **not assembled** — the solvers reject it
-  during setup. The struct carries a `RobinCoeff` field reserved for exactly
-  this purpose. See the "Reserved" comment on `BoundaryCondition`.
+- **Electrostatics** supports the Robin far-field closure of option 1 below
+  (`robin_coefficient = eps/R` on a sphere of radius `R`), in every geometry.
+  It is exact for the monopole term; see the FAQ entry "How do I choose a
+  Robin far-field coefficient?".
+- **Magnetics:** Dirichlet-at-a-distance is still the only supported far-field
+  closure; the magnetic solvers reject Robin during setup.
 - The inductance regression tests in `test/test_solvers.cpp`
   (`Magnetostatic loop inductance matches the analytic ring value` and its MQS
-  counterpart) use `D/a = 40` and assert 0.5%. That tolerance is set by the
-  -0.06% truncation bias plus mesh effects, with headroom; it is not a limit of
-  the formulation.
+  counterpart) use `D/a = 40`, where the truncation error is negligible
+  (`(a/D)^3 ~ 2e-5`), and assert 0.5%, which covers the discretization error
+  with headroom.
 
 ## Possible future fixes
 
@@ -78,8 +85,8 @@ In increasing order of implementation cost.
 Replace `u = 0` at `D` with a condition encoding the known decay rate of the
 exterior solution, e.g. `du/dn + (k/r) u = 0` with `k` chosen for the leading
 multipole. For an axisymmetric current loop the exterior `A_phi` is
-dipole-like, so a correctly chosen `k` cancels the leading `1/D` term and
-typically leaves `1/D^3`.
+dipole-like, so a correctly chosen `k` cancels the leading `(a/D)^3` error and
+leaves that of the next multipole.
 
 - **Pro:** by far the cheapest. The config plumbing and `RobinCoeff` field
   already exist; this is a boundary-integrator addition plus lifting the setup
@@ -125,6 +132,6 @@ loose tolerance.
 Option 2 is only worth the effort if exterior field distributions — not just
 lumped terminal parameters — become a deliverable.
 
-Whichever is chosen, the convergence study above should be re-run as the
-acceptance test: the `1/D` sweep and its extrapolated limit are the evidence
-that the closure works.
+Whichever is chosen, its acceptance test should be a truncation sweep with
+the source region's mesh held fixed, showing the error falling at the rate the
+closure claims.

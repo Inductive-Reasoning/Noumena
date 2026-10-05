@@ -13,6 +13,8 @@
 #include "physics_solver.hpp"
 #include "electrostatic_solver.hpp"
 #include "magnetostatic_solver.hpp"
+#include "magnetostatic_solver_3d.hpp"
+#include "magnetoquasistatic_solver_3d.hpp"
 #include "magnetoquasistatic_solver.hpp"
 
 /**
@@ -32,13 +34,22 @@ private:
                 return std::make_unique<ElectrostaticSolver>(mesh, config);
             });
         
+        // Magnetics is two formulations, not one with a geometry switch: the 2D
+        // models solve a scalar potential (A_z / A_phi), '3d' the full vector
+        // potential in H(curl). See MagneticSolverBase.
         Register(PhysicsType::Magnetostatics,
             [](mfem::Mesh& mesh, const ProblemConfig& config) -> std::unique_ptr<PhysicsSolver> {
+                if (config.GeometryType == GeometryType::Cartesian3D) {
+                    return std::make_unique<MagnetostaticSolver3D>(mesh, config);
+                }
                 return std::make_unique<MagnetostaticSolver>(mesh, config);
             });
 
         Register(PhysicsType::Magnetoquasistatics,
             [](mfem::Mesh& mesh, const ProblemConfig& config) -> std::unique_ptr<PhysicsSolver> {
+                if (config.GeometryType == GeometryType::Cartesian3D) {
+                    return std::make_unique<MagnetoquasistaticSolver3D>(mesh, config);
+                }
                 return std::make_unique<MagnetoquasistaticSolver>(mesh, config);
             });
     }

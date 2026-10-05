@@ -30,8 +30,8 @@ public:
 								mfem::ElementTransformation& trans,
 								mfem::Vector& elvect) override
 	{
-		const int nd = el.GetDof();
-		elvect.SetSize(nd);
+		const int ndof = el.GetDof();
+		elvect.SetSize(ndof);
 		elvect = 0.0;
 
 		// A meridional boundary element is 1D, but it is embedded in the 2D
@@ -40,7 +40,7 @@ public:
 		MFEM_VERIFY(trans.GetSpaceDim() == 2,
 			"AxisymmetricBoundaryLFIntegrator requires a 2D (r,z) mesh.");
 
-		mfem::Vector shape(nd);
+		mfem::Vector shape(ndof);
 		mfem::Vector pos(trans.GetSpaceDim());
 		const mfem::IntegrationRule* ir = GetIntegrationRule(el, trans);
 

@@ -9,6 +9,8 @@
 #include <vector>
 #include <highfive/H5File.hpp>
 #include "field_export.hpp"
+#include "probe_sampler.hpp"
+#include "region_loss.hpp"
 #include "../core/problem_config.hpp"
 
 class Hdf5ResultsWriter {
@@ -18,8 +20,7 @@ public:
 		: file_(Open(path)), mesh_(mesh), order_(config.Order) {
 		file_.createAttribute("schema_version", 2);
 		file_.createAttribute("physics_type", std::string(ToString(config.PhysicsType)));
-		file_.createAttribute("geometry_type", std::string(
-			config.GeometryType == GeometryType::Axisymmetric ? "axisymmetric" : "planar"));
+		file_.createAttribute("geometry_type", std::string(ToString(config.GeometryType)));
 		file_.createAttribute("analysis_type", std::string(
 			config.AnalysisType == AnalysisType::CouplingMatrix ? "coupling_matrix" : "field"));
 		auto mesh_group = file_.createGroup("mesh");
@@ -46,7 +47,8 @@ public:
 
 	void WriteScenario(const std::string& id, const std::string& name,
 		const Scenario& scenario, const FieldExportSet& fields,
-		const std::string& driven_terminal = {}) {
+		const std::vector<ProbeSamples>& probes, const std::string& driven_terminal = {},
+		const std::vector<RegionLoss>& losses = {}) {
 		if (!file_.exist("scenarios")) file_.createGroup("scenarios");
 		auto group = file_.getGroup("scenarios").createGroup(id);
 		group.createAttribute("name", name);
@@ -54,14 +56,16 @@ public:
 		if (scenario.Frequency > 0.0) group.createAttribute("frequency_hz", scenario.Frequency);
 		if (!driven_terminal.empty()) group.createAttribute("driven_terminal", driven_terminal);
 		std::vector<std::string> terminals;
-		std::vector<double> values;
+		std::vector<double> values, phases;
 		for (const auto& excitation : scenario.Excitations) {
 			terminals.push_back(excitation.TerminalName);
 			values.push_back(excitation.Value);
+			phases.push_back(excitation.Phase);
 		}
 		auto excitations = group.createGroup("excitations");
 		excitations.createDataSet("terminal_names", terminals);
 		excitations.createDataSet("values", values);
+		excitations.createDataSet("phases_deg", phases);
 		auto field_group = group.createGroup("fields");
 		mfem::L2_FECollection collection(std::max(0, order_ - 1), mesh_.Dimension());
 		for (const auto& field : fields.Fields()) {
@@ -75,6 +79,19 @@ public:
 				else projected.ProjectCoefficient(*field.scalar);
 				WriteField(field_group, field.name, vector ? "vector" : "scalar", projected);
 			}
+		}
+		if (!probes.empty()) WriteProbes(group.createGroup("probes"), probes);
+		if (!losses.empty()) {
+			// Time-averaged Joule loss of every conducting region [W].
+			std::vector<std::string> names;
+			std::vector<double> power;
+			for (const RegionLoss& loss : losses) {
+				names.push_back(loss.Name);
+				power.push_back(loss.Power);
+			}
+			auto loss_group = group.createGroup("losses");
+			loss_group.createDataSet("region_names", names);
+			loss_group.createDataSet("power_w", power);
 		}
 		file_.flush();
 	}
@@ -106,6 +123,24 @@ private:
 		group.createDataSet("vertices", vertices);
 		group.createDataSet("attributes", attributes);
 		group.createDataSet("geometry", geometry);
+	}
+
+	// Per probe: "points" (count x space dimension) and one dataset per field
+	// (count x components), sampled exactly at the points.
+	static void WriteProbes(HighFive::Group parent, const std::vector<ProbeSamples>& probes) {
+		for (const ProbeSamples& probe : probes) {
+			auto group = parent.createGroup(probe.Name);
+			const std::size_t count = probe.Points.size();
+			std::vector<double> points;
+			for (const auto& point : probe.Points) points.insert(points.end(), point.begin(), point.end());
+			group.createDataSet<double>("points",
+				HighFive::DataSpace({count, probe.Points.front().size()})).write_raw(points.data());
+			for (const ProbeSamples::Field& field : probe.Fields) {
+				group.createDataSet<double>(field.Name,
+					HighFive::DataSpace({count, static_cast<std::size_t>(field.VDim)}))
+					.write_raw(field.Values.data());
+			}
+		}
 	}
 
 	static void WriteField(HighFive::Group parent, const std::string& name,

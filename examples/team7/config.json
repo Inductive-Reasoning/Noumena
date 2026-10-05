@@ -1,0 +1,185 @@
+{
+  "simulation": {
+    "physics_type": "magnetoquasistatics",
+    "mesh": "team7.msh",
+    "order": 2,
+    "geometry_type": "3d",
+    "analysis_type": "field",
+    "linear_solver": "iterative",
+    "solver_tolerance": 1e-08,
+    "solver_max_iter": 2000,
+    "solver_print_level": 0
+  },
+  "output": {
+    "directory": "results",
+    "hdf5": {},
+    "paraview": {},
+    "probes": [
+      {
+        "name": "A1B1",
+        "line": {
+          "from": [0.0, 0.072, 0.034],
+          "to": [0.288, 0.072, 0.034],
+          "count": 17
+        }
+      },
+      {
+        "name": "A2B2",
+        "line": {
+          "from": [0.0, 0.144, 0.034],
+          "to": [0.288, 0.144, 0.034],
+          "count": 17
+        }
+      },
+      {
+        "name": "Top",
+        "points": [
+          [0.0, 0.072, 0.019],
+          [0.018, 0.072, 0.019],
+          [0.126, 0.072, 0.019],
+          [0.144, 0.072, 0.019],
+          [0.162, 0.072, 0.019],
+          [0.18, 0.072, 0.019],
+          [0.198, 0.072, 0.019],
+          [0.216, 0.072, 0.019],
+          [0.234, 0.072, 0.019],
+          [0.252, 0.072, 0.019],
+          [0.27, 0.072, 0.019],
+          [0.288, 0.072, 0.019]
+        ],
+        "entity_group": "Plate"
+      },
+      {
+        "name": "Bottom",
+        "points": [
+          [0.0, 0.072, 0.0],
+          [0.018, 0.072, 0.0],
+          [0.126, 0.072, 0.0],
+          [0.144, 0.072, 0.0],
+          [0.162, 0.072, 0.0],
+          [0.18, 0.072, 0.0],
+          [0.198, 0.072, 0.0],
+          [0.216, 0.072, 0.0],
+          [0.234, 0.072, 0.0],
+          [0.252, 0.072, 0.0],
+          [0.27, 0.072, 0.0],
+          [0.288, 0.072, 0.0]
+        ],
+        "entity_group": "Plate"
+      }
+    ]
+  },
+  "entity_groups": [
+    {
+      "name": "Air",
+      "dim": 3,
+      "attribute_ids": [
+        1
+      ]
+    },
+    {
+      "name": "Plate",
+      "dim": 3,
+      "attribute_ids": [
+        2
+      ]
+    },
+    {
+      "name": "Coil",
+      "dim": 3,
+      "attribute_ids": [
+        3
+      ]
+    },
+    {
+      "name": "Outer",
+      "dim": 2,
+      "attribute_ids": [
+        1
+      ]
+    },
+    {
+      "name": "Cut",
+      "dim": 2,
+      "attribute_ids": [
+        2
+      ]
+    }
+  ],
+  "regions": [
+    {
+      "name": "Air",
+      "entity_group": "Air",
+      "material": "Air"
+    },
+    {
+      "name": "Plate",
+      "entity_group": "Plate",
+      "material": "Aluminium"
+    },
+    {
+      "name": "Coil",
+      "entity_group": "Coil",
+      "material": "Air"
+    }
+  ],
+  "materials": [
+    {
+      "name": "Air",
+      "properties": {
+        "mu_r": 1.0,
+        "sigma": 0.0
+      }
+    },
+    {
+      "name": "Aluminium",
+      "properties": {
+        "mu_r": 1.0,
+        "sigma": 35260000.0
+      }
+    }
+  ],
+  "terminals": [
+    {
+      "name": "Coil",
+      "quantity": "current",
+      "entity_group": "Coil",
+      "conductor_type": "stranded",
+      "direction": {
+        "type": "cut",
+        "cut": "Cut",
+        "normal": [1.0, 0.0, 0.0]
+      }
+    }
+  ],
+  "boundary_conditions": [
+    {
+      "name": "Outer",
+      "type": "dirichlet",
+      "entity_group": "Outer",
+      "value": 0.0
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "50Hz",
+      "frequency": 50.0,
+      "excitations": [
+        {
+          "terminal": "Coil",
+          "value": 2742.0
+        }
+      ]
+    },
+    {
+      "name": "200Hz",
+      "frequency": 200.0,
+      "excitations": [
+        {
+          "terminal": "Coil",
+          "value": 2742.0
+        }
+      ]
+    }
+  ]
+}

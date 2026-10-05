@@ -39,8 +39,11 @@ public:
 					   const std::string& collection_name,
 					   const FieldExportSet& fields) const
 	{
+		// ParaViewDataCollection and the L2 projections below are dimension-
+		// generic, so 2D and 3D meshes are both supported.
 		const int dim = mesh.Dimension();
-		MFEM_ASSERT(dim == 2, "ParaView export assumes a 2D mesh.");
+		MFEM_VERIFY(dim == 2 || dim == 3,
+			"ParaView export supports 2D and 3D meshes, not " << dim << "D.");
 
 		mfem::ParaViewDataCollection pv(collection_name, &mesh);
 		pv.SetPrefixPath(directory.string());
@@ -97,7 +100,12 @@ public:
 				   const FieldExportSet& fields,
 				   gmsh_results::MshVersion gmsh_version) const
 	{
-		MFEM_ASSERT(mesh.Dimension() == 2, "Gmsh export assumes a 2D mesh.");
+		// Node layouts exist for triangles and quadrilaterals (2D) and for
+		// tetrahedra and hexahedra (3D); an unsupported element type is
+		// reported by the layout code itself.
+		MFEM_VERIFY(mesh.Dimension() == 2 || mesh.Dimension() == 3,
+			"Gmsh export supports 2D and 3D meshes, not "
+			<< mesh.Dimension() << "D.");
 
 		const int order = std::max(1, solution_order);
 		std::vector<gmsh_results::View> views;
@@ -105,14 +113,16 @@ public:
 		for (const auto& f : fields.Fields()) {
 			switch (f.kind) {
 				case FieldExport::Kind::Primary: {
-					// Sampled through a scalar path, so only scalar primaries
-					// are handled. A vector-valued primary needs a vector view;
-					// fail loudly rather than silently exporting component 0.
-					MFEM_VERIFY(f.primary->VectorDim() == 1,
-						"Gmsh export of vector-valued primary field '" + f.name +
-						"' is not implemented.");
-					views.push_back(
-						gmsh_results::MakeScalarNodeView(f.name, *f.primary));
+					// A scalar primary (H1) is continuous and goes out as nodal
+					// data. A vector primary (the 3D Nedelec A) is only
+					// tangentially continuous, so it goes out per element.
+					if (f.primary->VectorDim() == 1) {
+						views.push_back(
+							gmsh_results::MakeScalarNodeView(f.name, *f.primary));
+					} else {
+						views.push_back(
+							gmsh_results::MakeVectorGridFunctionView(f.name, *f.primary));
+					}
 					break;
 				}
 				case FieldExport::Kind::DerivedScalar:

@@ -1,13 +1,15 @@
-# MFEM-ElectroMag
+# Noumena
 
-A finite element solver for electromagnetic problems using MFEM (Modular Finite Element Methods). This solver supports electrostatic, magnetostatic, and magnetoquasistatic problems in both axisymmetric and planar geometries.
+A finite element solver for electromagnetic problems using MFEM (Modular Finite Element Methods). This solver supports electrostatic, magnetostatic, and magnetoquasistatic problems in axisymmetric and planar 2D geometries and in full 3D.
+
+Noumena is an independent project built on MFEM; it is not affiliated with or endorsed by the MFEM team or LLNL.
 
 ## Features
 
 - **Electrostatics**: Solves for electric potential and field distributions
 - **Magnetostatics**: Solves for magnetic vector potential and field distributions
 - **Magnetoquasistatics**: Time-harmonic eddy current problems
-- **Axisymmetric and Planar**: Supports both 2D coordinate systems
+- **Axisymmetric, Planar and 3D**: Both 2D coordinate systems, plus full 3D for every physics type
 - **JSON Configuration**: Easy problem setup via JSON files
 - **ParaView Output**: Direct visualization of results
 - **Comprehensive Testing**: Unit and integration tests with Catch2
@@ -28,6 +30,8 @@ A finite element solver for electromagnetic problems using MFEM (Modular Finite 
 - **MFEM** (v4.7): Automatically downloaded and built by CMake
 - **HDF5** (1.14.6): C library, automatically downloaded and built statically by CMake
 - **HighFive** (3.1.1): Header-only C++ wrapper for HDF5, automatically downloaded by CMake
+- **Eigen** (3.4.0): Header-only sparse direct solvers (MPL2 subset only), automatically downloaded by CMake
+- **AMGCL** (1.5.0): Header-only algebraic multigrid (MIT) for the iterative solver, automatically downloaded by CMake
 
 No separate HDF5 installation is required. The HDF5 build excludes optional tools,
 language bindings, MPI, and zlib/SZip compression dependencies. HDF5 and HighFive
@@ -36,9 +40,16 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 
 ### Optional
 
-- **HYPRE**: For advanced preconditioners and solvers
-- **METIS**: For mesh partitioning
-- **OpenMP**: For parallel assembly (usually included with compiler)
+- **MPI** (OpenMPI, MPICH, or MS-MPI on Windows): only for the MPI build
+  (`-DUSE_MPI=ON`), which adds HYPRE's BoomerAMG and AMS solvers
+- **HYPRE** (v3.0.0): built automatically in the MPI build, or supplied via `HYPRE_DIR`
+- **STRUMPACK** (v8.0.0, BSD): the sparse direct solver of the MQS systems,
+  built automatically when a Fortran compiler, BLAS/LAPACK and METIS are found;
+  see [STRUMPACK](#strumpack)
+- **METIS** (5.x): needed by STRUMPACK, and in the MPI build for multi-rank
+  partitioning, which is not implemented yet; found on the default paths or
+  via `METIS_DIR`
+- **OpenMP**: threads the linear algebra (usually included with the compiler); see [Threads](#threads)
 - **Doxygen**: For generating API documentation
 - **Catch2**: For running tests (automatically downloaded)
 
@@ -50,10 +61,12 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 # Install dependencies
 sudo apt-get update
 sudo apt-get install -y cmake g++ git
+# For STRUMPACK (optional, recommended for MQS):
+sudo apt-get install -y gfortran libopenblas-dev libmetis-dev
 
 # Clone the repository
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 
 # Build
 mkdir build
@@ -69,8 +82,8 @@ make -j$(nproc)
 brew install cmake git
 
 # Clone the repository
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 
 # Build
 mkdir build
@@ -88,8 +101,8 @@ Using Visual Studio:
 # Download from: https://cmake.org/download/ and https://git-scm.com/
 
 # Clone the repository
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 
 # Create build directory
 mkdir build
@@ -111,39 +124,89 @@ Using MinGW/MSYS2:
 pacman -S mingw-w64-x86_64-cmake mingw-w64-x86_64-gcc git
 
 # Clone and build
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 mkdir build
 cd build
 cmake .. -G "MinGW Makefiles"
 mingw32-make -j
 ```
 
-## Building with MFEM Options
+## STRUMPACK
 
-MFEM will be automatically downloaded and configured. To enable optional MFEM features:
+The MQS solvers' `direct` linear solver factors the complex system with
+[STRUMPACK](https://github.com/pghysels/STRUMPACK), 10 to 60 times faster and
+with 5 to 10 times less memory than the fallback, Eigen's LU of the packed
+real form (measured on 2D and 3D MQS systems of 31k to 66k unknowns; a 66k
+3D system factors in about a second instead of 75 s). It is on by default
+(`USE_STRUMPACK`) and needs:
+
+- a Fortran compiler: gfortran, LLVM Flang or Intel ifx;
+- BLAS and LAPACK (OpenBLAS, MKL, ...);
+- METIS 5, on the default search paths or via `-DMETIS_DIR=<prefix>`.
+
+If any is missing, CMake warns and builds without it. The first configure
+fetches and builds STRUMPACK into `<build>/tpl/strumpack` (a minute or two,
+once); to use an existing installation pass `-DSTRUMPACK_ROOT=<prefix>`, and
+to build without it, `-DUSE_STRUMPACK=OFF`.
+
+On Windows, MSVC has no Fortran compiler. Use clang-cl with LLVM Flang (or
+Intel ifx) and a single-configuration generator such as Ninja, with
+BLAS/LAPACK (for example OpenBLAS) and METIS from vcpkg. STRUMPACK has been
+built and checked here with Clang and Flang 19 on Linux; the Windows toolchain
+itself has not been tested.
+
+## MPI/HYPRE Build
+
+The default build is serial and needs no MPI. The MPI build links MFEM against
+MPI and HYPRE, which the 3D magnetic solvers need for their iterative
+(AMS-preconditioned) solves:
 
 ```bash
-# In the build directory
-cmake .. -DMFEM_USE_METIS=ON
-make -j
+sudo apt-get install -y openmpi-bin libopenmpi-dev   # or mpich
+cmake -S . -B build-mpi -DCMAKE_BUILD_TYPE=Release -DUSE_MPI=ON
+cmake --build build-mpi -j
 ```
+
+The first configure fetches and builds HYPRE into `build-mpi/tpl/hypre`
+(a few minutes, once). To use an existing HYPRE instead, pass
+`-DHYPRE_DIR=<prefix>`; with vcpkg on Windows, install the `msmpi` and `hypre`
+ports and point `HYPRE_DIR` at the vcpkg installation. `-DMETIS_DIR=<prefix>`
+enables METIS.
+
+An MPI build currently runs on **one rank**: run the executable directly or
+with `mpirun -np 1`. Starting more ranks is rejected, since the solvers and
+result writers are not distributed yet. `--version` reports whether a binary
+is a `serial` or `MPI/HYPRE` build.
+
+### Threads
+
+With `USE_OPENMP` (on by default) the linear algebra is threaded over
+`OMP_NUM_THREADS` threads (default: every core): the Krylov solvers' matrix
+and vector operations (MFEM's OpenMP backend), AMGCL's multigrid and, in the
+MPI build, HYPRE's AMS and BoomerAMG. Assembly and the rest stay serial. On
+four cores the TEAM 7 eddy-current solve (0.9M complex unknowns) runs 2.5x
+faster than on one (168 s against 428 s).
+
+Under `mpirun`, Open MPI binds a rank to one core, which leaves every thread
+sharing it. Run the executable directly, or pass `--bind-to none`
+(`mpirun --bind-to none -np 1 ./noumena config.json`).
 
 ## Usage
 
-After building, the executable `mfem-electromag` will be in the `build` directory:
+After building, the executable `noumena` will be in the `build` directory:
 
 ```bash
 # Run with a configuration file
-./mfem-electromag path/to/config.json
+./noumena path/to/config.json
 
-# Example: Run test cases
-./mfem-electromag ../test/electrostatic_test.json
-./mfem-electromag ../test/magnetostatic_test.json
-./mfem-electromag ../test/mqs_test.json
+# Example: the shipped examples (see examples/README.md)
+./noumena ../examples/simple_capacitor/config.json
+./noumena ../examples/solenoid/config.json
+./noumena ../examples/eddy_current/config.json
 
 # Run with OpenMP parallelism (if enabled)
-OMP_NUM_THREADS=4 ./mfem-electromag config.json
+OMP_NUM_THREADS=4 ./noumena config.json
 ```
 
 ### Command-Line Options
@@ -169,7 +232,15 @@ ctest --output-on-failure
 
 # Or run test executable directly
 ./mfem_tests
+
+# Only the checks against closed-form solutions
+./mfem_tests "[analytic]"
 ```
+
+The closed-form checks on round geometry (wires, a tube, spheres) generate
+their curved meshes with Gmsh and skip if CMake did not find it. The TEAM
+benchmarks are run on demand: `./mfem_tests "[team7]"` (also `[team15]`,
+`[team21a]`).
 
 ### Generating Documentation
 
@@ -189,15 +260,13 @@ in millimetres solves cleanly and returns silently wrong absolute quantities.
 There is no unit or scale key in the schema; see
 [Units](docs/config_reference.md#units).
 
-See the `test/` directory for examples of:
-- `electrostatic_test.json`: Electrostatic problem setup
-- `magnetostatic_test.json`: Magnetostatic problem setup
-- `mqs_test.json`: Magnetoquasistatic problem setup
-
 See `examples/` directory for complete example problems with documentation:
 - `simple_capacitor/`: Parallel plate capacitor with analytical validation
 - `solenoid/`: Magnetostatic coil with field calculations
 - `eddy_current/`: Time-harmonic eddy current analysis
+- `team7/`, `team15/`, `team21a/`: 3D TEAM benchmarks compared with their measurements
+
+The full list is in [examples/README.md](examples/README.md).
 
 ### MQS Frequency Scenarios
 

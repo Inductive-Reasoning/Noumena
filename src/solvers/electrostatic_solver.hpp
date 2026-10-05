@@ -9,10 +9,10 @@
 #include <vector>
 #include "mfem.hpp"
 #include "physics_solver.hpp"
-#include "../axisym/axisymmetric_diffusion_integrator.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../io/gmsh_results_writer.hpp"
 #include "amr_support.hpp"
+#include "../linalg/amg_preconditioner.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
 
 class ElectrostaticSolver : public PhysicsSolver {
@@ -25,10 +25,17 @@ class ElectrostaticSolver : public PhysicsSolver {
 	std::unique_ptr<mfem::PWConstCoefficient> epsilon_coeff;
 
 	std::unique_ptr<mfem::LinearForm> b;
-	mfem::Vector neumann_rhs;
+	mfem::Vector natural_rhs; // Neumann flux + Robin data load (boundary data)
 	std::unique_ptr<mfem::BilinearForm> a;
 
-	std::unique_ptr<mfem::SparseMatrix> K0;
+	// Robin coefficients and markers bound into `a`. MFEM keeps pointers to
+	// both, so they live as long as the form does.
+	std::vector<std::unique_ptr<mfem::ConstantCoefficient>> robin_coeffs;
+	std::vector<std::unique_ptr<mfem::Array<int>>> robin_markers;
+
+	// The system operator before essential elimination, for the coupling
+	// charge extraction Q = K*x. See BuildOperators().
+	std::unique_ptr<mfem::SparseMatrix> K;
 	std::unique_ptr<mfem::DenseMatrix> C; // Coupling Matrix for terminals
 
 	// Terminal name -> boundary marker, resolved once at setup. This solver
@@ -46,6 +53,10 @@ class ElectrostaticSolver : public PhysicsSolver {
 	// selected and reused for every scenario's RHS. Null when solving iteratively.
 	std::unique_ptr<SparseDirectSolver> direct_solver;
 
+	// Multigrid preconditioner for the iterative path, built once per mesh like
+	// direct_solver and reused for every scenario. Null when solving directly.
+	std::unique_ptr<AmgPreconditioner> amg;
+
 public:
 	ElectrostaticSolver(mfem::Mesh& m, const ProblemConfig& c) : PhysicsSolver(m, c) {}
 
@@ -53,8 +64,7 @@ public:
 		int order = config.Order;
 		const int dim = mesh.Dimension();
 
-		// Axisymmetric or Planar
-		geometry = config.GeometryType;
+		InitializeGeometry();
 		for (const auto& [term_name, term] : config.Terminals) {
 			MFEM_VERIFY(term.DriveQuantity == Quantity::Voltage,
 				"Electrostatic terminal '" + term_name +
@@ -76,6 +86,13 @@ public:
 			return m.RelPermittivity * Constants::EPSILON_0; });
 
 		boundary_conditions = BuildBoundaryConditions();
+		for (const auto& bc : boundary_conditions) {
+			MFEM_VERIFY(!bc.IsRobin() || bc.Condition.RobinCoeff >= 0.0,
+				"Robin boundary group '" + bc.Condition.EntityGroupName +
+				"' has a negative robin_coefficient; electrostatics requires "
+				"a non-negative one (eps/R for a spherical far-field boundary "
+				"of radius R).");
+		}
 
 		// Voltage terminals are realized as essential constraints in this
 		// formulation. They are not boundary conditions: the value is
@@ -87,6 +104,7 @@ public:
 		}
 
 		BuildEssentialBoundaryMarker();
+		RequireReferencePotential();
 
 		// Build the FE space and everything bound to it for the starting mesh.
 		BuildOperators();
@@ -98,6 +116,12 @@ public:
 		validator.ValidateBoundaryConditions(boundary_conditions.Entries(),
 			terminal_markers, /*allow_overlap=*/false);
 	}
+
+	// Robin conditions ((eps dV/dn) + RobinCoeff * V = Value, outward normal)
+	// are assembled into the operator; see BuildOperators(). The coefficient
+	// must be non-negative: a negative one makes the operator indefinite, which
+	// both the Cholesky factorization and PCG require it not to be.
+	bool SupportsRobin() const override { return true; }
 
 	// Driven electrodes pin their DOFs exactly as a Dirichlet condition does, so
 	// every terminal marker joins the prescribed Dirichlet ones. Only the value
@@ -125,26 +149,39 @@ public:
 		x = std::make_unique<mfem::GridFunction>(fespace.get());
 		*x = 0.0;
 
-		// Assemble Stiffness Matrix
+		robin_coeffs.clear();
+		robin_markers.clear();
+		for (const auto& bc : boundary_conditions) {
+			if (!bc.IsRobin() || bc.Condition.RobinCoeff == 0.0) continue;
+			robin_coeffs.push_back(
+				std::make_unique<mfem::ConstantCoefficient>(bc.Condition.RobinCoeff));
+			robin_markers.push_back(std::make_unique<mfem::Array<int>>(bc.Marker));
+		}
 		a = std::make_unique<mfem::BilinearForm>(fespace.get());
-		a->AddDomainIntegrator(MakeStiffnessIntegrator()); // a takes ownership
+		AddOperatorIntegrators(*a);
 		a->Assemble();
 
-		// Snapshot the UNCONSTRAINED stiffness matrix (used for charge Q = K0*x)
-		// before FormSystemMatrix eliminates the essential DOFs from a's SpMat.
-		//
-		// INVARIANT: K0 must contain the DOMAIN stiffness and nothing else. The
-		// charge extraction Q = K0*x is Gauss's law over the volume; a boundary
-		// term added to `a` is part of the operator but not part of that
-		// relation, so it would silently shift every extracted charge and
-		// capacitance with no error and no failing assertion. Any future
-		// boundary contribution (a Robin/impedance condition being the likely
-		// one) must therefore be added to `a` AFTER this snapshot, never before.
-		K0 = std::make_unique<mfem::SparseMatrix>(a->SpMat());
+		// The same operator, unconstrained, for the charge extraction Q = K*x.
+		// Essential elimination rewrites `a`'s matrix, so K is assembled by a
+		// form of its own from the same integrators. It must be the whole
+		// operator, Robin terms included: a terminal DOF's basis function also
+		// reaches onto any Robin boundary next to the terminal, and the charge
+		// on the terminal is that DOF's full residual. With the domain
+		// stiffness alone, the flux through the adjoining Robin faces would be
+		// counted as terminal charge. Only coupling runs extract charge, so
+		// only they pay for it.
+		K.reset();
+		if (config.AnalysisType == AnalysisType::CouplingMatrix) {
+			mfem::BilinearForm unconstrained(fespace.get());
+			AddOperatorIntegrators(unconstrained);
+			unconstrained.Assemble();
+			unconstrained.Finalize();
+			K.reset(unconstrained.LoseMat());
+		}
 
 		// Linear Form (RHS)
 		b = std::make_unique<mfem::LinearForm>(fespace.get());
-		neumann_rhs = AssembleNeumannBoundaryLoad();
+		natural_rhs = AssembleNaturalBoundaryLoad();
 
 		fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
 
@@ -157,9 +194,17 @@ public:
 		// cost is paid once per mesh instead of once per scenario. AMR rebuilds it
 		// implicitly by re-running BuildOperators() after each refinement.
 		direct_solver.reset();
+		amg.reset();
 		if (config.LinearSolver == LinearSolverType::Direct) {
+			WarnOnLargeDirectSolve(fespace->GetTrueVSize());
 			auto operation = Reporter().Start("sparse direct factorization");
 			direct_solver = std::make_unique<SparseDirectSolver>(SystemMatrix());
+		}
+		else {
+			// Built once per mesh like the factorization, and reused for every
+			// scenario's right-hand side.
+			auto operation = Reporter().Start("algebraic multigrid setup");
+			amg = std::make_unique<AmgPreconditioner>(SystemMatrix());
 		}
 	}
 
@@ -174,14 +219,22 @@ public:
 	// Create the domain diffusion integrator matching the active geometry. Used
 	// both by the solve (owned by 'a') and the AMR error estimator (a separate,
 	// independently-owned instance), so the estimated error is consistent with
-	// the assembled operator - axisymmetric (2*pi*r, eps) or planar (eps).
+	// the assembled operator: Div(eps Grad V) = 0 under the geometry's measure
+	// (2*pi*r for axisymmetric, the plain Cartesian Laplacian in 2D and 3D).
 	mfem::BilinearFormIntegrator* MakeStiffnessIntegrator() const {
-		if (geometry == GeometryType::Axisymmetric) {
-			// Solves: Div( r * eps * Grad(V) ) = 0; integrator handles 'r' and 'eps'.
-			return new AxisymmetricDiffusionIntegrator(*epsilon_coeff);
+		return Geometry().NewDiffusionIntegrator(*epsilon_coeff);
+	}
+
+	// The system operator's integrators: the domain stiffness plus the Robin
+	// terms (RobinCoeff * V, v) over each Robin boundary, all under the
+	// geometry's measure. The form takes ownership of the integrators; the
+	// Robin coefficients and markers stay with this solver.
+	void AddOperatorIntegrators(mfem::BilinearForm& form) const {
+		form.AddDomainIntegrator(MakeStiffnessIntegrator());
+		for (size_t i = 0; i < robin_coeffs.size(); ++i) {
+			form.AddBoundaryIntegrator(
+				Geometry().NewBoundaryMassIntegrator(*robin_coeffs[i]), *robin_markers[i]);
 		}
-		// Solves: Div( eps * Grad(V) ) = 0; standard Cartesian Laplacian.
-		return new mfem::DiffusionIntegrator(*epsilon_coeff);
 	}
 
 	// Estimate per-element error on the CURRENT mesh. The scenario-wide fold (a
@@ -254,7 +307,7 @@ public:
 		*b = 0.0;
 
 		if (mode == ImprintMode::Field) {
-			*b = neumann_rhs;
+			*b = natural_rhs;
 			ForEachNonzeroDirichlet([&](mfem::Array<int>& marker, double value) {
 				mfem::ConstantCoefficient c(value);
 				x->ProjectBdrCoefficient(c, marker);
@@ -263,7 +316,7 @@ public:
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.DriveQuantity == Quantity::Voltage) {
 				mfem::Array<int> marker(terminal_markers.at(term_name));
-				mfem::ConstantCoefficient c(ExcitationFor(sc, term_name));
+				mfem::ConstantCoefficient c(ExcitationFor(sc, term_name).real());
 				x->ProjectBdrCoefficient(c, marker);
 			}
 			else
@@ -316,9 +369,7 @@ public:
 			direct_solver->Mult(B, X);
 		}
 		else {
-			mfem::GSSmoother M(SystemMatrix());
-			mfem::PCG(*A_op, M, B, X, Reporter().SolverPrintLevel(config.SolverPrintLevel),
-				config.SolverMaxIter, config.SolverTolerance, 0.0);
+			SolveSpdIteratively(*A_op, *amg, B, X);
 		}
 		a->RecoverFEMSolution(X, *b, *x);
 	}
@@ -358,13 +409,13 @@ public:
 private:
 	// CouplingMatrix post-solve action for one column: with the just-solved
 	// potential in *x (terminal `col` driven at 1 V, the rest grounded by the
-	// synthesized scenario), gather the reaction charge Q = K0*x onto every
+	// synthesized scenario), gather the reaction charge Q = K*x onto every
 	// conductor's boundary DOFs and write column `col` of C. Off-diagonals are
-	// negative, diagonals positive. K0 carries the full geometric measure in
+	// negative, diagonals positive. K carries the full geometric measure in
 	// both planar and axisymmetric mode, so Q is already in coulombs and needs
 	// no geometry-dependent scaling here.
 	// The coupling solve is imprinted in CouplingPerturbation mode, so the load
-	// vector is identically zero and K0*x is the full reaction, with no RHS
+	// vector is identically zero and K*x is the full reaction, with no RHS
 	// contribution left to subtract.
 	// Terminal order matches BuildSolveScenarios() / WriteCouplingMatrix()
 	// (config.Terminals order).
@@ -374,7 +425,7 @@ private:
 		for (const auto& kv : config.Terminals) terms.push_back(&kv);
 
 		mfem::Vector Q(fespace->GetVSize());
-		K0->Mult(*x, Q);
+		K->Mult(*x, Q);
 
 		for (int k = 0; k < static_cast<int>(terms.size()); ++k) {
 			mfem::Array<int> vdofs_k;

@@ -27,10 +27,11 @@ in metres; see [Units](../../docs/config_reference.md#units))
 ```
 δ = √(2 / (ω μ σ))
   = √(2 / (377 × 4π×10⁻⁷ × 3.5×10⁷))
-  = 1.47 mm
+  = 10.98 mm
 ```
 
-The field penetrates only ~1.5 mm into the aluminum at 60 Hz.
+At 60 Hz the skin depth is about a fifth of the cylinder's 50 mm radius, so
+the skin effect is moderate: the field reaches well into the aluminium.
 
 ## Physical Phenomena
 
@@ -51,18 +52,19 @@ The field penetrates only ~1.5 mm into the aluminum at 60 Hz.
 
 ## Analytical Approximation
 
-For a thin conducting sheet:
+For a conductor much thicker than the skin depth (the half-space limit,
+δ ≪ R; at 60 Hz this cylinder is only roughly in it):
 
 **Surface resistance:**
 ```
-R_s = √(ω μ / (2 σ))
+R_s = √(ω μ / (2 σ)) = 1 / (σ δ)
     = √(377 × 4π×10⁻⁷ / (2 × 3.5×10⁷))
-    = 5.2 × 10⁻⁵ Ω/square
+    = 2.60 × 10⁻⁶ Ω/square
 ```
 
-**Power loss per unit area:**
+**Power loss per unit area**, with `H_t` the peak tangential surface field:
 ```
-P/A = ½ R_s |H_surface|²
+P/A = ½ R_s |H_t|²
 ```
 
 ## Running the Example
@@ -73,7 +75,7 @@ cmake -S . -B build
 cmake --build build --config Release
 
 # Run simulation
-./build/mfem-electromag examples/eddy_current/config.json
+./build/noumena examples/eddy_current/config.json
 ```
 
 This config does **not** enable file output. Add a top-level `output` block:
@@ -113,7 +115,8 @@ The simulation produces complex-valued fields:
 
 1. **A_real, A_imag:** In-phase and quadrature components of vector potential
 2. **B_real, B_imag:** Real and imaginary parts of magnetic flux density
-3. **B_magnitude:** RMS magnitude = √(B_real² + B_imag²)
+3. **B_Magnitude:** √(|B_real|² + |B_imag|²), a peak-phasor magnitude:
+   √2 times the RMS value for a field of fixed direction
 4. **Power loss:** Concentrated near conductor surface
 
 ## Visualization
@@ -146,14 +149,11 @@ To animate the time-harmonic solution:
 
 **Critical:** Mesh must resolve skin depth!
 
-- **In conductor:** Element size ≤ δ/3 ≈ 0.5 mm near surface
-- **Boundary layer:** Use graded mesh from surface inward
-- **Air region:** Coarser mesh acceptable (5-10 mm)
-
-**Typical mesh:**
-- Surface layer: 5-10 elements within 3δ ≈ 4.5 mm
-- Geometric growth ratio: 1.2-1.5
-- Total elements: 10,000-50,000 depending on order
+- **In conductor:** element size about δ/3 near the surface at the highest
+  frequency solved. The shipped mesh uses 0.9 mm, a third of the 2.7 mm skin
+  depth at 1 kHz (see `eddy_current.geo`).
+- **Boundary layer:** use a mesh graded from the surface inward
+- **Air region:** coarser mesh acceptable (15-40 mm in the shipped mesh)
 
 ## Validation
 
@@ -162,13 +162,16 @@ The analytical figures above are for 60 Hz, so validate against the
 between its 31.6 Hz and 100 Hz points but does not land on it).
 
 ### 1. Skin Depth Check
-Plot |B| vs depth into conductor:
+Plot |B| vs depth into conductor. Where δ is small against the radius (the
+upper sweep points; δ = 2.7 mm at 1 kHz), the decay follows the half-space
+law
 
 ```
 |B(x)| / |B(0)| ≈ e^(-x/δ)
 ```
 
-At depth x = δ, field should drop to ~37% (1/e) of surface value.
+and at depth x = δ the field drops to ~37% (1/e) of its surface value. At
+60 Hz, with δ ≈ R/5, the cylinder's curvature changes the profile.
 
 ### 2. Power Loss
 Compare computed losses to analytical for simple geometry. The solver reports
@@ -178,7 +181,9 @@ the peak-phasor excitation convention.
 
 ### 3. Phase Relationship
 Inside conductor:
-- Current lags applied field by ~45°
+- In the half-space limit the surface current density lags the surface
+  field by 45°; in a finite cylinder with δ comparable to its size the angle
+  differs and varies over the surface
 - Phase increases with depth
 
 ## Frequency Sweep
@@ -215,28 +220,27 @@ archive enabled by `output.hdf5`. Coupling fields are omitted unless
 `output.export_fields_for_coupling_matrix` is true. See [the HDF5 schema](../../docs/coupling_hdf5.md)
 for the shared frequency axis and quantity groups.
 
-**Expected trends:**
+**Expected trends** (for this fixed source current):
 - Higher f → smaller δ (stronger skin effect)
-- Higher f → greater power loss
+- Higher f → greater power loss (growing like f² while δ is large against
+  the conductor, like √f once it is small)
 - Higher f → better shielding
 
 **At 1 kHz:**
 ```
-δ = 1.47 mm / √(1000/60) = 0.36 mm
+δ = 10.98 mm / √(1000/60) = 2.69 mm
 ```
-
-Much more confined to surface!
 
 ## Material Variations
 
 Compare different conductors:
 
-| Material | σ (S/m) | δ @ 60 Hz | Application |
-|----------|---------|-----------|-------------|
-| Aluminum | 3.5×10⁷ | 1.5 mm | Lightweight |
-| Copper   | 5.8×10⁷ | 1.1 mm | High conductivity |
-| Steel    | 1.0×10⁶ | 7.0 mm | Structural, magnetic |
-| Carbon   | 1.0×10⁴ | 230 mm | Composite materials |
+| Material | σ (S/m) | μᵣ | δ @ 60 Hz | Application |
+|----------|---------|----|-----------|-------------|
+| Aluminum | 3.5×10⁷ | 1 | 11.0 mm | Lightweight |
+| Copper   | 5.8×10⁷ | 1 | 8.5 mm | High conductivity |
+| Steel    | 1.0×10⁶ | 100 | 6.5 mm | Structural, magnetic (δ ∝ 1/√μᵣ; 65 mm at μᵣ = 1) |
+| Carbon   | 1.0×10⁴ | 1 | 650 mm | Composite materials |
 
 ## Applications
 
@@ -253,6 +257,8 @@ This example models:
 
 Integrate power loss density:
 
+For a passive conductor, where E = −jωA:
+
 ```
 P_total = ∫_conductor (σ ω² / 2) |A|² dV
 ```
@@ -261,13 +267,13 @@ Extract from simulation output.
 
 ### 2. Force Calculation
 
-Lorentz force on conductor:
+Time-averaged Lorentz force on the conductor, from the peak phasors:
 
 ```
-F = ∫ J × B dV
+⟨F⟩ = ½ Re ∫ J × B* dV
 ```
 
-Causes repulsion or attraction depending on phase.
+Its sign depends on the phase between the induced current and the field.
 
 ### 3. Impedance
 

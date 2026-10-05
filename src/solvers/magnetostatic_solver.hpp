@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <sstream>
 
+#include <map>
 #include "mfem.hpp"
 #include "magnetic_solver.hpp"
 #include "../axisym/axisymmetric_curl_curl_integrator.hpp"
@@ -16,6 +17,7 @@
 #include "../config/boundary_validation.hpp"
 #include "../core/constants.hpp"
 #include "../io/gmsh_results_writer.hpp"
+#include "../linalg/amg_preconditioner.hpp"
 #include "../linalg/sparse_direct_solver.hpp"
 
 class MagnetostaticSolver : public MagneticSolver
@@ -26,7 +28,16 @@ private:
 	// Resources (order of declaration = order of destruction)
 	std::unique_ptr<mfem::GridFunction> A; // A_phi (axisym) or A_z (planar scalar)
 
-	std::unique_ptr<mfem::PWConstCoefficient> j_coeff; // J_phi (axisym) or J (planar scalar src)
+	std::unique_ptr<mfem::PWConstCoefficient> j_coeff; // stranded J_phi (axisym) or J (planar)
+
+	// Each massive conductor's DC load for a unit voltage and its conductance
+	// G on the current mesh (MagneticSolver::MassiveConductorLoad); a current
+	// I loads the field with (I / G) * load.
+	struct MassiveSource {
+		mfem::Vector load;
+		double conductance = 0.0;
+	};
+	std::map<std::string, MassiveSource> massive_sources;
 
 	std::unique_ptr<mfem::LinearForm> b;
 	std::unique_ptr<mfem::BilinearForm> a;
@@ -42,6 +53,9 @@ private:
 	// as A_op. Null when the iterative solver is configured.
 	std::unique_ptr<SparseDirectSolver> direct_solver;
 
+	// Multigrid preconditioner for the iterative path; see ElectrostaticSolver.
+	std::unique_ptr<AmgPreconditioner> amg;
+
 	std::unique_ptr<mfem::DenseMatrix> L; // Inductance matrix (coupling matrix) for the current mesh
 
 public:
@@ -52,8 +66,7 @@ public:
 		int order = config.Order;
 		const int dim = mesh.Dimension();
 
-		// Axisymmetric or Planar
-		geometry = config.GeometryType;
+		InitializeMagneticGeometry();
 		for (const auto& [term_name, term] : config.Terminals) {
 			MFEM_VERIFY(term.DriveQuantity == Quantity::Current,
 				"Magnetostatic terminal '" + term_name +
@@ -68,11 +81,16 @@ public:
 		fec = std::make_unique<mfem::H1_FECollection>(order, dim);
 
 		// Material Properties (Reluctivity nu = 1/mu), keyed by mesh DOMAIN attribute.
-		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, [](const Material& m) {
-			return 1.0 / (Constants::MU_0 * m.RelPermeability); });
+		BuildReluctivity();
+		BuildConductivity();
+		for (const auto& [term_name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Massive) continue;
+			ValidateMassiveConductor(term_name, config.EntityGroups.at(term.EntityGroupName).AttributeIds);
+		}
 
 		boundary_conditions = BuildBoundaryConditions();
 		BuildEssentialBoundaryMarker();
+		RequireReferencePotential();
 
 		// Build the FE space and everything bound to it for the starting mesh.
 		BuildOperators();
@@ -87,9 +105,17 @@ public:
 	void BuildOperators() override {
 		fespace = std::make_unique<mfem::FiniteElementSpace>(&mesh, fec.get());
 
+		massive_sources.clear();
+		for (const auto& [term_name, term] : config.Terminals) {
+			if (term.Conductor != ConductorType::Massive) continue;
+			const auto& attributes = config.EntityGroups.at(term.EntityGroupName).AttributeIds;
+			massive_sources[term_name] = { MassiveConductorLoad(term_name, attributes),
+										   MassiveConductance(term_name, attributes) };
+		}
+
 		A = std::make_unique<mfem::GridFunction>(fespace.get());
 		*A = 0.0;
-		neumann_rhs = AssembleNeumannBoundaryLoad();
+		neumann_rhs = AssembleNaturalBoundaryLoad();
 
 		a = std::make_unique<mfem::BilinearForm>(fespace.get());
 		a->AddDomainIntegrator(MakeStiffnessIntegrator()); // a takes ownership
@@ -106,9 +132,17 @@ public:
 		// cost is paid once per mesh instead of once per scenario. AMR rebuilds it
 		// implicitly by re-running BuildOperators() after each refinement.
 		direct_solver.reset();
+		amg.reset();
 		if (config.LinearSolver == LinearSolverType::Direct) {
+			WarnOnLargeDirectSolve(fespace->GetTrueVSize());
 			auto operation = Reporter().Start("sparse direct factorization");
 			direct_solver = std::make_unique<SparseDirectSolver>(SystemMatrix());
+		}
+		else {
+			// Built once per mesh like the factorization, and reused for every
+			// scenario's right-hand side.
+			auto operation = Reporter().Start("algebraic multigrid setup");
+			amg = std::make_unique<AmgPreconditioner>(SystemMatrix());
 		}
 	}
 
@@ -166,8 +200,8 @@ public:
 	double ComputePeakFieldMagnitude() const override {
 		if (!A) { return 0.0; }
 
-		MagneticFieldCoefficient B_axi(A.get(), axisymmetric_mesh.tolerance);
-		const bool axi = (geometry == GeometryType::Axisymmetric);
+		std::optional<MagneticFieldCoefficient> B_axi;
+		if (axis_geometry) { B_axi.emplace(A.get(), axis_geometry->tolerance); }
 
 		double peak = 0.0;
 		mfem::Vector B;
@@ -178,7 +212,7 @@ public:
 			for (int i = 0; i < nodes.GetNPoints(); ++i) {
 				const mfem::IntegrationPoint& ip = nodes.IntPoint(i);
 				T->SetIntPoint(&ip);
-				if (axi) { B_axi.Eval(B, *T, ip); }  // true |B| incl. A/r term
+				if (B_axi) { B_axi->Eval(B, *T, ip); }  // true |B| incl. A/r term
 				else { A->GetGradient(*T, B); }   // |B| == |grad(A)| (planar)
 				const double mag = B.Norml2();
 				if (mag > peak) { peak = mag; }
@@ -206,16 +240,13 @@ public:
 		// RHS
 		b = std::make_unique<mfem::LinearForm>(fespace.get());
 
-		if (geometry == GeometryType::Axisymmetric)
-		{
-			// Integrates J * v * r  (global 2π omitted consistently)
-			b->AddDomainIntegrator(new AxisymmetricLFIntegrator(*j_coeff));
-		}
-		else
-		{
-			b->AddDomainIntegrator(new mfem::DomainLFIntegrator(*j_coeff));
-		}
+		// Integrates J * v under the geometry's measure (2*pi*r for axisymmetric).
+		b->AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
 		b->Assemble();
+		for (const auto& [term_name, source] : massive_sources) {
+			const double I = ExcitationFor(sc, term_name).real();
+			if (I != 0.0) { b->Add(I / source.conductance, source.load); }
+		}
 		if (mode == ImprintMode::Field) {
 			*b += neumann_rhs;
 		}
@@ -284,12 +315,7 @@ public:
 			direct_solver->Mult(B, X);
 		}
 		else {
-			mfem::GSSmoother M(SystemMatrix());
-			mfem::PCG(*A_op, M, B, X,
-				Reporter().SolverPrintLevel(config.SolverPrintLevel),
-				config.SolverMaxIter,
-				config.SolverTolerance,
-				0.0);
+			SolveSpdIteratively(*A_op, *amg, B, X);
 		}
 
 		a->RecoverFEMSolution(X, *b, *A);
@@ -313,7 +339,7 @@ public:
 
 		if (geometry == GeometryType::Axisymmetric) {
 			fields.AddVector("B", std::make_unique<MagneticFieldCoefficient>(
-				A.get(), axisymmetric_mesh.tolerance));
+				A.get(), axis_geometry->tolerance));
 		}
 		else {
 			fields.AddVector("B", std::make_unique<PlanarMagneticFieldCoefficient>(A.get()));
@@ -350,28 +376,31 @@ private:
 	// Mirrors MagnetoquasistaticSolver::ComputeStrandedFluxLinkage.
 	double ComputeFluxLinkage(const std::string& terminal_name) const
 	{
+		const auto massive = massive_sources.find(terminal_name);
+		if (massive != massive_sources.end()) {
+			return (massive->second.load * *A) / massive->second.conductance;
+		}
 		mfem::Vector unit_density = BuildTerminalCurrentDensity(terminal_name, 1.0);
 		mfem::PWConstCoefficient unit_density_coeff(unit_density);
 
 		mfem::LinearForm winding_functional(fespace.get());
-		if (geometry == GeometryType::Axisymmetric) {
-			winding_functional.AddDomainIntegrator(
-				new AxisymmetricLFIntegrator(unit_density_coeff));
-		}
-		else {
-			winding_functional.AddDomainIntegrator(
-				new mfem::DomainLFIntegrator(unit_density_coeff));
-		}
+		winding_functional.AddDomainIntegrator(
+			Geometry().NewDomainLFIntegrator(unit_density_coeff));
 		winding_functional.Assemble();
 
-		// Both integrators carry the full geometric measure, so this is webers.
+		// The integrator carries the full geometric measure, so this is webers.
 		return winding_functional * *A;
 	}
 
-	// Source current density for a scenario. Magnetostatics has no conductor-type
-	// distinction, so every current terminal contributes.
+	// Stranded conductors' uniform source current density for a scenario.
+	// Massive conductors carry their DC distribution instead, loaded from
+	// massive_sources in ImprintScenario(). Static excitations have no phase
+	// (validated), so the density is real.
 	mfem::Vector BuildCurrentDensity(const Scenario& sc) const {
-		return MagneticSolver::BuildCurrentDensity(
-			sc, [](const Terminal&) { return true; });
+		mfem::Vector j_re, j_im;
+		MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
+			return term.Conductor == ConductorType::Stranded;
+		}, j_re, j_im);
+		return j_re;
 	}
 };

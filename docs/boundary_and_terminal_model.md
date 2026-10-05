@@ -256,13 +256,15 @@ struct MarkedBoundaryCondition {
 
 	bool IsDirichlet() const;
 	bool IsNeumann() const;
+	bool IsRobin() const;
 	bool IsNonzeroDirichlet() const;
 };
 ```
 
 `IsEssential()` is deliberately absent: with terminals removed it is a synonym
 for `IsDirichlet()`, and a synonym implies a distinction that no longer exists.
-`IsRobin()` is absent because `BuildBoundaryConditions()` rejects Robin outright.
+`BuildBoundaryConditions()` rejects Robin for any solver whose
+`SupportsRobin()` is false (the magnetic ones); electrostatics assembles it.
 
 ### `BoundaryConditionSet`
 

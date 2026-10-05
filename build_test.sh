@@ -3,7 +3,7 @@
 
 set -e
 
-echo "=== Testing MFEM-ElectroMag Build ==="
+echo "=== Testing Noumena Build ==="
 
 # Create build directory
 mkdir -p build_test
@@ -28,6 +28,6 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "=== Build successful! ==="
-ls -lh mfem-electromag
+ls -lh noumena
 
 cd ..

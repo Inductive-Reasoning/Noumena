@@ -1,8 +1,8 @@
-# Doxyfile for MFEM-ElectroMag
+# Doxyfile for Noumena
 
-PROJECT_NAME           = "MFEM-ElectroMag"
+PROJECT_NAME           = "Noumena"
 PROJECT_NUMBER         = "1.0"
-PROJECT_BRIEF          = "Axisymmetric Electromagnetic Field Solver using MFEM"
+PROJECT_BRIEF          = "Low-frequency electromagnetic field solver (2D and 3D)"
 
 OUTPUT_DIRECTORY       = docs/doxygen
 INPUT                  = src README.md

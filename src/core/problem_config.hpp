@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <vector>
 #include <string>
 #include <map>
@@ -65,6 +66,32 @@ struct Region {
 	RegionCurrentConstraint CurrentConstraint = RegionCurrentConstraint::None;
 };
 
+// The path current follows through a 3D conductor ("terminals[].direction").
+//
+// A 2D model needs no such data: its current is out of plane (planar) or
+// azimuthal (axisymmetric) by construction. In 3D the current density has to
+// follow the conductor's shape, so its direction field is given here and
+// resolved by conductor_path.hpp: J = (I / A_cs) t for a stranded conductor
+// (t the unit direction, A_cs its cross-section), J = sigma E for a massive one.
+//
+//   Azimuthal  - current circulates about the axis through Origin along Axis,
+//                by the right-hand rule (positive current makes flux along
+//                +Axis inside the loop). For conductors of revolution; no mesh
+//                features needed.
+//   Electrodes - an open conductor: current enters through the Input boundary
+//                group and leaves through Output, both on n x A = 0 walls.
+//   Cut        - a closed loop of any shape: current crosses the internal
+//                boundary group Cut in the direction of Normal.
+struct CurrentDirection {
+	enum class Kind { Azimuthal, Electrodes, Cut };
+	Kind Type = Kind::Azimuthal;
+	std::array<double, 3> Origin{ 0.0, 0.0, 0.0 };
+	std::array<double, 3> Axis{ 0.0, 0.0, 1.0 };    // need not be normalized
+	std::string Input, Output;                      // Electrodes: group names
+	std::string Cut;                                // Cut: group name
+	std::array<double, 3> Normal{ 0.0, 0.0, 0.0 };  // Cut: current direction
+};
+
 // A driven/measured excitation site. Single primitive for both physics
 //   DriveQuantity == Voltage -> AttributeIds are BOUNDARY attrs (essential BC)
 //   DriveQuantity == Current -> AttributeIds are DOMAIN   attrs (RHS source)
@@ -72,20 +99,29 @@ struct Terminal {
     Quantity DriveQuantity = Quantity::Voltage;
     ConductorType Conductor = ConductorType::Massive;
 	std::string EntityGroupName;   // mesh boundary (essential BC) or domain (RHS source) group name (validated)
+	std::optional<CurrentDirection> Direction;  // 3D magnetic current terminals only (validated)
+	// Stranded magnetic terminals only (validated): the winding's turns. Its
+	// excitation is the current in each turn, so the source is Turns times
+	// that current, and its flux linkage and coupling entries are the
+	// winding's. It need not be an integer: N only scales the source and the
+	// flux linkage, so an effective (e.g. averaged) turn count is fine.
+	double Turns = 1.0;
 };
 
 // One scenario's setting of one terminal.
 //
-// PHASOR CONVENTION: for time-harmonic (MQS) runs, Value is a PEAK (amplitude)
-// phasor, not RMS. Nothing converts or validates this -- the number is carried
-// unscaled into the RHS, so the solved port voltages, the extracted coupling
-// matrix (R = Re(V/I)), and the 1/2 in the time-averaged loss density all
-// inherit it. Prescribing an RMS value (e.g. a nameplate current) is silently
+// PHASOR CONVENTION: for time-harmonic (MQS) runs, Value is the PEAK amplitude
+// of the phasor Value * exp(j Phase), not RMS, with time dependence
+// exp(j omega t); static runs take Phase = 0 (validated). Nothing converts or
+// validates the amplitude -- it is carried unscaled into the RHS, so the
+// solved port voltages, the extracted coupling matrix (R = Re(V/I)), and the
+// 1/2 in the time-averaged loss density all inherit it. Prescribing an RMS value (e.g. a nameplate current) is silently
 // accepted and under-reports loss by 2x. See MqsLossDensityCoefficient.
 struct Excitation {
 	std::string TerminalName;   // must match a Terminal::Name (validated)
 	double Value = 0.0;         // volts (Voltage terminal) | amps (Current terminal);
 								// peak amplitude, not RMS (see above)
+	double Phase = 0.0;         // degrees
 };
 
 struct Material {
@@ -135,11 +171,23 @@ struct GmshOutputSettings {
 	std::string Version = "2.2";
 };
 
+// A named set of points at which every exported field is sampled, per
+// scenario. Coordinates have the mesh's space dimension. A probe restricted to
+// a domain entity group locates its points only in that group's elements, so
+// a point on a material interface is sampled from the chosen side.
+struct Probe {
+	std::string Name;
+	std::vector<std::vector<double>> Points;
+	std::string EntityGroupName;  // empty: any element
+};
+
 struct OutputSettings {
 	std::filesystem::path Directory = "results";
 	std::optional<std::filesystem::path> ParaviewDirectory;
 	std::optional<GmshOutputSettings> Gmsh;
 	std::optional<std::filesystem::path> Hdf5File;
+	std::filesystem::path ProbeDirectory;  // CSV files; beneath Directory
+	std::vector<Probe> Probes;
 	bool ExportFieldsForCouplingMatrix = false;
 };
 

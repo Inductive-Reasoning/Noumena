@@ -19,7 +19,7 @@ namespace {
 
 struct TemporaryHdf5File {
 	std::filesystem::path path = std::filesystem::temp_directory_path()
-		/ ("mfem_em_hdf5_" + std::to_string(
+		/ ("noumena_hdf5_" + std::to_string(
 			std::chrono::steady_clock::now().time_since_epoch().count()) + ".h5");
 
 	~TemporaryHdf5File() {
@@ -192,8 +192,8 @@ TEST_CASE("Field HDF5 writes numeric primary and projected derived data", "[hdf5
 	Hdf5ResultsWriter writer(temporary.path, mesh, config);
 	Scenario scenario;
 	scenario.Frequency = 50.0;
-	writer.WriteScenario("scenario_000000", "Drive/A", scenario, fields);
-	writer.WriteScenario("scenario_000001", "Drive/A", scenario, fields);
+	writer.WriteScenario("scenario_000000", "Drive/A", scenario, fields, {});
+	writer.WriteScenario("scenario_000001", "Drive/A", scenario, fields, {});
 	mfem::DenseMatrix matrix(1);
 	matrix = 2.5;
 	matrix_io::CouplingMatrixWriter coupling(writer.File(), {"Drive"}, "electrostatics", "planar");

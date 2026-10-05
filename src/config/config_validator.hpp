@@ -107,7 +107,8 @@ private:
         }
         for (const auto& item : output.items()) {
             if (item.key() != "directory" && item.key() != "export_fields_for_coupling_matrix" &&
-                item.key() != "paraview" && item.key() != "gmsh" && item.key() != "hdf5") {
+                item.key() != "paraview" && item.key() != "gmsh" && item.key() != "hdf5" &&
+                item.key() != "probes") {
                 AddError("output." + item.key(), "Unknown output setting");
             }
         }
@@ -166,6 +167,7 @@ private:
             CheckFieldType(sim, "physics_type", "simulation.physics_type", ExpectedType::String);
             CheckFieldType(sim, "geometry_type", "simulation.geometry_type", ExpectedType::String);
             CheckFieldType(sim, "analysis_type", "simulation.analysis_type", ExpectedType::String);
+            CheckFieldType(sim, "linear_solver", "simulation.linear_solver", ExpectedType::String);
             CheckFieldType(sim, "mesh", "simulation.mesh", ExpectedType::String);
             CheckFieldType(sim, "order", "simulation.order", ExpectedType::Integer);
             CheckFieldType(sim, "solver_tolerance", "simulation.solver_tolerance", ExpectedType::Number);
@@ -249,6 +251,8 @@ private:
             }
             CheckFieldType(terminal, "conductor_type", prefix + ".conductor_type", ExpectedType::String);
             CheckFieldType(terminal, "entity_group", prefix + ".entity_group", ExpectedType::String);
+            CheckFieldType(terminal, "direction", prefix + ".direction", ExpectedType::Object);
+            CheckFieldType(terminal, "turns", prefix + ".turns", ExpectedType::Number);
         });
 
         CheckObjectArrayTypes(config, "boundary_conditions", [&](const json& boundary, const std::string& prefix) {
@@ -290,6 +294,7 @@ private:
                     }
                     CheckFieldType(excitation, "terminal", eprefix + ".terminal", ExpectedType::String);
                     CheckFieldType(excitation, "value", eprefix + ".value", ExpectedType::Number);
+                    CheckFieldType(excitation, "phase", eprefix + ".phase", ExpectedType::Number);
                 }
             }
         });
@@ -358,8 +363,16 @@ private:
         // Optional enumerated fields
         if (sim.contains("geometry_type")) {
             std::string g = sim["geometry_type"];
-            if (g != "axisymmetric" && g != "planar") {
-                AddError("simulation.geometry_type", "Invalid geometry_type '" + g + "'. Must be 'axisymmetric' or 'planar'");
+            if (g != "axisymmetric" && g != "planar" && g != "3d") {
+                AddError("simulation.geometry_type", "Invalid geometry_type '" + g + "'. Must be 'axisymmetric', 'planar', or '3d'");
+            }
+        }
+
+        if (sim.contains("linear_solver")) {
+            std::string solver = sim["linear_solver"];
+            if (solver != "direct" && solver != "iterative") {
+                AddError("simulation.linear_solver", "Invalid linear_solver '" + solver +
+                    "'. Must be 'direct' or 'iterative'");
             }
         }
 
@@ -405,6 +418,91 @@ private:
             }
             if (amr.contains("error_tolerance") && amr["error_tolerance"].get<double>() < 0.0) {
                 AddError("simulation.amr.error_tolerance", "Error tolerance cannot be negative");
+            }
+        }
+    }
+
+    // output.probes: named point sets, each "points" (coordinate arrays) or a
+    // "line" {"from", "to", "count" >= 2}, optionally restricted to a domain
+    // entity group. Coordinates have the model's space dimension. Names become
+    // file names, so they are restricted to [A-Za-z0-9_-].
+    void ValidateProbes(const json& config, const mfem::Mesh* mesh) {
+        if (!config.contains("output") || !config["output"].contains("probes")) return;
+        const auto& probes = config["output"]["probes"];
+        if (!probes.is_array()) {
+            AddError("output.probes", "Must be an array of probes");
+            return;
+        }
+        int dim = 2;
+        if (mesh) {
+            dim = mesh->SpaceDimension();
+        } else if (config.contains("simulation") && config["simulation"].value("geometry_type", "") == "3d") {
+            dim = 3;
+        }
+        const auto check_point = [&](const json& point, const std::string& field) {
+            if (!point.is_array() || static_cast<int>(point.size()) != dim ||
+                !std::all_of(point.begin(), point.end(), [](const json& x) { return x.is_number(); })) {
+                AddError(field, "Must be an array of " + std::to_string(dim) + " coordinates");
+            }
+        };
+        std::set<std::string> names;
+        for (size_t i = 0; i < probes.size(); ++i) {
+            const auto& probe = probes[i];
+            const std::string prefix = "output.probes[" + std::to_string(i) + "]";
+            if (!probe.is_object()) {
+                AddError(prefix, "Must be an object");
+                continue;
+            }
+            for (const auto& item : probe.items()) {
+                if (item.key() != "name" && item.key() != "points" && item.key() != "line" &&
+                    item.key() != "entity_group") {
+                    AddError(prefix + "." + item.key(), "Unknown probe setting");
+                }
+            }
+            const std::string name = probe.contains("name") && probe["name"].is_string()
+                ? probe["name"].get<std::string>() : std::string{};
+            if (name.empty() || !std::all_of(name.begin(), name.end(), [](char c) {
+                    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-'; })) {
+                AddError(prefix + ".name", "Required: a nonempty name of letters, digits, '_' and '-'");
+            } else if (!names.insert(name).second) {
+                AddError(prefix + ".name", "Duplicate probe name '" + name + "'");
+            }
+            if (probe.contains("points") == probe.contains("line")) {
+                AddError(prefix, "Give exactly one of 'points' or 'line'");
+            } else if (probe.contains("points")) {
+                const auto& points = probe["points"];
+                if (!points.is_array() || points.empty()) {
+                    AddError(prefix + ".points", "Must be a nonempty array of points");
+                } else {
+                    for (size_t k = 0; k < points.size(); ++k) {
+                        check_point(points[k], prefix + ".points[" + std::to_string(k) + "]");
+                    }
+                }
+            } else {
+                const auto& line = probe["line"];
+                if (!line.is_object()) {
+                    AddError(prefix + ".line", "Must be an object with 'from', 'to' and 'count'");
+                } else {
+                    for (const auto& item : line.items()) {
+                        if (item.key() != "from" && item.key() != "to" && item.key() != "count") {
+                            AddError(prefix + ".line." + item.key(), "Unknown line setting");
+                        }
+                    }
+                    check_point(line.value("from", json()), prefix + ".line.from");
+                    check_point(line.value("to", json()), prefix + ".line.to");
+                    if (!line.contains("count") || !line["count"].is_number_integer() ||
+                        line["count"].get<int>() < 2) {
+                        AddError(prefix + ".line.count", "Must be an integer of at least 2");
+                    }
+                }
+            }
+            if (probe.contains("entity_group")) {
+                if (!probe["entity_group"].is_string()) {
+                    AddError(prefix + ".entity_group", "Must be a string");
+                } else if (!domain_group_names_.count(probe["entity_group"].get<std::string>())) {
+                    AddError(prefix + ".entity_group",
+                        "Must name a domain entity group (of the mesh's dimension)");
+                }
             }
         }
     }
@@ -814,6 +912,98 @@ private:
         }
     }
 
+    // "direction" is how a 3D conductor states where its current flows, so it is
+    // required on every 3D magnetic current terminal and meaningless anywhere
+    // else (a 2D model's current direction is fixed by the geometry).
+    void ValidateCurrentDirection(const json& config, const json& t, const std::string& prefix,
+                               const std::string& physics, const std::string& quantity) {
+        std::string geometry = "planar";
+        if (config.contains("simulation") && config["simulation"].is_object() &&
+            config["simulation"].contains("geometry_type") &&
+            config["simulation"]["geometry_type"].is_string()) {
+            geometry = config["simulation"]["geometry_type"].get<std::string>();
+        }
+        const bool magnetic = physics == "magnetostatics" || physics == "magnetoquasistatics";
+        const bool wants_direction = geometry == "3d" && magnetic && quantity == "current";
+        const std::string field = prefix + ".direction";
+
+        if (!t.contains("direction")) {
+            if (wants_direction) {
+                AddError(field, "3D magnetic current terminals require 'direction', e.g. "
+                    "{\"type\": \"azimuthal\", \"origin\": [0, 0, 0], \"axis\": [0, 0, 1]}");
+            }
+            return;
+        }
+        if (!wants_direction) {
+            AddError(field, "'direction' applies only to current terminals of a 3D "
+                "magnetic model; 2D current directions are fixed by the geometry");
+            return;
+        }
+        const auto& d = t["direction"];
+        if (!d.is_object()) return;  // reported by the type check
+        const std::string kind = d.contains("type") && d["type"].is_string()
+            ? d["type"].get<std::string>() : std::string();
+        const std::map<std::string, std::set<std::string>> keys = {
+            {"azimuthal",  {"type", "origin", "axis"}},
+            {"electrodes", {"type", "input", "output"}},
+            {"cut",        {"type", "cut", "normal"}}};
+        const auto allowed = keys.find(kind);
+        if (allowed == keys.end()) {
+            AddError(field + ".type", "Must be 'azimuthal', 'electrodes' or 'cut'");
+            return;
+        }
+        for (const auto& item : d.items()) {
+            if (!allowed->second.count(item.key())) {
+                AddError(field + "." + item.key(), "Unknown setting for a '" + kind + "' direction");
+            }
+        }
+        auto vector3 = [&](const char* key, bool required) -> bool {
+            const std::string where = field + "." + key;
+            if (!d.contains(key)) {
+                if (required) AddError(where, "Missing required field '" + std::string(key) + "'");
+                return false;
+            }
+            const auto& v = d[key];
+            if (!v.is_array() || v.size() != 3) {
+                AddError(where, "Must be an array of three numbers");
+                return false;
+            }
+            for (const auto& c : v) {
+                if (!c.is_number() || !std::isfinite(c.get<double>())) {
+                    AddError(where, "Must be an array of three finite numbers");
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto nonzero = [&](const char* key) {
+            if (!vector3(key, true)) return;
+            const auto& a = d[key];
+            const double n2 = a[0].get<double>() * a[0].get<double>() +
+                              a[1].get<double>() * a[1].get<double>() +
+                              a[2].get<double>() * a[2].get<double>();
+            if (!(n2 > 0.0)) AddError(field + "." + key, "Must be a nonzero vector");
+        };
+        auto boundary_group = [&](const char* key) {
+            const std::string where = field + "." + key;
+            if (!d.contains(key)) {
+                AddError(where, "Missing required field '" + std::string(key) + "'");
+            } else {
+                CheckEntityGroupRef(d[key], where, RequiredGroupKind::Boundary);
+            }
+        };
+        if (kind == "azimuthal") {
+            vector3("origin", false);
+            nonzero("axis");
+        } else if (kind == "electrodes") {
+            boundary_group("input");
+            boundary_group("output");
+        } else {
+            boundary_group("cut");
+            nonzero("normal");
+        }
+    }
+
     void ValidateTerminals(const json& config, const mfem::Mesh* mesh = nullptr) {
         std::string type = PhysicsType(config);
 
@@ -876,6 +1066,23 @@ private:
             const std::string conductor = t.value("conductor_type", "massive");
             if (conductor != "massive" && conductor != "stranded") {
                 AddError(prefix + ".conductor_type", "Invalid conductor_type '" + conductor + "'. Must be 'massive' or 'stranded'");
+            }
+
+            ValidateCurrentDirection(config, t, prefix, type, excitation);
+
+            // A massive conductor is a single turn: its current is sigma E
+            // over the whole cross-section.
+            if (t.contains("turns") && t["turns"].is_number()) {
+                const bool magnetic = type == "magnetostatics" || type == "magnetoquasistatics";
+                const double turns = t["turns"].get<double>();
+                if (!std::isfinite(turns) || !(turns > 0.0)) {
+                    AddError(prefix + ".turns", "Must be finite and positive");
+                } else if (turns != 1.0 &&
+                           (!magnetic || conductor != "stranded")) {
+                    AddError(prefix + ".turns",
+                        "Turns apply only to stranded magnetic terminals; a massive "
+                        "conductor is a single turn");
+                }
             }
 
             // Voltage terminals bind to boundary groups; current terminals to domain groups.
@@ -1022,6 +1229,68 @@ private:
                     AddError(dprefix + ".terminal", "Unknown terminal '" + tname +
                             "'. No terminal with that name is declared");
                 }
+
+                if (d.contains("phase") && d["phase"].is_number()) {
+                    const double phase = d["phase"].get<double>();
+                    if (!std::isfinite(phase)) {
+                        AddError(dprefix + ".phase", "Must be finite");
+                    } else if (!is_mqs && phase != 0.0) {
+                        AddError(dprefix + ".phase",
+                            "A phase applies only to time-harmonic (magnetoquasistatic) "
+                            "excitations");
+                    }
+                }
+            }
+        }
+    }
+
+    // Cross-checks between geometry_type and the rest of the run: the mesh
+    // dimension it requires, and the settings that have no 3D meaning. Runs
+    // after ValidateSimulation(), so an invalid
+    // geometry_type string has already been reported and is skipped here.
+    //
+    // The dimension check matters because nothing downstream would catch the
+    // mismatch: the planar default on a 3D mesh assembles and solves an
+    // ordinary 3D Laplacian, then labels an absolute capacitance in F/m.
+    void ValidateGeometryCompatibility(const json& config, const mfem::Mesh* mesh) {
+        if (!config.contains("simulation") || !config["simulation"].is_object()) return;
+        const auto& sim = config["simulation"];
+
+        std::string geometry = "planar";  // InputParser's default
+        if (sim.contains("geometry_type")) {
+            if (!sim["geometry_type"].is_string()) return;
+            geometry = sim["geometry_type"].get<std::string>();
+        }
+        if (geometry != "axisymmetric" && geometry != "planar" && geometry != "3d") return;
+        const bool three_d = (geometry == "3d");
+
+        if (mesh) {
+            const int required = three_d ? 3 : 2;
+            if (mesh->Dimension() != required) {
+                AddError("simulation.geometry_type",
+                    "geometry_type '" + geometry + "' requires a " +
+                    std::to_string(required) + "D mesh, but the mesh is " +
+                    std::to_string(mesh->Dimension()) + "D" +
+                    (mesh->Dimension() == 3
+                        ? ". Set geometry_type to '3d' for a 3D mesh"
+                        : (three_d ? ". Use 'planar' or 'axisymmetric' for a 2D mesh" : "")));
+            }
+        }
+
+        if (!three_d) return;
+
+        // A 2D "open" region forces a conductor's net current to zero because
+        // the planar model cannot represent where its ends are. In 3D the
+        // ends are part of the mesh, so the constraint has no meaning.
+        if (config.contains("regions") && config["regions"].is_array()) {
+            const auto& regions = config["regions"];
+            for (size_t i = 0; i < regions.size(); ++i) {
+                if (regions[i].is_object() && regions[i].contains("current_constraint")) {
+                    AddError("regions[" + std::to_string(i) + "].current_constraint",
+                        "Current constraints are not available for geometry_type "
+                        "'3d': a 3D conductor with no terminal carries only "
+                        "induced current, so model its actual extent instead");
+                }
             }
         }
     }
@@ -1042,7 +1311,9 @@ public:
         }
 
         ValidateSimulation(config);
+        ValidateGeometryCompatibility(config, mesh);
         ValidateEntityGroups(config, mesh);
+        ValidateProbes(config, mesh);
         ValidateMaterials(config, mesh);
         ValidateRegions(config, mesh);
         ValidateBoundaries(config, mesh);

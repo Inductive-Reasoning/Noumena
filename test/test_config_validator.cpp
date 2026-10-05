@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "config/config_validator.hpp"
 #include "config/boundary_validation.hpp"
+#include <functional>
 #include <limits>
 
 namespace {
@@ -686,5 +687,219 @@ TEST_CASE("ConfigValidator enforces MQS scenario frequencies", "[config_validato
 	SECTION("does not require frequency for other physics") {
 		ConfigValidator validator;
 		REQUIRE(validator.Validate(ValidConfig()));
+	}
+}
+
+TEST_CASE("ConfigValidator checks geometry_type against the mesh and physics",
+		  "[config_validator][geometry][3d]") {
+	mfem::Mesh square = mfem::Mesh::MakeCartesian2D(
+		1, 1, mfem::Element::QUADRILATERAL, true, 1.0, 1.0);
+	mfem::Mesh cube = mfem::Mesh::MakeCartesian3D(
+		1, 1, 1, mfem::Element::TETRAHEDRON, 1.0, 1.0, 1.0);
+
+	// ValidConfig() is written for a 2D mesh; lift its groups one dimension.
+	auto three_d_config = []() {
+		json config = ValidConfig();
+		config["simulation"]["geometry_type"] = "3d";
+		config["entity_groups"][0]["dim"] = 3;
+		config["entity_groups"][1]["dim"] = 2;
+		return config;
+	};
+
+	SECTION("accepts '3d' electrostatics on a 3D mesh") {
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(three_d_config(), &cube));
+	}
+
+	SECTION("rejects a 2D geometry_type on a 3D mesh") {
+		json config = three_d_config();
+		config["simulation"]["geometry_type"] = "planar";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("the planar default also rejects a 3D mesh") {
+		json config = three_d_config();
+		config["simulation"].erase("geometry_type");
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("rejects '3d' on a 2D mesh") {
+		json config = ValidConfig();
+		config["simulation"]["geometry_type"] = "3d";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &square));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+
+	SECTION("accepts '3d' magnetics") {
+		for (const char* physics : { "magnetostatics", "magnetoquasistatics" }) {
+			json config = three_d_config();
+			config["simulation"]["physics_type"] = physics;
+			ConfigValidator validator;
+			validator.Validate(config);
+			REQUIRE_FALSE(HasError(validator, "simulation.geometry_type"));
+		}
+	}
+
+	SECTION("rejects region current constraints in '3d'") {
+		json config = three_d_config();
+		config["simulation"]["physics_type"] = "magnetoquasistatics";
+		config["regions"][0]["current_constraint"] = "open";
+		config["materials"][0]["properties"]["sigma"] = 1e6;
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		bool rejected_for_3d = false;
+		for (const auto& error : validator.GetErrors()) {
+			rejected_for_3d |= error.field == "regions[0].current_constraint" &&
+				error.message.find("'3d'") != std::string::npos;
+		}
+		REQUIRE(rejected_for_3d);
+	}
+
+	SECTION("accepts Gmsh and ParaView output for '3d'") {
+		json config = three_d_config();
+		config["output"] = {{"gmsh", {{"directory", "msh"}}},
+							{"paraview", {{"directory", "vtk"}}}};
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(config, &cube));
+	}
+
+	SECTION("rejects an unknown geometry_type") {
+		json config = ValidConfig();
+		config["simulation"]["geometry_type"] = "spherical";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "simulation.geometry_type"));
+	}
+}
+
+TEST_CASE("ConfigValidator checks linear_solver", "[config_validator][linear_solver]") {
+	for (const char* ok : {"direct", "iterative"}) {
+		json config = ValidConfig();
+		config["simulation"]["linear_solver"] = ok;
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(config));
+	}
+
+	json misspelled = ValidConfig();
+	misspelled["simulation"]["linear_solver"] = "amg";
+	ConfigValidator validator;
+	REQUIRE_FALSE(validator.Validate(misspelled));
+	REQUIRE(HasError(validator, "simulation.linear_solver"));
+
+	json wrong_type = ValidConfig();
+	wrong_type["simulation"]["linear_solver"] = 1;
+	ConfigValidator type_validator;
+	REQUIRE_FALSE(type_validator.Validate(wrong_type));
+	REQUIRE(HasError(type_validator, "simulation.linear_solver"));
+}
+
+TEST_CASE("ConfigValidator checks 3D coil directions", "[config_validator][3d][coil]") {
+	mfem::Mesh cube = mfem::Mesh::MakeCartesian3D(
+		1, 1, 1, mfem::Element::TETRAHEDRON, 1.0, 1.0, 1.0);
+	auto coil_config = []() {
+		json config = ValidConfig();
+		config["simulation"]["physics_type"] = "magnetostatics";
+		config["simulation"]["geometry_type"] = "3d";
+		config["entity_groups"][0]["dim"] = 3;
+		config["entity_groups"][1]["dim"] = 2;
+		config["materials"][0]["properties"] = {{"mu_r", 1.0}};
+		config["terminals"] = json::array({
+			{{"name", "Coil"}, {"quantity", "current"}, {"entity_group", "Domain"},
+			 {"direction", {{"type", "azimuthal"}, {"origin", {0.0, 0.0, 0.0}},
+							{"axis", {0.0, 0.0, 1.0}}}}}});
+		config["scenarios"][0]["excitations"][0]["terminal"] = "Coil";
+		return config;
+	};
+
+	SECTION("accepts a well-formed azimuthal coil") {
+		ConfigValidator validator;
+		INFO(validator.GetErrorMessage());
+		REQUIRE(validator.Validate(coil_config(), &cube));
+	}
+
+	SECTION("requires a direction on 3D magnetic current terminals") {
+		json config = coil_config();
+		config["terminals"][0].erase("direction");
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config, &cube));
+		REQUIRE(HasError(validator, "terminals[0].direction"));
+	}
+
+	SECTION("rejects a direction in a 2D model") {
+		json config = coil_config();
+		config["simulation"]["geometry_type"] = "planar";
+		config["entity_groups"][0]["dim"] = 2;
+		config["entity_groups"][1]["dim"] = 1;
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "terminals[0].direction"));
+	}
+
+	SECTION("rejects malformed directions") {
+		auto error_for = [&](const std::function<void(json&)>& mutate, const std::string& field) {
+			json config = coil_config();
+			mutate(config["terminals"][0]["direction"]);
+			ConfigValidator validator;
+			REQUIRE_FALSE(validator.Validate(config, &cube));
+			REQUIRE(HasError(validator, field));
+		};
+		error_for([](json& d) { d["type"] = "toroidal"; }, "terminals[0].direction.type");
+		error_for([](json& d) { d.erase("axis"); }, "terminals[0].direction.axis");
+		error_for([](json& d) { d["axis"] = {0.0, 0.0, 0.0}; }, "terminals[0].direction.axis");
+		error_for([](json& d) { d["origin"] = {1.0, 2.0}; }, "terminals[0].direction.origin");
+		error_for([](json& d) { d["center"] = {0.0, 0.0, 0.0}; }, "terminals[0].direction.center");
+	}
+}
+
+TEST_CASE("ConfigValidator validates excitation phases and winding turns",
+		  "[config_validator][phase][turns]") {
+	auto errors = [](const json& config, const std::string& field) {
+		ConfigValidator validator;
+		return !validator.Validate(config) && HasError(validator, field);
+	};
+
+	SECTION("a phase is accepted in MQS and rejected in static physics") {
+		json mqs = ValidMqsConfig();
+		mqs["scenarios"][0]["excitations"][0]["phase"] = -120.0;
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(mqs));
+
+		json statics = ValidConfig();
+		statics["scenarios"][0]["excitations"][0]["phase"] = 90.0;
+		REQUIRE(errors(statics, "scenarios[0].excitations[0].phase"));
+		statics["scenarios"][0]["excitations"][0]["phase"] = "90";
+		REQUIRE(errors(statics, "scenarios[0].excitations[0].phase"));
+	}
+
+	SECTION("turns belong to stranded magnetic terminals") {
+		json stranded = ValidMqsConfig();
+		stranded["terminals"][0]["conductor_type"] = "stranded";
+		stranded["terminals"][0]["turns"] = 300;
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(stranded));
+
+		json fractional = stranded;
+		fractional["terminals"][0]["turns"] = 2.5;
+		REQUIRE(validator.Validate(fractional));
+		for (const double bad : { 0.0, -3.0 }) {
+			json invalid = stranded;
+			invalid["terminals"][0]["turns"] = bad;
+			REQUIRE(errors(invalid, "terminals[0].turns"));
+		}
+		json text = stranded;
+		text["terminals"][0]["turns"] = "300";
+		REQUIRE(errors(text, "terminals[0].turns"));
+
+		json massive = ValidMqsConfig();
+		massive["terminals"][0]["turns"] = 2;
+		REQUIRE(errors(massive, "terminals[0].turns"));
+		json electrostatic = ValidConfig();
+		electrostatic["terminals"][0]["turns"] = 2;
+		REQUIRE(errors(electrostatic, "terminals[0].turns"));
 	}
 }

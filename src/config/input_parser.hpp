@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include "../core/constants.hpp"
 #include "../core/problem_config.hpp"
+#include "../parallel/mpi_runtime.hpp"
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
@@ -227,11 +228,12 @@ private:
                           {"magnetoquasistatics", ::PhysicsType::Magnetoquasistatics}});
     }
 
-    // "simulation.geometry_type": axisymmetric | planar.
+    // "simulation.geometry_type": axisymmetric | planar | 3d.
     [[nodiscard]] ::GeometryType GetGeometryType() const {
         return ParseEnum(Sim(), "geometry_type", ::GeometryType::Planar,
                          {{"axisymmetric", ::GeometryType::Axisymmetric},
-                          {"planar",       ::GeometryType::Planar}});
+                          {"planar",       ::GeometryType::Planar},
+                          {"3d",           ::GeometryType::Cartesian3D}});
     }
 
     // "simulation.analysis_type": field | coupling_matrix.
@@ -278,7 +280,37 @@ private:
                     Get(*target, "file", std::string("results.h5")));
             }
         }
+        output.ProbeDirectory = resolve(output.Directory, "probes");
+        if (const auto probes = settings.find("probes"); probes != settings.end()) {
+            for (const json& entry : *probes) { output.Probes.push_back(GetProbe(entry)); }
+        }
         return output;
+    }
+
+    // {"name", "points": [[x, y(, z)], ...]} or {"name", "line": {"from", "to",
+    // "count"}} (count points evenly spaced, both ends included), with an
+    // optional "entity_group". Shapes are checked by ConfigValidator.
+    [[nodiscard]] static Probe GetProbe(const json& entry) {
+        Probe probe;
+        probe.Name = entry.at("name").get<std::string>();
+        probe.EntityGroupName = Get(entry, "entity_group", std::string{});
+        if (const auto points = entry.find("points"); points != entry.end()) {
+            for (const json& point : *points) {
+                probe.Points.push_back(point.get<std::vector<double>>());
+            }
+        } else {
+            const json& line = entry.at("line");
+            const auto from = line.at("from").get<std::vector<double>>();
+            const auto to = line.at("to").get<std::vector<double>>();
+            const int count = line.at("count").get<int>();
+            for (int i = 0; i < count; ++i) {
+                const double t = static_cast<double>(i) / (count - 1);
+                std::vector<double> point(from.size());
+                for (size_t c = 0; c < from.size(); ++c) { point[c] = from[c] + t * (to[c] - from[c]); }
+                probe.Points.push_back(point);
+            }
+        }
+        return probe;
     }
 
     // Parse the optional "simulation.amr" block. Missing keys fall back to the
@@ -313,11 +345,23 @@ private:
         return Get(Sim(), "solver_print_level", Constants::DEFAULT_SOLVER_PRINT_LEVEL);
     }
 
-    // "simulation.linear_solver": iterative | direct. Direct is the default: it
+    // "simulation.linear_solver": iterative | direct.
+    //
+    // The default depends on geometry_type. For the 2D models it is direct: it
     // factors once per mesh and reuses the factors across scenarios, and its
-    // accuracy does not depend on a residual tolerance.
+    // accuracy does not depend on a residual tolerance. For '3d' it is
+    // iterative (multigrid-preconditioned CG), because the direct solver's
+    // fill-in makes a 3D factorization of even ~100k unknowns take minutes.
+    // The one exception is 3D magnetics in a serial build: its iterative
+    // solver needs hypre's AMS, which only the MPI build has, so the default
+    // there is the best solver the build actually provides.
     [[nodiscard]] ::LinearSolverType GetLinearSolver() const {
-        return ParseEnum(Sim(), "linear_solver", ::LinearSolverType::Direct,
+        const bool three_d = GetGeometryType() == ::GeometryType::Cartesian3D;
+        const bool magnetic = GetPhysicsType() != ::PhysicsType::Electrostatics;
+        const bool iterative_available = !magnetic || parallel::Enabled();
+        const ::LinearSolverType fallback = three_d && iterative_available
+            ? ::LinearSolverType::Iterative : ::LinearSolverType::Direct;
+        return ParseEnum(Sim(), "linear_solver", fallback,
                          {{"iterative", ::LinearSolverType::Iterative},
                           {"direct",    ::LinearSolverType::Direct}});
     }
@@ -379,10 +423,36 @@ private:
 											   {{"massive",  ConductorType::Massive},
 												{"stranded", ConductorType::Stranded}});
 				terminal.EntityGroupName = Get(t, "entity_group", std::string{});
+				terminal.Turns = t.value("turns", 1.0);
+				if (t.contains("direction")) {
+					terminal.Direction = GetCurrentDirection(t["direction"]);
+				}
 				terminals.emplace(std::move(name), std::move(terminal));
             }
         }
         return terminals;
+    }
+
+    // "terminals[].direction": {"type": "azimuthal", "origin", "axis"} |
+    // {"type": "electrodes", "input", "output"} | {"type": "cut", "cut",
+    // "normal"}. Tolerant defaults; the validator enforces a well-formed block.
+    static CurrentDirection GetCurrentDirection(const json& d) {
+        CurrentDirection direction;
+        direction.Type = ParseEnum(d, "type", CurrentDirection::Kind::Azimuthal,
+                                   {{"azimuthal",  CurrentDirection::Kind::Azimuthal},
+                                    {"electrodes", CurrentDirection::Kind::Electrodes},
+                                    {"cut",        CurrentDirection::Kind::Cut}});
+        direction.Input = Get(d, "input", std::string{});
+        direction.Output = Get(d, "output", std::string{});
+        direction.Cut = Get(d, "cut", std::string{});
+        auto read3 = [&d](const char* key, std::array<double, 3>& out) {
+            if (!d.contains(key) || !d[key].is_array() || d[key].size() != 3) return;
+            for (int c = 0; c < 3; ++c) out[c] = d[key][c].get<double>();
+        };
+        read3("origin", direction.Origin);
+        read3("axis", direction.Axis);
+        read3("normal", direction.Normal);
+        return direction;
     }
 
     std::vector<Region> GetRegions() const {
@@ -476,9 +546,9 @@ private:
     }
 
     // Excitation values are taken verbatim. For time-harmonic runs they are
-    // PEAK (amplitude) phasors; there is deliberately no rms/peak selector, so
-    // an RMS value prescribed here propagates unconverted. See Excitation in
-    // problem_config.hpp.
+    // PEAK amplitudes, with a phase in degrees; there is deliberately no
+    // rms/peak selector, so an RMS value prescribed here propagates
+    // unconverted. See Excitation in problem_config.hpp.
     static Scenario ParseScenarioExcitations(const json& source) {
         Scenario scenario;
         if (source.contains("excitations")) {
@@ -488,6 +558,7 @@ private:
                     excitation.TerminalName = d["terminal"];
                 }
                 excitation.Value = d.value("value", 0.0);
+                excitation.Phase = d.value("phase", 0.0);
                 scenario.Excitations.push_back(excitation);
             }
         }

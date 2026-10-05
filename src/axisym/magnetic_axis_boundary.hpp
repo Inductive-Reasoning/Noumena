@@ -45,11 +45,6 @@ inline mfem::Array<int> FindAxisBoundaryMarker(mfem::Mesh &mesh,
 	  return axis_boundary;
    }
 
-   MFEM_VERIFY(num_bdr_attributes > 0,
-			   "The axisymmetric domain reaches r = 0 but the mesh has no "
-			   "boundary attributes. Tag the axis as its own boundary attribute "
-			   "so A_phi = 0 can be enforced there.");
-
    mfem::Array<int> on_axis_count(num_bdr_attributes);
    mfem::Array<int> total_count(num_bdr_attributes);
    on_axis_count = 0;
@@ -61,7 +56,9 @@ inline mfem::Array<int> FindAxisBoundaryMarker(mfem::Mesh &mesh,
    for (int be = 0; be < mesh.GetNBE(); ++be)
    {
 	  const int attr = mesh.GetBdrAttribute(be);
-	  if (attr <= 0 || attr > num_bdr_attributes) { continue; }
+	  // MFEM accepts non-positive attributes with only a warning; no marker
+	  // can select such an element.
+	  if (attr <= 0) { continue; }
 	  total_count[attr - 1]++;
 
 	  mfem::ElementTransformation *trans = mesh.GetBdrElementTransformation(be);

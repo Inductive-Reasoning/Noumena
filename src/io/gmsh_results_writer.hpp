@@ -8,9 +8,10 @@
 // TfmrLib's FEMSolution loader).
 //
 // Elements are emitted as native Gmsh Lagrange elements of the solution order
-// (types 2/9/21/23... for triangles, 3/10/36/37... for quads), so Gmsh
-// interpolates the field with the matching high-order shape functions. No
-// refined/tessellated export copy of the mesh is made.
+// (types 2/9/21/23... for triangles, 3/10/36/37... for quads, 4/11/29/30... for
+// tetrahedra, 5/12/92/93... for hexahedra), so Gmsh interpolates the field with
+// the matching high-order shape functions. No refined/tessellated export copy
+// of the mesh is made.
 //
 // An $InterpolationScheme block carries the shape functions themselves (a
 // monomial exponent matrix plus Lagrange coefficients) and every view names it
@@ -57,6 +58,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <ios>
 #include <map>
 #include <stdexcept>
@@ -108,25 +110,60 @@ namespace detail {
 // Reference-space node layout of a Gmsh Lagrange element of a given order.
 //
 // Node ORDER is Gmsh's own, defined recursively: all corner nodes, then the
-// nodes interior to each edge (edges traversed in element-local order), then
-// the nodes interior to the face, which are themselves laid out as a lower
-// order element of the same shape. Coordinates are in MFEM's reference domain
-// (unit triangle / unit square) so they feed straight into
-// ElementTransformation::Transform.
+// nodes interior to each edge (edges traversed in Gmsh's element-local order
+// and direction), then the nodes interior to each face (in 3D, each face laid
+// out as a lower-order triangle/quad in that face's vertex order), then the
+// nodes interior to the cell, which are themselves laid out as a lower order
+// element of the same shape. Coordinates are in MFEM's reference domain
+// (unit simplex / unit square / unit cube) so they feed straight into
+// ElementTransformation::Transform. In 2D the third coordinate is zero.
+//
+// The 3D layouts reproduce gmsh.model.mesh.getElementProperties() node for
+// node (after mapping Gmsh's [-1,1] hexahedron onto MFEM's unit cube); see
+// tools/check_gmsh_layouts.py for the cross-check against Gmsh itself.
 //
 // Working in reference COORDINATES rather than a permutation of MFEM DOF
 // indices keeps this independent of MFEM's internal nodal layout and of which
 // basis (Gauss-Lobatto vs equispaced) the solution happens to use: every
 // exported value is obtained by evaluating at a point.
+using RefPt = std::array<double, 3>;
+
 struct HoLayout {
     int gmsh_type = 0;
-    std::vector<std::array<double, 2>> ref;
+    std::vector<RefPt> ref;
 };
 
-using RefPt = std::array<double, 2>;
-
 inline RefPt Lerp(const RefPt& a, const RefPt& b, double t) {
-    return { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t };
+    return { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+             a[2] + (b[2] - a[2]) * t };
+}
+
+// The lattice point one step (1/p of each incident edge) in from corner @p a
+// toward its @p neighbors. This is the corner of the inset element that holds
+// the next recursion level's nodes.
+inline RefPt Inset(const RefPt& a, std::initializer_list<const RefPt*> neighbors,
+                   double inv) {
+    RefPt r = a;
+    for (const RefPt* n : neighbors) {
+        for (int c = 0; c < 3; ++c) { r[c] += ((*n)[c] - a[c]) * inv; }
+    }
+    return r;
+}
+
+inline RefPt Centroid(std::initializer_list<const RefPt*> pts) {
+    RefPt r = { 0.0, 0.0, 0.0 };
+    for (const RefPt* q : pts) {
+        for (int c = 0; c < 3; ++c) { r[c] += (*q)[c]; }
+    }
+    for (int c = 0; c < 3; ++c) { r[c] /= static_cast<double>(pts.size()); }
+    return r;
+}
+
+// Nodes strictly inside the edge a -> b, in that direction.
+inline void AppendEdgeNodes(int p, const RefPt& a, const RefPt& b,
+                            std::vector<RefPt>& out) {
+    const double inv = 1.0 / static_cast<double>(p);
+    for (int i = 1; i < p; ++i) { out.push_back(Lerp(a, b, i * inv)); }
 }
 
 // Gmsh element type codes, indexed by order. Index 0 is unused.
@@ -140,36 +177,39 @@ inline int QuadGmshType(int order) {
     return (order >= 1 && order <= 10) ? kTypes[order] : 0;
 }
 
+inline int TetrahedronGmshType(int order) {
+    static const int kTypes[] = { 0, 4, 11, 29, 30, 31, 71, 72, 73, 74, 75 };
+    return (order >= 1 && order <= 10) ? kTypes[order] : 0;
+}
+
+// Gmsh defines complete Lagrange hexahedra up to order 9 only.
+inline int HexahedronGmshType(int order) {
+    static const int kTypes[] = { 0, 5, 12, 92, 93, 94, 95, 96, 97, 98 };
+    return (order >= 1 && order <= 9) ? kTypes[order] : 0;
+}
+
 // Emit an order-p triangular lattice over the triangle (a, b, c) in Gmsh order.
 // p == 0 degenerates to the single centroid node, which is how the recursion
 // terminates for orders that leave exactly one interior node.
 inline void AppendTriangleNodes(int p, const RefPt& a, const RefPt& b,
                                 const RefPt& c, std::vector<RefPt>& out) {
     if (p == 0) {
-        out.push_back({ (a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0 });
+        out.push_back(Centroid({ &a, &b, &c }));
         return;
     }
     out.push_back(a);
     out.push_back(b);
     out.push_back(c);
 
-    const double inv = 1.0 / static_cast<double>(p);
-    const RefPt* edges[3][2] = { { &a, &b }, { &b, &c }, { &c, &a } };
-    for (auto& e : edges) {
-        for (int i = 1; i < p; ++i) {
-            out.push_back(Lerp(*e[0], *e[1], i * inv));
-        }
-    }
+    AppendEdgeNodes(p, a, b, out);
+    AppendEdgeNodes(p, b, c, out);
+    AppendEdgeNodes(p, c, a, out);
 
     // Interior nodes form a triangle of order p-3, inset by one lattice step.
     if (p < 3) return;
-    const RefPt ai = { a[0] + (b[0] - a[0] + c[0] - a[0]) * inv,
-                       a[1] + (b[1] - a[1] + c[1] - a[1]) * inv };
-    const RefPt bi = { b[0] + (a[0] - b[0] + c[0] - b[0]) * inv,
-                       b[1] + (a[1] - b[1] + c[1] - b[1]) * inv };
-    const RefPt ci = { c[0] + (a[0] - c[0] + b[0] - c[0]) * inv,
-                       c[1] + (a[1] - c[1] + b[1] - c[1]) * inv };
-    AppendTriangleNodes(p - 3, ai, bi, ci, out);
+    const double inv = 1.0 / static_cast<double>(p);
+    AppendTriangleNodes(p - 3, Inset(a, { &b, &c }, inv),
+                        Inset(b, { &a, &c }, inv), Inset(c, { &a, &b }, inv), out);
 }
 
 // Emit an order-p quadrilateral lattice over (a, b, c, d) in Gmsh order.
@@ -177,8 +217,7 @@ inline void AppendQuadNodes(int p, const RefPt& a, const RefPt& b,
                             const RefPt& c, const RefPt& d,
                             std::vector<RefPt>& out) {
     if (p == 0) {
-        out.push_back({ (a[0] + b[0] + c[0] + d[0]) * 0.25,
-                        (a[1] + b[1] + c[1] + d[1]) * 0.25 });
+        out.push_back(Centroid({ &a, &b, &c, &d }));
         return;
     }
     out.push_back(a);
@@ -186,25 +225,99 @@ inline void AppendQuadNodes(int p, const RefPt& a, const RefPt& b,
     out.push_back(c);
     out.push_back(d);
 
-    const double inv = 1.0 / static_cast<double>(p);
-    const RefPt* edges[4][2] = { { &a, &b }, { &b, &c }, { &c, &d }, { &d, &a } };
-    for (auto& e : edges) {
-        for (int i = 1; i < p; ++i) {
-            out.push_back(Lerp(*e[0], *e[1], i * inv));
-        }
-    }
+    AppendEdgeNodes(p, a, b, out);
+    AppendEdgeNodes(p, b, c, out);
+    AppendEdgeNodes(p, c, d, out);
+    AppendEdgeNodes(p, d, a, out);
 
     // Interior nodes form a quad of order p-2, inset by one lattice step.
     if (p < 2) return;
-    const RefPt ai = { a[0] + (b[0] - a[0] + d[0] - a[0]) * inv,
-                       a[1] + (b[1] - a[1] + d[1] - a[1]) * inv };
-    const RefPt bi = { b[0] + (a[0] - b[0] + c[0] - b[0]) * inv,
-                       b[1] + (a[1] - b[1] + c[1] - b[1]) * inv };
-    const RefPt ci = { c[0] + (d[0] - c[0] + b[0] - c[0]) * inv,
-                       c[1] + (d[1] - c[1] + b[1] - c[1]) * inv };
-    const RefPt di = { d[0] + (c[0] - d[0] + a[0] - d[0]) * inv,
-                       d[1] + (c[1] - d[1] + a[1] - d[1]) * inv };
-    AppendQuadNodes(p - 2, ai, bi, ci, di, out);
+    const double inv = 1.0 / static_cast<double>(p);
+    AppendQuadNodes(p - 2, Inset(a, { &b, &d }, inv), Inset(b, { &a, &c }, inv),
+                    Inset(c, { &b, &d }, inv), Inset(d, { &a, &c }, inv), out);
+}
+
+// Emit an order-p tetrahedral lattice over (v0, v1, v2, v3) in Gmsh order:
+// corners; edges {0,1} {1,2} {2,0} {3,0} {3,2} {3,1} (each walked from its
+// first vertex); faces {0,2,1} {0,1,3} {0,3,2} {3,1,2}, each an inset triangle
+// of order p-3; then the interior as an inset tetrahedron of order p-4.
+inline void AppendTetNodes(int p, const RefPt& v0, const RefPt& v1,
+                           const RefPt& v2, const RefPt& v3,
+                           std::vector<RefPt>& out) {
+    if (p == 0) {
+        out.push_back(Centroid({ &v0, &v1, &v2, &v3 }));
+        return;
+    }
+    const RefPt* v[4] = { &v0, &v1, &v2, &v3 };
+    for (const RefPt* c : v) { out.push_back(*c); }
+
+    static const int kEdges[6][2] = {
+        { 0, 1 }, { 1, 2 }, { 2, 0 }, { 3, 0 }, { 3, 2 }, { 3, 1 } };
+    for (const auto& e : kEdges) { AppendEdgeNodes(p, *v[e[0]], *v[e[1]], out); }
+
+    if (p < 3) return;
+    const double inv = 1.0 / static_cast<double>(p);
+    static const int kFaces[4][3] = {
+        { 0, 2, 1 }, { 0, 1, 3 }, { 0, 3, 2 }, { 3, 1, 2 } };
+    for (const auto& f : kFaces) {
+        const RefPt& a = *v[f[0]];
+        const RefPt& b = *v[f[1]];
+        const RefPt& c = *v[f[2]];
+        AppendTriangleNodes(p - 3, Inset(a, { &b, &c }, inv),
+                            Inset(b, { &a, &c }, inv), Inset(c, { &a, &b }, inv), out);
+    }
+
+    if (p < 4) return;
+    AppendTetNodes(p - 4, Inset(v0, { &v1, &v2, &v3 }, inv),
+                   Inset(v1, { &v0, &v2, &v3 }, inv),
+                   Inset(v2, { &v0, &v1, &v3 }, inv),
+                   Inset(v3, { &v0, &v1, &v2 }, inv), out);
+}
+
+// Emit an order-p hexahedral lattice over corners v[0..7] (MFEM/Gmsh corner
+// numbering) in Gmsh order: corners; the 12 edges; the 6 faces, each an inset
+// quad of order p-2; then the interior as an inset hexahedron of order p-2.
+inline void AppendHexNodes(int p, const std::array<RefPt, 8>& v,
+                           std::vector<RefPt>& out) {
+    if (p == 0) {
+        RefPt c = { 0.0, 0.0, 0.0 };
+        for (const RefPt& q : v) {
+            for (int k = 0; k < 3; ++k) { c[k] += q[k] * 0.125; }
+        }
+        out.push_back(c);
+        return;
+    }
+    for (const RefPt& c : v) { out.push_back(c); }
+
+    static const int kEdges[12][2] = {
+        { 0, 1 }, { 0, 3 }, { 0, 4 }, { 1, 2 }, { 1, 5 }, { 2, 3 },
+        { 2, 6 }, { 3, 7 }, { 4, 5 }, { 4, 7 }, { 5, 6 }, { 6, 7 } };
+    for (const auto& e : kEdges) { AppendEdgeNodes(p, v[e[0]], v[e[1]], out); }
+
+    if (p < 2) return;
+    const double inv = 1.0 / static_cast<double>(p);
+    static const int kFaces[6][4] = {
+        { 0, 3, 2, 1 }, { 0, 1, 5, 4 }, { 0, 4, 7, 3 },
+        { 1, 2, 6, 5 }, { 2, 3, 7, 6 }, { 4, 5, 6, 7 } };
+    for (const auto& f : kFaces) {
+        const RefPt& a = v[f[0]];
+        const RefPt& b = v[f[1]];
+        const RefPt& c = v[f[2]];
+        const RefPt& d = v[f[3]];
+        AppendQuadNodes(p - 2, Inset(a, { &b, &d }, inv), Inset(b, { &a, &c }, inv),
+                        Inset(c, { &b, &d }, inv), Inset(d, { &a, &c }, inv), out);
+    }
+
+    // Each corner's three edge neighbors, for the inset interior hexahedron.
+    static const int kNeighbors[8][3] = {
+        { 1, 3, 4 }, { 0, 2, 5 }, { 1, 3, 6 }, { 0, 2, 7 },
+        { 0, 5, 7 }, { 1, 4, 6 }, { 2, 5, 7 }, { 3, 4, 6 } };
+    std::array<RefPt, 8> inner;
+    for (int i = 0; i < 8; ++i) {
+        const auto& n = kNeighbors[i];
+        inner[i] = Inset(v[i], { &v[n[0]], &v[n[1]], &v[n[2]] }, inv);
+    }
+    AppendHexNodes(p - 2, inner, out);
 }
 
 inline const char* GeometryName(mfem::Geometry::Type geom) {
@@ -238,20 +351,39 @@ inline const HoLayout& GetHoLayout(mfem::Geometry::Type geom, int order) {
     switch (geom) {
         case mfem::Geometry::TRIANGLE:
             layout.gmsh_type = TriangleGmshType(order);
-            AppendTriangleNodes(order, { 0.0, 0.0 }, { 1.0, 0.0 }, { 0.0, 1.0 },
-                                layout.ref);
+            AppendTriangleNodes(order, { 0.0, 0.0, 0.0 }, { 1.0, 0.0, 0.0 },
+                                { 0.0, 1.0, 0.0 }, layout.ref);
             break;
         case mfem::Geometry::SQUARE:
             layout.gmsh_type = QuadGmshType(order);
-            AppendQuadNodes(order, { 0.0, 0.0 }, { 1.0, 0.0 }, { 1.0, 1.0 },
-                            { 0.0, 1.0 }, layout.ref);
+            AppendQuadNodes(order, { 0.0, 0.0, 0.0 }, { 1.0, 0.0, 0.0 },
+                            { 1.0, 1.0, 0.0 }, { 0.0, 1.0, 0.0 }, layout.ref);
+            break;
+        case mfem::Geometry::TETRAHEDRON:
+            layout.gmsh_type = TetrahedronGmshType(order);
+            AppendTetNodes(order, { 0.0, 0.0, 0.0 }, { 1.0, 0.0, 0.0 },
+                           { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 }, layout.ref);
+            break;
+        case mfem::Geometry::CUBE:
+            layout.gmsh_type = HexahedronGmshType(order);
+            if (layout.gmsh_type == 0) {
+                throw std::runtime_error(
+                    "gmsh_results: unsupported export order "
+                    + std::to_string(order) + " for a hexahedron; Gmsh defines "
+                      "Lagrange hexahedra for orders 1-9");
+            }
+            AppendHexNodes(order, { { { 0.0, 0.0, 0.0 }, { 1.0, 0.0, 0.0 },
+                                      { 1.0, 1.0, 0.0 }, { 0.0, 1.0, 0.0 },
+                                      { 0.0, 0.0, 1.0 }, { 1.0, 0.0, 1.0 },
+                                      { 1.0, 1.0, 1.0 }, { 0.0, 1.0, 1.0 } } },
+                           layout.ref);
             break;
         default:
             throw std::runtime_error(
                 std::string("gmsh_results: unsupported element geometry '")
                 + GeometryName(geom)
-                + "' for MSH export; only triangles and quadrilaterals are "
-                  "handled (the export path assumes a 2D mesh)");
+                + "' for MSH export; triangles, quadrilaterals, tetrahedra and "
+                  "hexahedra are handled");
     }
     return cache.emplace(key, std::move(layout)).first->second;
 }
@@ -301,7 +433,8 @@ inline std::vector<int> BuildDofPermutation(const mfem::FiniteElement& fe,
         for (int j = 0; j < n; ++j) {
             const mfem::IntegrationPoint& ip = ir.IntPoint(j);
             if (std::fabs(ip.x - layout.ref[k][0]) < 1e-10 &&
-                std::fabs(ip.y - layout.ref[k][1]) < 1e-10) {
+                std::fabs(ip.y - layout.ref[k][1]) < 1e-10 &&
+                std::fabs(ip.z - layout.ref[k][2]) < 1e-10) {
                 perm[k] = j;
                 break;
             }
@@ -322,7 +455,12 @@ inline std::vector<int> BuildDofPermutation(const mfem::FiniteElement& fe,
 // Gmsh's model is: given exponent matrix E (n_terms x n_vars) and coefficient
 // matrix C (n_nodes x n_terms), shape function i is
 //
-//     phi_i(u, v) = sum_j C[i][j] * u^E[j][0] * v^E[j][1]
+//     phi_i(u, v, w) = sum_j C[i][j] * u^E[j][0] * v^E[j][1] * w^E[j][2]
+//
+// with n_vars = 2 for 2D elements (the w exponent is then zero and is not
+// written) and 3 for 3D elements. (u, v, w) are MFEM's reference coordinates:
+// the unit simplex, which coincides with Gmsh's, and the unit square / cube,
+// where Gmsh's own parametric domain is [-1, 1]^d.
 //
 // and a field is reconstructed as sum_i phi_i(u, v) * value_i, where value_i
 // are the nodal values listed for that element (in the same node order as the
@@ -335,40 +473,125 @@ inline std::vector<int> BuildDofPermutation(const mfem::FiniteElement& fe,
 // B, where nodal values alone cannot be interpolated -- the consumer must
 // evaluate the element-local basis to get a value anywhere but a node.
 struct InterpScheme {
-    std::vector<std::array<int, 2>>  exponents;  // per monomial term
+    std::vector<std::array<int, 3>>  exponents;  // per monomial term (u, v, w)
     std::vector<std::vector<double>> coeffs;     // [node][term]
 };
 
 // Monomial exponents spanning the polynomial space of an order-p element.
-// Triangles use the total-degree space (u^a v^b, a + b <= p); quads use the
-// tensor-product space (a <= p, b <= p). These match the node lattices built
-// by AppendTriangleNodes / AppendQuadNodes, so the Vandermonde system below
-// is square and non-singular.
-inline std::vector<std::array<int, 2>> MonomialExponents(
+// Simplices use the total-degree space (u^a v^b [w^c], a + b [+ c] <= p);
+// quads and hexahedra use the tensor-product space (each exponent <= p). These
+// match the node lattices built by the Append*Nodes functions, so the
+// Vandermonde system below is square and non-singular.
+inline std::vector<std::array<int, 3>> MonomialExponents(
     mfem::Geometry::Type geom, int order) {
-    std::vector<std::array<int, 2>> e;
-    if (geom == mfem::Geometry::TRIANGLE) {
-        for (int d = 0; d <= order; ++d) {
-            for (int i = 0; i <= d; ++i) { e.push_back({ d - i, i }); }
-        }
-    } else {  // SQUARE
-        for (int a = 0; a <= order; ++a) {
-            for (int b = 0; b <= order; ++b) { e.push_back({ a, b }); }
-        }
+    std::vector<std::array<int, 3>> e;
+    switch (geom) {
+        case mfem::Geometry::TRIANGLE:
+            for (int d = 0; d <= order; ++d) {
+                for (int i = 0; i <= d; ++i) { e.push_back({ d - i, i, 0 }); }
+            }
+            break;
+        case mfem::Geometry::TETRAHEDRON:
+            for (int d = 0; d <= order; ++d) {
+                for (int c = 0; c <= d; ++c) {
+                    for (int b = 0; b <= d - c; ++b) {
+                        e.push_back({ d - b - c, b, c });
+                    }
+                }
+            }
+            break;
+        case mfem::Geometry::CUBE:
+            for (int a = 0; a <= order; ++a) {
+                for (int b = 0; b <= order; ++b) {
+                    for (int c = 0; c <= order; ++c) { e.push_back({ a, b, c }); }
+                }
+            }
+            break;
+        default:  // SQUARE
+            for (int a = 0; a <= order; ++a) {
+                for (int b = 0; b <= order; ++b) { e.push_back({ a, b, 0 }); }
+            }
+            break;
     }
     return e;
 }
 
-// Build the Lagrange coefficient matrix by inverting the Vandermonde system.
+// Build the Lagrange coefficient matrix.
 //
-// Requiring phi_i(node_k) = delta_ik gives V * C^T = I, where
+// Simplices: requiring phi_i(node_k) = delta_ik gives V * C^T = I, where
 // V[k][j] = monomial_j(node_k). So C^T = V^-1, i.e. C = (V^-1)^T. Solved with
-// Gauss-Jordan and partial pivoting; the equispaced lattices used here are
-// well enough conditioned at the supported orders (<= 10).
-inline InterpScheme BuildInterpScheme(mfem::Geometry::Type geom, int order) {
+// Gauss-Jordan and partial pivoting; the Lagrange property then holds to about
+// 1e-6 at order 10 (1e-12 at order 5). Tensor-product elements take the exact
+// route above instead.
+// Monomial coefficients of the 1D Lagrange polynomials on the equispaced nodes
+// t_b = b/p of [0, 1]: result[a][k] is the u^k coefficient of L_a(u), with
+// L_a(t_b) = delta_ab. Built by expanding prod_{b != a} (u - t_b) / (t_a - t_b)
+// directly, which involves no linear solve.
+inline std::vector<std::vector<double>> LagrangeMonomials1D(int p) {
+    std::vector<std::vector<double>> coeffs(p + 1, std::vector<double>(p + 1, 0.0));
+    for (int a = 0; a <= p; ++a) {
+        std::vector<double> poly{ 1.0 };  // ascending powers of u
+        double denom = 1.0;
+        for (int b = 0; b <= p; ++b) {
+            if (b == a) { continue; }
+            const double tb = static_cast<double>(b) / p;
+            std::vector<double> next(poly.size() + 1, 0.0);
+            for (size_t k = 0; k < poly.size(); ++k) {
+                next[k + 1] += poly[k];
+                next[k] -= tb * poly[k];
+            }
+            poly.swap(next);
+            denom *= (static_cast<double>(a) - b) / p;
+        }
+        for (int k = 0; k <= p; ++k) { coeffs[a][k] = poly[k] / denom; }
+    }
+    return coeffs;
+}
+
+// Tensor-product elements (quads, hexahedra): each shape function is a product
+// of 1D Lagrange polynomials, so its monomial coefficients are exact products
+// of 1D coefficients. This avoids inverting the (p+1)^d Vandermonde matrix,
+// whose conditioning grows like the d-th power of the 1D one: by Gauss-Jordan
+// the Lagrange property fails at order 6 for quads and order 5 for hexahedra.
+//
+// What remains is inherent to a monomial basis on [0, 1]: evaluating it
+// cancels terms whose size grows with order, so the Lagrange property holds to
+// ~1e-10 at order 5 and ~1e-7 at order 7 for quads, and to ~1e-10 at order 4
+// and ~1e-7 at order 5 for hexahedra, degrading quickly above that. Gmsh's own
+// [-1, 1] reference domain would be far better conditioned, but the consumer
+// contract fixes MFEM's [0, 1] domain.
+inline InterpScheme BuildTensorInterpScheme(mfem::Geometry::Type geom, int order,
+                                            const HoLayout& layout) {
     InterpScheme scheme;
     scheme.exponents = MonomialExponents(geom, order);
+    const auto c1 = LagrangeMonomials1D(order);
+    const int dim = mfem::Geometry::Dimension[geom];
+
+    const int n = static_cast<int>(layout.ref.size());
+    scheme.coeffs.assign(n, std::vector<double>(scheme.exponents.size(), 0.0));
+    for (int i = 0; i < n; ++i) {
+        // Lattice index of node i along each axis.
+        int idx[3] = { 0, 0, 0 };
+        for (int d = 0; d < dim; ++d) {
+            idx[d] = static_cast<int>(std::lround(layout.ref[i][d] * order));
+        }
+        for (size_t j = 0; j < scheme.exponents.size(); ++j) {
+            double c = 1.0;
+            for (int d = 0; d < dim; ++d) { c *= c1[idx[d]][scheme.exponents[j][d]]; }
+            scheme.coeffs[i][j] = c;
+        }
+    }
+    return scheme;
+}
+
+inline InterpScheme BuildInterpScheme(mfem::Geometry::Type geom, int order) {
     const HoLayout& layout = GetHoLayout(geom, order);
+    if (geom == mfem::Geometry::SQUARE || geom == mfem::Geometry::CUBE) {
+        return BuildTensorInterpScheme(geom, order, layout);
+    }
+
+    InterpScheme scheme;
+    scheme.exponents = MonomialExponents(geom, order);
 
     const int n = static_cast<int>(layout.ref.size());
     const int m = static_cast<int>(scheme.exponents.size());
@@ -385,9 +608,11 @@ inline InterpScheme BuildInterpScheme(mfem::Geometry::Type geom, int order) {
     for (int k = 0; k < n; ++k) {
         const double u = layout.ref[k][0];
         const double v = layout.ref[k][1];
+        const double w = layout.ref[k][2];
         for (int j = 0; j < n; ++j) {
             a[k][j] = std::pow(u, scheme.exponents[j][0]) *
-                      std::pow(v, scheme.exponents[j][1]);
+                      std::pow(v, scheme.exponents[j][1]) *
+                      std::pow(w, scheme.exponents[j][2]);
         }
         a[k][n + k] = 1.0;
     }
@@ -448,7 +673,7 @@ inline ExportNodes BuildExportNodes(mfem::Mesh& mesh,
     const int ne = mesh.GetNE();
     nodes.coord.assign(nd, { 0.0, 0.0, 0.0 });
     nodes.node_elem.assign(nd, -1);
-    nodes.node_ref.assign(nd, RefPt{ 0.0, 0.0 });
+    nodes.node_ref.assign(nd, RefPt{ 0.0, 0.0, 0.0 });
     nodes.elem_type.assign(ne, 0);
     nodes.elem_nodes.assign(ne, {});
 
@@ -479,7 +704,7 @@ inline ExportNodes BuildExportNodes(mfem::Mesh& mesh,
             nodes.elem_nodes[e][k] = dof;
 
             mfem::IntegrationPoint ip;
-            ip.Set2(layout.ref[k][0], layout.ref[k][1]);
+            ip.Set3(layout.ref[k][0], layout.ref[k][1], layout.ref[k][2]);
 
             // Transform() gives the true geometric position for curved
             // elements (mesh.GetNodes() populated) and reduces to the expected
@@ -562,8 +787,9 @@ inline void WriteMeshBlock22(std::ostream& out, mfem::Mesh& mesh,
 // elements carry no tags at all; they are grouped into blocks keyed by the
 // model entity they are classified on, and a separate $Entities section maps
 // each entity to its physical tags. To preserve exactly the attribute
-// semantics the 2.2 path exposes, we synthesize one surface entity per
-// distinct element attribute, with entityTag == physicalTag == attribute.
+// semantics the 2.2 path exposes, we synthesize one entity of the mesh's
+// dimension (a surface in 2D, a volume in 3D) per distinct element attribute,
+// with entityTag == physicalTag == attribute.
 //
 // Node tags remain the global 1..nv numbering used by the 2.2 path, so the
 // $NodeData / $ElementNodeData sections that follow are byte-identical between
@@ -572,6 +798,9 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
                              const ExportNodes& nodes) {
     const int nv = static_cast<int>(nodes.coord.size());
     const int ne = mesh.GetNE();
+    const int dim = mesh.Dimension();
+    MFEM_VERIFY(dim == 2 || dim == 3,
+        "gmsh_results: MSH 4.1 export supports 2D and 3D meshes only.");
 
     // Group elements by (attribute, gmsh element type). A single attribute may
     // legitimately contain both triangles and quads, and MSH 4.1 requires one
@@ -582,7 +811,7 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
         blocks[{ mesh.GetAttribute(e), nodes.elem_type[e] }].push_back(e);
     }
 
-    // Distinct attributes become the surface entities.
+    // Distinct attributes become the surface (2D) or volume (3D) entities.
     std::vector<int> attrs;
     for (const auto& kv : blocks) {
         if (std::find(attrs.begin(), attrs.end(), kv.first.first) == attrs.end()) {
@@ -594,11 +823,11 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
     std::string s;
 
     // $Entities: numPoints numCurves numSurfaces numVolumes, then one line per
-    // surface: tag, bounding box, physical tags, bounding curves (none, since
-    // we do not synthesize a curve topology).
-    s.append("$Entities\n0 0 ");
+    // entity: tag, bounding box, physical tags, bounding entities of one
+    // dimension lower (none, since we do not synthesize a lower topology).
+    s.append(dim == 3 ? "$Entities\n0 0 0 " : "$Entities\n0 0 ");
     AppendInt(s, static_cast<long long>(attrs.size()));
-    s.append(" 0\n");
+    s.append(dim == 3 ? "\n" : " 0\n");
     for (int attr : attrs) {
         // Bounding box over the export nodes of every element with this
         // attribute. Gmsh tolerates a loose box; it is used for display only.
@@ -620,7 +849,7 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
         for (int c = 0; c < 3; ++c) { s.push_back(' '); AppendDouble(s, hi[c]); }
         s.append(" 1 ");        // one physical tag...
         AppendInt(s, attr);     // ...which is the attribute itself
-        s.append(" 0\n");       // zero bounding curves
+        s.append(" 0\n");       // zero bounding curves / surfaces
     }
     s.append("$EndEntities\n");
     out.write(s.data(), static_cast<std::streamsize>(s.size()));
@@ -629,7 +858,7 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
     // entityDim entityTag parametric numNodesInBlock, all tags, then all
     // coordinates. Export nodes are shared across attributes, and MSH 4.1
     // requires each node tag to appear exactly once, so all nodes go in a
-    // single block classified on the first surface entity.
+    // single block classified on the first entity.
     s.clear();
     s.reserve(static_cast<size_t>(nv) * 48 + 128);
     if (attrs.empty() || nv == 0) {
@@ -637,7 +866,8 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
     } else {
         s.append("$Nodes\n1 ");
         AppendInt(s, nv); s.append(" 1 "); AppendInt(s, nv); s.push_back('\n');
-        s.append("2 ");             // entityDim = 2 (surface)
+        AppendInt(s, dim);           // entityDim (2 = surface, 3 = volume)
+        s.push_back(' ');
         AppendInt(s, attrs.front()); // entityTag
         s.append(" 0 ");            // parametric = 0
         AppendInt(s, nv); s.push_back('\n');
@@ -668,7 +898,8 @@ inline void WriteMeshBlock41(std::ostream& out, mfem::Mesh& mesh,
     AppendInt(s, ne);
     s.push_back('\n');
     for (const auto& kv : blocks) {
-        s.append("2 ");                          // entityDim = 2 (surface)
+        AppendInt(s, dim);                       // entityDim
+        s.push_back(' ');
         AppendInt(s, kv.first.first);            // entityTag = attribute
         s.push_back(' '); AppendInt(s, kv.first.second);  // elementType
         s.push_back(' ');
@@ -749,11 +980,14 @@ inline void WriteInterpolationScheme(std::ostream& out,
             s.push_back('\n');
         }
 
-        AppendInt(s, m); s.append(" 2\n");
+        // One exponent column per reference coordinate of this element.
+        const int n_vars = mfem::Geometry::Dimension[g];
+        AppendInt(s, m); s.push_back(' '); AppendInt(s, n_vars); s.push_back('\n');
         for (int j = 0; j < m; ++j) {
-            AppendInt(s, scheme.exponents[j][0]);
-            s.push_back(' ');
-            AppendInt(s, scheme.exponents[j][1]);
+            for (int c = 0; c < n_vars; ++c) {
+                if (c) { s.push_back(' '); }
+                AppendInt(s, scheme.exponents[j][c]);
+            }
             s.push_back('\n');
         }
     }
@@ -796,7 +1030,7 @@ inline void WriteNodeData(std::ostream& out, mfem::Mesh& mesh,
         // DOF directly: the field may live in a different space or basis than
         // the equispaced one used for node numbering.
         mfem::IntegrationPoint ip;
-        ip.Set2(nodes.node_ref[i][0], nodes.node_ref[i][1]);
+        ip.Set3(nodes.node_ref[i][0], nodes.node_ref[i][1], nodes.node_ref[i][2]);
         mfem::ElementTransformation* T =
             mesh.GetElementTransformation(nodes.node_elem[i]);
         T->SetIntPoint(&ip);
@@ -845,7 +1079,7 @@ inline void WriteElementNodeData(std::ostream& out,
         AppendInt(blk, n_local);
         for (int k = 0; k < n_local; ++k) {
             mfem::IntegrationPoint ip;
-            ip.Set2(layout.ref[k][0], layout.ref[k][1]);
+            ip.Set3(layout.ref[k][0], layout.ref[k][1], layout.ref[k][2]);
             T->SetIntPoint(&ip);
             v.elem_node_eval(e, ip, *T, buf.data());
             for (int c = 0; c < v.num_components; ++c) {
@@ -882,6 +1116,29 @@ inline View MakeScalarNodeView(const std::string& name,
                              mfem::ElementTransformation& T,
                              double* out) {
         out[0] = gf.GetValue(T, ip);
+    };
+    return v;
+}
+
+/// Convenience: ElementNodeData view of a vector-valued GridFunction (e.g. a
+/// Nedelec vector potential). Per-element because such fields are continuous
+/// only in their tangential component; values are the element's own, padded
+/// to 3 components.
+inline View MakeVectorGridFunctionView(const std::string& name,
+                                       mfem::GridFunction& gf) {
+    View v;
+    v.name = name;
+    v.kind = View::Kind::ElementNodeData;
+    v.num_components = 3;
+    v.elem_node_eval = [&gf](int /*elem_id*/,
+                             const mfem::IntegrationPoint& ip,
+                             mfem::ElementTransformation& T,
+                             double* out) {
+        mfem::Vector val;
+        gf.GetVectorValue(T, ip, val);
+        out[0] = val.Size() > 0 ? val(0) : 0.0;
+        out[1] = val.Size() > 1 ? val(1) : 0.0;
+        out[2] = val.Size() > 2 ? val(2) : 0.0;
     };
     return v;
 }
