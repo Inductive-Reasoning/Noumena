@@ -400,12 +400,15 @@ TEST_CASE("Stranded conductors carry no eddy currents", "[solvers][mqs][3d][2d][
 			solver->Run();
 		}
 		REQUIRE(copper.ComputeRegionLosses().empty());
+		// The two systems are identical; the solutions agree to the round-off
+		// of a threaded factorization, whose summation order varies.
 		mfem::Vector difference(copper.GetSolutionReal());
 		difference -= air.GetSolutionReal();
-		REQUIRE(difference.Normlinf() == 0.0);
+		INFO("difference relative to |A|: " << difference.Normlinf() / air.GetSolutionReal().Normlinf());
+		REQUIRE(difference.Normlinf() <= 1e-12 * air.GetSolutionReal().Normlinf());
 		difference = copper.GetSolutionImag();
 		difference -= air.GetSolutionImag();
-		REQUIRE(difference.Normlinf() == 0.0);
+		REQUIRE(difference.Normlinf() <= 1e-12 * air.GetSolutionReal().Normlinf());
 	}
 }
 
@@ -413,9 +416,7 @@ TEST_CASE("Stranded conductors carry no eddy currents", "[solvers][mqs][3d][2d][
 // and the system is linear, so shifting every terminal's phase by phi rotates
 // the whole solution -- the potential and the massive port's voltage -- by
 // exp(j phi). A sign error in how either a stranded source or a massive port
-// takes its imaginary part breaks the rotation by order one. In 3D, A agrees
-// only to about 1e-6: the gauge regularization (relative 1e-6) leaves the
-// gradient part of A sensitive to round-off.
+// takes its imaginary part breaks the rotation by order one.
 TEST_CASE("An excitation's phase rotates the MQS solution", "[solvers][mqs][3d][2d][phase]") {
 	const AnnulusSpec spec = EddyCurrentAnnulus();
 	const bool three_d = GENERATE(false, true);
@@ -459,7 +460,7 @@ TEST_CASE("An excitation's phase rotates the MQS solution", "[solvers][mqs][3d][
 	expected_im.Add(turn.imag(), reference.re);
 	const double scale = std::max(reference.re.Normlinf(), reference.im.Normlinf());
 	REQUIRE(scale > 0.0);
-	const double tolerance = three_d ? 1e-4 : 1e-10;
+	constexpr double tolerance = 1e-10;
 	expected_re -= rotated.re;
 	expected_im -= rotated.im;
 	REQUIRE(expected_re.Normlinf() <= tolerance * scale);

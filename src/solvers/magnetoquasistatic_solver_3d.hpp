@@ -60,9 +60,12 @@
  * flux linkage lambda = b'_k . A (b'_k its projected unit load), with
  * V = j omega lambda. Written as one R and one L matrix per frequency.
  *
- * @par Regularization
- * Both linear solvers solve a regularized system: in the nonconducting
- * regions curl-curl alone is singular. Tested with a gradient grad(psi),
+ * @par Gauge
+ * In the nonconducting regions curl-curl alone is singular. The direct
+ * solver imposes the Coulomb gauge there by a Lagrange multiplier, with the
+ * multiplier constant on each conductor so that the eddy-current equations
+ * are left exactly as they are (see DivergenceFreeProjector::GaugeConstraint).
+ * The iterative solver regularizes instead. Tested with a gradient grad(psi),
  * the regularized field equation reads
  *     integral (beta + j omega sigma) A . grad(psi) = 0,
  * so beta enters charge conservation in, and at the surface of, every
@@ -79,7 +82,7 @@
  * above round-off, with a warning if the floor binds.
  *
  * @par Linear solvers
- *  - "direct": the complex system factored once per frequency (see
+ *  - "direct": the gauged complex system factored once per frequency (see
  *    ComplexDirectSolver) and reused for every terminal column.
  *  - "iterative" (MPI/HYPRE build only): GMRES preconditioned block-
  *    diagonally, with hypre's AMS on K + omega M_sigma for both the real and
@@ -136,12 +139,15 @@ public:
 		BuildSpaceAndConductors();
 		const int n = fespace->GetTrueVSize();
 
+		const bool direct = config.LinearSolver == LinearSolverType::Direct;
 		{
 			auto operation = Reporter().Start("field matrix assembly");
-			regularization = std::make_unique<mfem::ConstantCoefficient>(EddyCurrentRegularization());
 			stiffness = std::make_unique<mfem::BilinearForm>(fespace.get());
 			stiffness->AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
-			stiffness->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
+			if (!direct) {
+				regularization = std::make_unique<mfem::ConstantCoefficient>(EddyCurrentRegularization());
+				stiffness->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
+			}
 			stiffness->Assemble();
 			stiffness->Finalize();
 
@@ -186,7 +192,18 @@ public:
 		preconditioner.reset();
 #endif
 		prepared_omega = 0.0;
-		if (config.LinearSolver == LinearSolverType::Direct) {
+
+		// The direct path gauges the field block by a Lagrange multiplier,
+		// the Coulomb gauge in the nonconducting regions (see
+		// ComplexDirectSolver); the iterative one is regularized instead.
+		gauge.reset();
+		if (direct) {
+			mfem::Array<int> conducting(mesh.attributes.Max());
+			for (int a = 1; a <= conducting.Size(); ++a) {
+				conducting[a - 1] = (*sigma_coeff)(a) > 0.0 ? 1 : 0;
+			}
+			gauge = std::make_unique<GaugeConstraintRows>(
+				*projector->GaugeConstraint(conducting), ess_tdof_list);
 			WarnOnLargeDirectSolve(port_operator->Layout().HalfSize(),
 								   ComplexDirectSolver::kLarge3DUnknowns);
 		}
@@ -290,6 +307,7 @@ private:
 	// Solver state for the active frequency (prepared_omega).
 	double prepared_omega = 0.0;
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
+	std::unique_ptr<GaugeConstraintRows> gauge;  // direct path; see BuildOperators()
 	std::unique_ptr<ComplexDirectSolver> direct_solver;
 
 #ifdef MFEM_USE_MPI
@@ -436,7 +454,8 @@ private:
 			// One solver per mesh: refactoring it at a new frequency reuses its
 			// ordering.
 			if (!direct_solver) {
-				direct_solver = std::make_unique<ComplexDirectSolver>(port_operator->Layout());
+				direct_solver = std::make_unique<ComplexDirectSolver>(port_operator->Layout(),
+																	  gauge.get());
 			}
 			direct_solver->Factor(*packed_matrix);
 		}

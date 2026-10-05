@@ -280,10 +280,21 @@ The curl-curl operator is singular: it annihilates every gradient.
   singular system directly. It is consistent because every load is projected
   (below). Afterwards the gradient part of `A` is removed,
   `A ← A − Gψ` with `(GᵀMG)ψ = GᵀMA`, which is the discrete Coulomb gauge.
-- `direct`: the factorization needs a nonsingular matrix, so `β (A, w)` is
-  added with `β = 10⁻⁶ ν_min / L²` (`L` the bounding-box diagonal). With a
-  divergence-free source this selects the same Coulomb gauge and perturbs `B`
-  by about 10⁻⁶ relative.
+- `direct`: the factorization needs a nonsingular matrix, so the discrete
+  Coulomb gauge is imposed by a Lagrange multiplier `p` in the matching H1
+  space (zero on the `n × A = 0` walls):
+
+  ```
+  [ K    MG ] [ A ]   [ b ]
+  [ GᵀM  0  ] [ p ] = [ 0 ]
+  ```
+
+  i.e. `∫ A·∇q = 0` for every such `q`. Testing the first row with `Gψ` gives
+  `(GᵀMG) p = Gᵀb = 0` for a projected load, so `p = 0` and `K A = b` holds
+  unperturbed; the multiplier only selects the gauge. The system is symmetric
+  indefinite and factored by LU (STRUMPACK with MC64 matching, which pivots
+  past the zero block). With no `n × A = 0` wall one multiplier is dropped,
+  removing the constant.
 
 Every current terminal is a conductor with a direction field `w = −∇v`,
 from a unit conduction potential `v` (analytic `w = φ̂ / (Θr)` for
@@ -502,8 +513,17 @@ magnetostatics:
   electric scalar potential, so the eddy current is weakly divergence-free with
   no normal component at the conductor surface, with no extra unknown.
 
-Both linear solvers solve a regularized system: in the nonconducting regions
-curl-curl alone is singular. Tested with a gradient, the regularized equation is
+In the nonconducting regions curl-curl alone is singular. `direct` gauges it
+with the multiplier above, restricted so that the eddy-current equations are
+untouched: inside a conductor `jωσA` already determines `A`, and charge
+conservation makes `σA`, not `A`, divergence-free, so the multiplier is one
+constant on each conductor (one unknown for a conductor touching no
+`n × A = 0` wall, none for one that does). The gradients that vanish on every
+conductor, the null space of `K + jωM_σ`, are then exactly the ones
+constrained.
+
+`iterative` solves a regularized system instead. Tested with a gradient, the
+regularized equation is
 `∫(β + jωσ) A·∇ψ = 0`, so `β` enters charge conservation in and at the surface
 of every conductor, off by a relative `β/(ωσ)`. The static `β` is harmless for
 good conductors but not for weak ones (it overstated the loss of a 1 S/m block

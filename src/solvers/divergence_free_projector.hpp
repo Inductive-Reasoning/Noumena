@@ -116,7 +116,6 @@ public:
 	///
 	/// @return The squared L2 norm of what was removed, as for Project().
 	double ProjectWithin(mfem::Vector& b, const mfem::Array<int>& conductor) const {
-		mfem::Mesh& mesh = *nd.GetMesh();
 		mfem::ConstantCoefficient one(1.0);
 		mfem::Array<int> marker(conductor);
 		mfem::BilinearForm mass(&nd);
@@ -126,41 +125,16 @@ public:
 		const mfem::SparseMatrix& M_c = mass.SpMat();
 		std::unique_ptr<mfem::SparseMatrix> K_c(mfem::RAP(*G, M_c, *G));
 
-		// The conductor's H1 DOFs, grouped into connected parts.
-		std::vector<int> part(h1.GetVSize(), -1);
-		int parts = 0;
-		mfem::Array<int> dofs;
-		std::vector<std::vector<int>> dof_elements(h1.GetVSize());
-		for (int e = 0; e < mesh.GetNE(); ++e) {
-			const int a = mesh.GetAttribute(e);
-			if (a < 1 || a > conductor.Size() || !conductor[a - 1]) continue;
-			h1.GetElementDofs(e, dofs);
-			for (int d : dofs) { dof_elements[d].push_back(e); }
-		}
+		// psi is free on the conductor's H1 DOFs off the essential boundary,
+		// except one per connected part that touches no essential boundary.
+		const DofParts parts = ConnectedParts(conductor);
 		std::vector<int> free;
-		for (int start = 0; start < h1.GetVSize(); ++start) {
-			if (dof_elements[start].empty() || part[start] >= 0) continue;
-			std::vector<int> stack{ start }, members;
-			part[start] = parts;
-			bool grounded = false;
-			while (!stack.empty()) {
-				const int d = stack.back();
-				stack.pop_back();
-				members.push_back(d);
-				grounded |= essential.count(d) != 0;
-				for (int e : dof_elements[d]) {
-					h1.GetElementDofs(e, dofs);
-					for (int n : dofs) {
-						if (part[n] < 0) { part[n] = parts; stack.push_back(n); }
-					}
-				}
-			}
-			for (size_t m = 0; m < members.size(); ++m) {
-				const int d = members[m];
-				if (essential.count(d) || (!grounded && m == 0)) continue;
-				free.push_back(d);
-			}
-			++parts;
+		std::vector<bool> pinned(parts.grounded.size(), false);
+		for (int d = 0; d < h1.GetVSize(); ++d) {
+			const int c = parts.part[d];
+			if (c < 0 || essential.count(d)) continue;
+			if (!parts.grounded[c] && !pinned[c]) { pinned[c] = true; continue; }
+			free.push_back(d);
 		}
 
 		mfem::Vector rhs(G->Width()), psi(G->Width());
@@ -197,6 +171,53 @@ public:
 		A -= grad_psi;
 	}
 
+	/// The discrete Coulomb gauge as a constraint, for a direct solve: the
+	/// matrix C = M G P (Nedelec DOFs x multipliers) whose columns span the
+	/// gradients the curl-curl system leaves undetermined, so that
+	///
+	///     [ K    C ]
+	///     [ C^T  0 ]
+	///
+	/// is nonsingular and its solution satisfies C^T A = 0, div A = 0 weakly.
+	/// For a balanced load the multiplier is zero, so K A = b is unchanged.
+	///
+	/// P maps the multiplier space into H1: functions that vanish on the
+	/// essential boundary and are one constant on every conductor (domain
+	/// attributes of @p conducting). There the eddy-current term already
+	/// determines A, and charge conservation makes sigma A, not A,
+	/// divergence-free, so the constraint must leave A free: a conductor
+	/// part that touches no essential boundary gets a single multiplier
+	/// (the gradients that are zero on it remain undetermined), one that does
+	/// gets none. With no essential boundary at all one multiplier is
+	/// dropped, removing the constant. The rows at essential Nedelec DOFs are
+	/// included; see GaugeConstraintRows for how a solver uses them.
+	std::unique_ptr<mfem::SparseMatrix> GaugeConstraint(const mfem::Array<int>& conducting) const {
+		const DofParts parts = ConnectedParts(conducting);
+		const int n_h1 = h1.GetVSize();
+		std::vector<int> column(n_h1, -1), part_column(parts.grounded.size(), -1);
+		int multipliers = 0;
+		for (int d = 0; d < n_h1; ++d) {
+			if (essential.count(d)) continue;
+			const int c = parts.part[d];
+			if (c < 0) { column[d] = multipliers++; continue; }
+			if (parts.grounded[c]) continue;
+			if (part_column[c] < 0) { part_column[c] = multipliers++; }
+			column[d] = part_column[c];
+		}
+		if (essential.empty() && multipliers > 0) {
+			for (int& j : column) { j = j == 0 ? -1 : (j > 0 ? j - 1 : j); }
+			--multipliers;
+		}
+
+		mfem::SparseMatrix P(n_h1, multipliers);
+		for (int d = 0; d < n_h1; ++d) {
+			if (column[d] >= 0) { P.Set(d, column[d], 1.0); }
+		}
+		P.Finalize();
+		std::unique_ptr<mfem::SparseMatrix> MG(mfem::Mult(*M, *G));
+		return std::unique_ptr<mfem::SparseMatrix>(mfem::Mult(*MG, P));
+	}
+
 	/// ||G^T b|| (excluding the fixed DOFs): zero for a balanced load.
 	double GradientResidual(const mfem::Vector& b) const {
 		mfem::Vector r(G->Width());
@@ -206,6 +227,46 @@ public:
 	}
 
 private:
+	// The H1 DOFs of the elements with a marked domain attribute, grouped into
+	// parts connected through shared elements; a part is grounded if one of
+	// its DOFs lies on the essential boundary.
+	struct DofParts {
+		std::vector<int> part;       // by H1 DOF, -1 if not marked
+		std::vector<bool> grounded;  // by part
+	};
+	DofParts ConnectedParts(const mfem::Array<int>& marker) const {
+		const mfem::Mesh& mesh = *nd.GetMesh();
+		DofParts parts;
+		parts.part.assign(h1.GetVSize(), -1);
+		std::vector<std::vector<int>> dof_elements(h1.GetVSize());
+		mfem::Array<int> dofs;
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			const int a = mesh.GetAttribute(e);
+			if (a < 1 || a > marker.Size() || !marker[a - 1]) continue;
+			h1.GetElementDofs(e, dofs);
+			for (int d : dofs) { dof_elements[d].push_back(e); }
+		}
+		for (int start = 0; start < h1.GetVSize(); ++start) {
+			if (dof_elements[start].empty() || parts.part[start] >= 0) continue;
+			const int c = static_cast<int>(parts.grounded.size());
+			parts.grounded.push_back(false);
+			std::vector<int> stack{ start };
+			parts.part[start] = c;
+			while (!stack.empty()) {
+				const int d = stack.back();
+				stack.pop_back();
+				if (essential.count(d)) { parts.grounded[c] = true; }
+				for (int e : dof_elements[d]) {
+					h1.GetElementDofs(e, dofs);
+					for (int m : dofs) {
+						if (parts.part[m] < 0) { parts.part[m] = c; stack.push_back(m); }
+					}
+				}
+			}
+		}
+		return parts;
+	}
+
 	// psi with K psi = rhs, psi = 0 at the fixed DOFs.
 	mfem::Vector SolvePotential(mfem::Vector rhs) const {
 		for (int i = 0; i < fixed.Size(); ++i) { rhs(fixed[i]) = 0.0; }

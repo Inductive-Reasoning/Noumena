@@ -54,8 +54,11 @@
  * n x A fixed on the whole boundary: every gradient of a nodal function that
  * vanishes on the n x A = 0 walls is in its null space. Sources are made
  * orthogonal to those gradients (DivergenceFreeProjector), so the singular
- * system is consistent. Where a solver needs a nonsingular matrix it adds a
- * small mass term beta (A, w),
+ * system is consistent. The direct solvers impose the discrete Coulomb gauge
+ * exactly instead, by a Lagrange multiplier
+ * (DivergenceFreeProjector::GaugeConstraint), which leaves the field
+ * equations untouched. The iterative MQS solver, which needs a nonsingular
+ * matrix, adds a small mass term beta (A, w),
  *     beta = kRegularization * nu_min / L^2,
  * with L the mesh bounding-box diagonal and nu_min the smallest reluctivity.
  * With an orthogonal source this selects the Coulomb-gauged solution and

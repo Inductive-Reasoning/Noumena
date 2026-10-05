@@ -5,19 +5,15 @@
 
 #include <algorithm>
 #include <complex>
-#include <memory>
 #include <numeric>
 #include <utility>
 #include <vector>
 
+#include <Eigen/LU>
+
 #include "mfem.hpp"
 #include "complex_block_layout.hpp"
-#include "sparse_direct_solver.hpp"
-
-#ifdef MFEM_ELECTROMAG_STRUMPACK
-#include <Eigen/LU>
-#include <StrumpackSparseSolver.hpp>
-#endif
+#include "sparse_lu.hpp"
 
 // Sparse direct solver for the time-harmonic (MQS) systems. They are stored in
 // the packed real form of a complex system (see ComplexPortLayout), a field
@@ -30,29 +26,35 @@
 // port rows and D the p x p port corner. This solver takes that packed matrix
 // and packed vectors.
 //
-// With STRUMPACK (USE_STRUMPACK) it factors the complex field block F alone,
-// a multifrontal LU with nested-dissection (METIS) ordering threaded with
-// OpenMP, and takes the ports through the Schur complement
+// It factors the complex field block alone (SparseLU: STRUMPACK's
+// multifrontal LU, or Eigen's without it) and takes the ports through the
+// Schur complement
 //
 //     S = D - Br F^-1 Bc,
 //
 // a dense p x p matrix formed once per factorization with one F solve per
-// port. The factorization is then purely sparse however many ports there are,
-// and a solve is two F solves and one with S. Measured on the MQS systems of
-// the test suite (31k to 66k packed unknowns, 2D and 3D), factoring the
-// complex system is 10 to 60 times faster, with 5 to 10 times fewer factor
-// entries, than an LU of the packed form. (Factoring the packed form with
-// STRUMPACK is both slower and unreliable: its pivoting is restricted to the
-// fronts, and on the larger 3D system the solution's residual was 0.7.)
+// port. The sparse factorization never sees the ports' dense rows and
+// columns, however many there are, and a solve is two F solves and one with
+// S. Measured on the MQS systems of the test suite (31k to 66k packed
+// unknowns, 2D and 3D), STRUMPACK on the complex system is 10 to 60 times
+// faster, with 5 to 10 times fewer factor entries, than an LU of the packed
+// form. (STRUMPACK on the packed form is both slower and unreliable: its
+// pivoting is restricted to the fronts, and on the larger 3D system the
+// residual was 0.7.)
 //
-// The sparsity pattern of F does not change with frequency, so refactoring at
-// a new frequency reuses the ordering and symbolic factorization (a quarter
-// to a third of the cost) and redoes only the numerical factorization.
-// STRUMPACK's matching (MC64) is off for that reason: it depends on the
-// values, and these matrices, whose diagonal carries the curl-curl and
-// sigma-mass terms, do not need it.
+// A 3D field block is singular in the nonconducting regions (curl-curl
+// annihilates gradients). With a gauge constraint G (see
+// DivergenceFreeProjector::GaugeConstraint) the field block factored is
 //
-// Without STRUMPACK it falls back to Eigen's SparseLU of the packed form.
+//     [ F    G ]
+//     [ G^T  0 ],
+//
+// which imposes the discrete Coulomb gauge exactly through a Lagrange
+// multiplier that comes out zero. Every load is balanced (projected), so the
+// field equations themselves are unchanged.
+//
+// The pattern of the field block does not change with frequency, so
+// refactoring at a new frequency redoes only the numerical factorization.
 class ComplexDirectSolver : public mfem::Solver {
 public:
 #ifdef MFEM_ELECTROMAG_STRUMPACK
@@ -66,32 +68,36 @@ public:
 	static constexpr int kLarge3DUnknowns = 25000;  // a minute or more
 #endif
 
-	explicit ComplexDirectSolver(const ComplexPortLayout& layout)
-		: mfem::Solver(layout.FullSize()), layout(layout) {}
+	/// @param gauge  Gauge constraint split at the essential field DOFs, or
+	///               null for a field block that needs none (2D). Held by
+	///               reference: it must outlive this solver.
+	explicit ComplexDirectSolver(const ComplexPortLayout& layout,
+								 const GaugeConstraintRows* gauge = nullptr)
+		: mfem::Solver(layout.FullSize()), layout(layout), gauge(gauge) {
+		MFEM_VERIFY(!gauge || gauge->Interior().Height() == layout.NDofs(),
+			"ComplexDirectSolver: the gauge constraint does not match the field DOFs.");
+	}
 
 	/// Factor the packed matrix @p packed (finalized, of this layout's size),
 	/// replacing any earlier factorization.
-	void Factor(mfem::SparseMatrix& packed) {
+	void Factor(const mfem::SparseMatrix& packed) {
 		MFEM_VERIFY(packed.Height() == layout.FullSize() && packed.Width() == layout.FullSize(),
 			"ComplexDirectSolver: the matrix does not match the packed layout.");
-#ifdef MFEM_ELECTROMAG_STRUMPACK
-		Split(packed);
-		FactorField();
+		CsrMatrix<Complex> F = Split(packed);
+		diagonal = Diagonal(F);
+		field.Factor(gauge ? BorderWithConstraint(F, gauge->Interior()) : F);
 		FormSchurComplement();
-#else
-		fallback = std::make_unique<SparseLUSolver>(packed);
-#endif
 	}
 
 	/// Solve for the packed right-hand side @p b against the stored factors.
 	void Mult(const mfem::Vector& b, mfem::Vector& x) const override {
 		MFEM_ASSERT(b.Size() == layout.FullSize() && x.Size() == layout.FullSize(),
 			"ComplexDirectSolver: vector size does not match the factored matrix.");
-#ifdef MFEM_ELECTROMAG_STRUMPACK
 		const int n = layout.NDofs(), p = layout.NPorts(), h = layout.HalfSize();
-		std::vector<Complex> b_field(n), y(n);
+		std::vector<Complex> b_field(field.Size(), 0.0), y(field.Size());
 		for (int i = 0; i < n; ++i) { b_field[i] = { b(i), b(h + i) }; }
-		SolveField(b_field.data(), y.data(), 1);
+		if (gauge) { gauge->RightHandSide(b_field.data(), diagonal.data(), b_field.data() + n); }
+		field.Solve(b_field.data(), y.data(), 1);
 		Eigen::VectorXcd V = Eigen::VectorXcd::Zero(p);
 		if (p > 0) {
 			// S V = b_V - Br F^-1 b_A, then A = F^-1 (b_A - Bc V).
@@ -104,7 +110,7 @@ public:
 			for (int k = 0; k < p; ++k) {
 				for (const Entry& e : border_column[k]) { b_field[e.index] -= e.value * V(k); }
 			}
-			SolveField(b_field.data(), y.data(), 1);
+			field.Solve(b_field.data(), y.data(), 1);
 		}
 		for (int i = 0; i < n; ++i) {
 			x(i) = y[i].real();
@@ -114,9 +120,6 @@ public:
 			x(n + k) = V(k).real();
 			x(h + n + k) = V(k).imag();
 		}
-#else
-		fallback->Mult(b, x);
-#endif
 	}
 
 	void SetOperator(const mfem::Operator&) override {
@@ -124,31 +127,28 @@ public:
 	}
 
 private:
-	ComplexPortLayout layout;
-
-#ifdef MFEM_ELECTROMAG_STRUMPACK
 	using Complex = std::complex<double>;
 	struct Entry { int index; Complex value; };
 
-	// F in CSR with ascending column indices; its pattern is kept to detect
-	// whether the next factorization can reuse the ordering.
-	std::vector<int> row_ptr, col;
-	std::vector<Complex> val;
+	ComplexPortLayout layout;
+	const GaugeConstraintRows* gauge;
+	SparseLU<Complex> field;
+	std::vector<Complex> diagonal;  // of F, for the essential values
 	std::vector<std::vector<Entry>> border_column, border_row;  // Bc and Br, by port
 	Eigen::MatrixXcd corner;                                     // D
 	Eigen::PartialPivLU<Eigen::MatrixXcd> schur;
-	std::unique_ptr<strumpack::SparseSolver<Complex, int>> field;
 
 	// The complex matrix is the packed matrix's left block column, its top
 	// half the real part and its bottom half the imaginary part. Split it
-	// into F, Bc, Br and D.
-	void Split(const mfem::SparseMatrix& packed) {
+	// into F (returned), Bc, Br and D.
+	CsrMatrix<Complex> Split(const mfem::SparseMatrix& packed) {
 		const int n = layout.NDofs(), p = layout.NPorts(), h = layout.HalfSize();
 		const int* I = packed.GetI();
 		const int* J = packed.GetJ();
 		const double* data = packed.GetData();
-		std::vector<int> new_ptr(n + 1, 0), new_col;
-		std::vector<Complex> new_val;
+		CsrMatrix<Complex> F;
+		F.n = n;
+		F.row_ptr.assign(n + 1, 0);
 		border_column.assign(p, {});
 		border_row.assign(p, {});
 		corner = Eigen::MatrixXcd::Zero(p, p);
@@ -181,80 +181,45 @@ private:
 			for (int k : order) {
 				const int j = row_cols[k];
 				const Complex v = row_vals[k];
-				if (i < n && j < n) { new_col.push_back(j); new_val.push_back(v); }
+				if (i < n && j < n) { F.col.push_back(j); F.val.push_back(v); }
 				else if (i < n) { border_column[j - n].push_back({ i, v }); }
 				else if (j < n) { border_row[i - n].push_back({ j, v }); }
 				else { corner(i - n, j - n) = v; }
 			}
-			if (i < n) { new_ptr[i + 1] = static_cast<int>(new_col.size()); }
+			if (i < n) { F.row_ptr[i + 1] = static_cast<int>(F.col.size()); }
 		}
-
-		const bool same_pattern = field && new_ptr == row_ptr && new_col == col;
-		row_ptr = std::move(new_ptr);
-		col = std::move(new_col);
-		val = std::move(new_val);
-		if (!same_pattern) { field.reset(); }
-	}
-
-	void FactorField() {
-		const int n = layout.NDofs();
-		strumpack::ReturnCode status = strumpack::ReturnCode::SUCCESS;
-		if (field) {
-			field->update_matrix_values(n, row_ptr.data(), col.data(), val.data());
-		}
-		else {
-			field = std::make_unique<strumpack::SparseSolver<Complex, int>>(/*verbose=*/false);
-			field->options().set_matching(strumpack::MatchingJob::NONE);
-			field->set_csr_matrix(n, row_ptr.data(), col.data(), val.data());
-			status = field->reorder();
-		}
-		if (status == strumpack::ReturnCode::SUCCESS) { status = field->factor(); }
-		MFEM_VERIFY(status == strumpack::ReturnCode::SUCCESS,
-			"STRUMPACK factorization failed (return code " << static_cast<int>(status)
-			<< "): the system matrix is singular. A common cause is a region left "
-			"without material properties.");
+		return F;
 	}
 
 	// S = D - Br F^-1 Bc, a block of ports at a time so that the F^-1 Bc
 	// columns held in memory stay bounded.
 	void FormSchurComplement() {
-		const int n = layout.NDofs(), p = layout.NPorts();
+		const int p = layout.NPorts(), size = field.Size();
 		if (p == 0) { return; }
 		constexpr int kBlock = 32;
 		Eigen::MatrixXcd S = corner;
 		std::vector<Complex> rhs, w;
 		for (int k0 = 0; k0 < p; k0 += kBlock) {
 			const int m = std::min(kBlock, p - k0);
-			rhs.assign(static_cast<size_t>(n) * m, 0.0);
-			w.assign(static_cast<size_t>(n) * m, 0.0);
+			rhs.assign(static_cast<size_t>(size) * m, 0.0);
+			w.assign(static_cast<size_t>(size) * m, 0.0);
 			for (int c = 0; c < m; ++c) {
 				for (const Entry& e : border_column[k0 + c]) {
-					rhs[static_cast<size_t>(c) * n + e.index] = e.value;
+					rhs[static_cast<size_t>(c) * size + e.index] = e.value;
 				}
 			}
-			SolveField(rhs.data(), w.data(), m);
+			field.Solve(rhs.data(), w.data(), m);
 			for (int r = 0; r < p; ++r) {
 				for (const Entry& e : border_row[r]) {
 					for (int c = 0; c < m; ++c) {
-						S(r, k0 + c) -= e.value * w[static_cast<size_t>(c) * n + e.index];
+						S(r, k0 + c) -= e.value * w[static_cast<size_t>(c) * size + e.index];
 					}
 				}
 			}
 		}
 		schur.compute(S);
-		MFEM_VERIFY(std::abs(schur.determinant()) > 0.0,
+		MFEM_VERIFY(schur.rcond() > 0.0,
 			"The massive-port Schur complement is singular; a massive port whose "
 			"conductance is zero?");
 	}
-
-	// x = F^-1 b for @p count right-hand sides stored one after another.
-	void SolveField(const Complex* b, Complex* x, int count) const {
-		const int n = layout.NDofs();
-		const strumpack::ReturnCode status = field->solve(count, b, n, x, n);
-		MFEM_VERIFY(status == strumpack::ReturnCode::SUCCESS,
-			"STRUMPACK solve failed (return code " << static_cast<int>(status) << ").");
-	}
-#else
-	std::unique_ptr<SparseLUSolver> fallback;
-#endif
 };
