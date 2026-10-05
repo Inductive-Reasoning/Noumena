@@ -874,6 +874,8 @@ mfem::Vector SampleDerivedVector(const FieldExportSet& fields, const std::string
     REQUIRE(primary != exported.end());
     mfem::ElementTransformation* transformation =
         primary->primary->FESpace()->GetElementTransformation(element);
+    // Gradient-based coefficients read the point from the transformation.
+    transformation->SetIntPoint(&point);
     mfem::Vector value(field.vector->GetVDim());
     field.vector->Eval(value, *transformation, point);
     return value;
@@ -2516,6 +2518,122 @@ TEST_CASE("Axisymmetric coaxial capacitance converges at the expected order",
     REQUIRE(second_order > 1.8);
     REQUIRE(second_order < 2.2);
 
+}
+
+// A coaxial annulus a <= r <= b holding two dielectrics, eps1 inside r1 and
+// eps2 outside, with the inner conductor at V0 and the outer grounded. Gauss's
+// law makes the displacement D_r = q / r in both, so E_r = q / (eps r) and V
+// is logarithmic in each layer:
+//
+//   V = V0 - (q / eps1) ln(r / a)   (a <= r <= r1)
+//   V = (q / eps2) ln(b / r)        (r1 <= r <= b)
+//   q = V0 / (ln(r1 / a) / eps1 + ln(b / r1) / eps2)
+//
+// and the capacitance of a length h is the series of the two layers,
+// C = 2 pi h q / V0. Checked pointwise in V and E (r eps E_r constant across
+// the interface, E_z zero) and in C, for one material (eps1 = eps2) and two.
+// At second order V is accurate to 4e-6 at the sampled points and its
+// gradient to 2e-4; the tolerances leave a margin of about 3.
+TEST_CASE("Axisymmetric coax with one or two dielectrics matches the closed form",
+          "[solvers][analytic][electrostatic][axisymmetric][materials][interface]") {
+    constexpr double a = 0.01, b = 0.03, h = 0.05, V0 = 1.0;
+    constexpr int nr = 32;
+    const double r1 = 0.5 * (a + b);  // the interface: column nr / 2
+    const auto [eps_r1, eps_r2] = GENERATE(std::pair{ 1.0, 1.0 }, std::pair{ 2.0, 5.0 });
+    INFO("eps_r " << eps_r1 << " inside, " << eps_r2 << " outside");
+    const double eps1 = Constants::EPSILON_0 * eps_r1, eps2 = Constants::EPSILON_0 * eps_r2;
+    const double q = V0 / (std::log(r1 / a) / eps1 + std::log(b / r1) / eps2);
+
+    const std::string mesh_file = "test_coax_layers.mesh";
+    const std::string matrix_file = "test_coax_layers.h5";
+    CreateCoaxMesh(mesh_file, a, b, h, nr, 1, nr / 2);
+    json config = MakeCoaxAmrConfig(mesh_file, 1);
+    config["simulation"]["amr"]["enabled"] = false;
+    config["simulation"]["order"] = 2;
+    config["entity_groups"].push_back({{"name", "OuterDielectric"}, {"dim", 2}, {"attribute_ids", {2}}});
+    config["regions"] = json::array({
+        {{"name", "Inner"}, {"entity_group", "Dielectric"}, {"material", "Inner"}},
+        {{"name", "Outer"}, {"entity_group", "OuterDielectric"}, {"material", "Outer"}}});
+    config["materials"] = json::array({
+        {{"name", "Inner"}, {"properties", {{"epsilon_r", eps_r1}}}},
+        {{"name", "Outer"}, {"properties", {{"epsilon_r", eps_r2}}}}});
+
+    {
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config));
+        solver.Setup();
+        solver.Run();
+        const FieldExportSet fields = solver.CollectExportFields();
+        const mfem::GridFunction& V = *FindField(fields, "V").primary;
+        double worst_V = 0.0, worst_D = 0.0, worst_Ez = 0.0;
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            const mfem::IntegrationPoint center = TriangleCenter();
+            const double r = PhysicalPoint(V, e, center)(0);
+            const bool inside = r < r1;
+            const double exact = inside ? V0 - q / eps1 * std::log(r / a) : q / eps2 * std::log(b / r);
+            const mfem::Vector E = SampleDerivedVector(fields, "E", e, center);
+            worst_V = std::max(worst_V, std::abs(V.GetValue(e, center) - exact) / V0);
+            worst_D = std::max(worst_D, std::abs((inside ? eps1 : eps2) * E(0) * r - q) / q);
+            worst_Ez = std::max(worst_Ez, std::abs(E(1)) / (q / (eps1 * a)));
+        }
+        INFO("worst relative error: V " << worst_V << ", r eps E_r " << worst_D << ", E_z " << worst_Ez);
+        REQUIRE(worst_V < 1e-5);
+        REQUIRE(worst_D < 6e-4);
+        REQUIRE(worst_Ez < 2e-5);
+    }
+
+    config["simulation"]["analysis_type"] = "coupling_matrix";
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Capacitance");
+    const double C = Constants::TWO_PI * h * q / V0;
+    REQUIRE(matrix.values[0][0] == Catch::Approx(C).epsilon(1e-7));
+    REQUIRE(matrix.values[0][1] == Catch::Approx(-C).epsilon(1e-7));
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// The interface must not cost the discretization its order: with the
+// interface on a mesh line, the two-layer capacitance converges at O(h^2) for
+// order-1 elements, as the single-material one does above.
+TEST_CASE("Two-layer coaxial capacitance converges at the expected order",
+          "[solvers][analytic][electrostatic][axisymmetric][materials][convergence]") {
+    constexpr double a = 0.01, b = 0.03, h = 0.05;
+    const double r1 = 0.5 * (a + b);
+    const double eps1 = 2.0 * Constants::EPSILON_0, eps2 = 5.0 * Constants::EPSILON_0;
+    const double C = Constants::TWO_PI * h /
+        (std::log(r1 / a) / eps1 + std::log(b / r1) / eps2);
+
+    std::vector<double> errors;
+    for (const int nr : {8, 16, 32}) {
+        const std::string mesh_file = "test_coax_layers_" + std::to_string(nr) + ".mesh";
+        const std::string matrix_file = "test_coax_layers_convergence.h5";
+        CreateCoaxMesh(mesh_file, a, b, h, nr, 1, nr / 2);
+        json config = MakeCoaxAmrConfig(mesh_file, 1);
+        config["simulation"]["amr"]["enabled"] = false;
+        config["simulation"]["analysis_type"] = "coupling_matrix";
+        config["entity_groups"].push_back({{"name", "OuterDielectric"}, {"dim", 2}, {"attribute_ids", {2}}});
+        config["regions"] = json::array({
+            {{"name", "Inner"}, {"entity_group", "Dielectric"}, {"material", "Inner"}},
+            {{"name", "Outer"}, {"entity_group", "OuterDielectric"}, {"material", "Outer"}}});
+        config["materials"] = json::array({
+            {{"name", "Inner"}, {"properties", {{"epsilon_r", 2.0}}}},
+            {{"name", "Outer"}, {"properties", {{"epsilon_r", 5.0}}}}});
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        ElectrostaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+        errors.push_back(std::abs(ReadHdf5Matrix(matrix_file, "Capacitance").values[0][0] - C) / C);
+        fs::remove(matrix_file);
+        fs::remove(mesh_file);
+    }
+    INFO("relative errors " << errors[0] << ", " << errors[1] << ", " << errors[2]);
+    REQUIRE(ObservedOrder(errors[0], errors[1]) > 1.9);
+    REQUIRE(ObservedOrder(errors[1], errors[2]) > 1.9);
 }
 
 // The inductance matrix must be built from each MEASURED terminal's winding

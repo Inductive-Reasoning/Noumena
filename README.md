@@ -200,7 +200,15 @@ ctest --output-on-failure
 
 # Or run test executable directly
 ./mfem_tests
+
+# Only the checks against closed-form solutions
+./mfem_tests "[analytic]"
 ```
+
+The closed-form checks on round geometry (wires, a tube, spheres) generate
+their curved meshes with Gmsh and skip if CMake did not find it. The TEAM
+benchmarks are run on demand: `./mfem_tests "[team7]"` (also `[team15]`,
+`[team21a]`).
 
 ### Generating Documentation
 

@@ -279,6 +279,7 @@ if(BUILD_TESTING)
         test/test_main.cpp
         test/test_axisymmetric_axis.cpp
         test/test_axisymmetric_quadrature.cpp
+        test/test_closed_forms.cpp
         test/test_coaxial_rings.cpp
         test/test_config_validator.cpp
         test/test_gmsh_interpolation.cpp
