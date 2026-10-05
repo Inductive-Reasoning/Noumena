@@ -88,3 +88,4 @@ examples/simple_capacitor/results_electrostatic/*
 /results_electrostatics_Bottom Plate/Cycle000000
 /results_electrostatics_Top Plate/Cycle000000
 build-mpi/
+examples/team7/results/*
