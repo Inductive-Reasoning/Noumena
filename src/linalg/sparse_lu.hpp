@@ -11,7 +11,8 @@
 #include <vector>
 
 #include "mfem.hpp"
-#include "sparse_direct_solver.hpp"
+#include <Eigen/SparseCore>
+#include <Eigen/SparseLU>
 
 #ifdef MFEM_ELECTROMAG_STRUMPACK
 #include <StrumpackSparseSolver.hpp>
@@ -144,8 +145,8 @@ std::vector<T> Diagonal(const CsrMatrix<T>& A) {
 // ordering, matching and symbolic factorization and redoes only the
 // numerical factorization.
 //
-// Without STRUMPACK it is Eigen's SparseLU, of the real expansion
-// [Re -Im; Im Re] for a complex matrix.
+// Without STRUMPACK it is Eigen's SparseLU with COLAMD ordering, in the
+// matrix's own (real or complex) arithmetic.
 template <typename T>
 class SparseLU {
 	static_assert(std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>,
@@ -177,29 +178,21 @@ public:
 			"without material properties.");
 #else
 		n = A.n;
-		const int size = kComplex ? 2 * n : n;
-		// Rows of the (real) matrix as (column, value) pairs, then CSR.
-		std::vector<std::vector<std::pair<int, double>>> rows(size);
+		std::vector<Eigen::Triplet<T>> entries;
+		entries.reserve(A.val.size());
 		for (int i = 0; i < n; ++i) {
 			for (int k = A.row_ptr[i]; k < A.row_ptr[i + 1]; ++k) {
-				const int j = A.col[k];
-				if constexpr (kComplex) {
-					const double re = A.val[k].real(), im = A.val[k].imag();
-					rows[i].push_back({ j, re });
-					rows[i].push_back({ n + j, -im });
-					rows[n + i].push_back({ j, im });
-					rows[n + i].push_back({ n + j, re });
-				} else {
-					rows[i].push_back({ j, A.val[k] });
-				}
+				entries.emplace_back(i, A.col[k], A.val[k]);
 			}
 		}
-		matrix = std::make_unique<mfem::SparseMatrix>(size, size);
-		for (int i = 0; i < size; ++i) {
-			for (const auto& [j, v] : rows[i]) { matrix->Set(i, j, v); }
-		}
-		matrix->Finalize();
-		fallback = std::make_unique<SparseLUSolver>(*matrix);
+		matrix.resize(n, n);
+		matrix.setFromTriplets(entries.begin(), entries.end());
+		matrix.makeCompressed();
+		fallback.analyzePattern(matrix);
+		fallback.factorize(matrix);
+		MFEM_VERIFY(fallback.info() == Eigen::Success,
+			"Sparse LU factorization failed: the system matrix is singular. A common "
+			"cause is a region left without material properties.");
 #endif
 	}
 
@@ -211,20 +204,10 @@ public:
 		MFEM_VERIFY(status == strumpack::ReturnCode::SUCCESS,
 			"STRUMPACK solve failed (return code " << static_cast<int>(status) << ").");
 #else
-		const int size = kComplex ? 2 * n : n;
-		mfem::Vector rhs(size), sol(size);
 		for (int c = 0; c < count; ++c) {
-			const T* bc = b + static_cast<size_t>(c) * n;
-			T* xc = x + static_cast<size_t>(c) * n;
-			for (int i = 0; i < n; ++i) {
-				if constexpr (kComplex) { rhs(i) = bc[i].real(); rhs(n + i) = bc[i].imag(); }
-				else { rhs(i) = bc[i]; }
-			}
-			fallback->Mult(rhs, sol);
-			for (int i = 0; i < n; ++i) {
-				if constexpr (kComplex) { xc[i] = { sol(i), sol(n + i) }; }
-				else { xc[i] = sol(i); }
-			}
+			const Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> rhs(b + static_cast<size_t>(c) * n, n);
+			Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, 1>> sol(x + static_cast<size_t>(c) * n, n);
+			sol = fallback.solve(rhs);
 		}
 #endif
 	}
@@ -237,7 +220,7 @@ private:
 	std::vector<int> row_ptr, col;  // pattern of the last factorization
 	std::unique_ptr<strumpack::SparseSolver<T, int>> solver;
 #else
-	std::unique_ptr<mfem::SparseMatrix> matrix;
-	std::unique_ptr<SparseLUSolver> fallback;
+	Eigen::SparseMatrix<T> matrix;
+	Eigen::SparseLU<Eigen::SparseMatrix<T>, Eigen::COLAMDOrdering<int>> fallback;
 #endif
 };
