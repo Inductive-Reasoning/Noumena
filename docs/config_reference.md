@@ -108,16 +108,21 @@ Chebyshev smoothing, which stays stable at every element order; threaded with
 OpenMP, set `OMP_NUM_THREADS` to control it). Its iteration count grows slowly,
 if at all, as the mesh is refined (13-14 for order-3 tetrahedra up to 389k
 unknowns, 23-63 for order-2 hexahedra up to 913k), and the multigrid
-hierarchy is built once per mesh and reused for every scenario. The MQS solver
-uses unpreconditioned GMRES. 3D magnetostatics uses CG preconditioned by
+hierarchy is built once per mesh and reused for every scenario. 2D MQS uses
+GMRES preconditioned block-diagonally by the same AMG on `K + ωM_σ` for the
+real and imaginary field blocks, with the exact inverse of the massive-port
+corner; the preconditioner is rebuilt at each frequency. 3D magnetostatics uses CG preconditioned by
 hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
 constant under refinement; 3D MQS uses GMRES preconditioned block-diagonally
 by AMS on `K + ωM_σ` (MPI/HYPRE build only). AMS smooths with hybrid
 Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
 loses strength; the iteration counts differ accordingly. The MQS `direct`
-solver (2D and 3D) factors the complex system once per frequency with
+solver (2D and 3D) factors the complex field block once per frequency with
 STRUMPACK, a multifrontal LU with METIS ordering, when the build includes it
-(CMake option `USE_STRUMPACK`, on by default; see the README). Without it,
+(CMake option `USE_STRUMPACK`, on by default; see the README). The massive
+ports are eliminated through their small dense Schur complement, so the
+sparse factorization never sees their dense rows and columns, and a frequency
+sweep reuses the ordering and redoes only the numerical factorization. Without it,
 it falls back to Eigen's sparse LU of the packed real form, which is 10 to 60
 times slower and larger, and says so at startup. In every iterative solver `solver_tolerance` is the
 relative residual the Krylov method monitors, which it measures through the

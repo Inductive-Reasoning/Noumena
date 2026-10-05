@@ -4254,6 +4254,93 @@ TEST_CASE("MQS coupling matrices are reciprocal and passive",
     fs::remove(mesh_file);
 }
 
+// A frequency sweep refactors one direct solver at each frequency, reusing
+// its ordering (the field block's pattern does not change with frequency);
+// each point must still be exactly the single-frequency solve.
+TEST_CASE("MQS frequency sweep reuses the direct factorization's ordering exactly",
+          "[solvers][mqs][coupling][linear_solver]") {
+    const std::string mesh_file = "test_mqs_sweep_reuse.mesh";
+    const std::string matrix_file = "test_mqs_sweep_reuse.h5";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    auto solve = [&](const json& frequency) {
+        json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+        config["simulation"]["order"] = 2;
+        config["simulation"]["linear_solver"] = "direct";
+        config["scenarios"][0]["frequency"] = frequency;
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+    };
+    const std::vector<double> frequencies = { 50.0, 1000.0, 20000.0 };
+    solve(frequencies);
+    std::vector<CouplingMatrix> R, L;
+    for (int k = 0; k < 3; ++k) {
+        R.push_back(ReadHdf5Matrix(matrix_file, "Resistance", k));
+        L.push_back(ReadHdf5Matrix(matrix_file, "Inductance", k));
+    }
+    for (int k = 0; k < 3; ++k) {
+        INFO(frequencies[k] << " Hz");
+        solve(frequencies[k]);
+        const auto R1 = ReadHdf5Matrix(matrix_file, "Resistance");
+        const auto L1 = ReadHdf5Matrix(matrix_file, "Inductance");
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                REQUIRE(R[k].values[i][j] == Catch::Approx(R1.values[i][j]).epsilon(1e-10));
+                REQUIRE(L[k].values[i][j] == Catch::Approx(L1.values[i][j]).epsilon(1e-10));
+            }
+        }
+    }
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+// The 2D MQS iterative solver is GMRES preconditioned by AMG on
+// K + omega M_sigma for each field block and the exact port-corner inverse
+// (MqsBlockPreconditioner). It must reproduce the direct solve, with two
+// massive ports and a passive shield, over two decades of frequency, and
+// converge in a bounded number of iterations: unpreconditioned, GMRES needs
+// thousands here.
+TEST_CASE("2D MQS impedances agree between the preconditioned GMRES and direct solvers",
+          "[solvers][mqs][coupling][linear_solver][amg]") {
+    const std::string mesh_file = "test_mqs_gmres_2d.mesh";
+    const std::string matrix_file = "test_mqs_gmres_2d.h5";
+    CreateShieldedTurnsMesh(mesh_file, /*r_min=*/0.05, /*r_max=*/0.20,
+                            /*height=*/0.04, /*nz=*/4, /*cells_per_band=*/8);
+    auto solve = [&](const std::string& linear_solver) {
+        json config = MakeShieldedTurnsConfig(mesh_file, 1000.0);
+        config["simulation"]["order"] = 2;
+        config["simulation"]["linear_solver"] = linear_solver;
+        config["simulation"]["solver_max_iter"] = 100;
+        config["scenarios"][0]["frequency"] = std::vector<double>{ 50.0, 5000.0 };
+        mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+        MagnetoquasistaticSolver solver(mesh, DecodeConfig(config, matrix_file));
+        solver.Setup();
+        solver.Run();
+        solver.SaveAnalysis();
+        std::vector<CouplingMatrix> Z;
+        for (int k = 0; k < 2; ++k) {
+            Z.push_back(ReadHdf5Matrix(matrix_file, "Resistance", k));
+            Z.push_back(ReadHdf5Matrix(matrix_file, "Inductance", k));
+        }
+        return Z;
+    };
+    const auto direct = solve("direct");
+    const auto iterative = solve("iterative");
+    for (size_t m = 0; m < direct.size(); ++m) {
+        for (int i = 0; i < 2; ++i) {
+            for (int j = 0; j < 2; ++j) {
+                REQUIRE(iterative[m].values[i][j] ==
+                    Catch::Approx(direct[m].values[i][j]).epsilon(1e-8));
+            }
+        }
+    }
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
 // At a permeability jump the tangential H and the normal B are continuous. In
 // a planar strip whose layers are side by side (interface x = const), with A_z
 // dropping by A0 across them, B = -dA/dx y-hat is tangential to the interface,

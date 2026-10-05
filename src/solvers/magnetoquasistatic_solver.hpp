@@ -22,7 +22,9 @@
 #include "../core/constants.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../core/problem_config.hpp"
+#include "mqs_block_preconditioner.hpp"
 #include "mqs_massive_port_operator.hpp"
+#include "../linalg/amg_preconditioner.hpp"
 #include "../linalg/complex_block_layout.hpp"
 #include "../io/gmsh_results_writer.hpp"
 #include "amr_support.hpp"
@@ -49,6 +51,9 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	// frequency the current factors belong to.
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
 	std::unique_ptr<ComplexDirectSolver> direct_solver;
+	// GMRES preconditioner of the iterative path, for one frequency.
+	std::unique_ptr<MqsBlockPreconditioner> preconditioner;
+	mfem::real_t preconditioned_omega = 0.0;
 	mfem::real_t factored_omega = 0.0;
 
     // Coefficients
@@ -336,6 +341,7 @@ public:
 		direct_solver.reset();
 		packed_matrix.reset();
 		factored_omega = 0.0;
+		preconditioner.reset();
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
@@ -475,9 +481,13 @@ public:
 			direct_solver->Mult(B_vec, X_vec);
 		}
 		else {
-			// Iterative Complex Solver
+			// GMRES preconditioned by AMG on K + omega M_sigma for both field
+			// blocks (see MqsBlockPreconditioner).
+			EnsurePreconditionerForActiveFrequency();
 			mfem::GMRESSolver gmres;
 			gmres.SetOperator(*A_op.Ptr());
+			gmres.SetPreconditioner(*preconditioner);
+			gmres.SetKDim(200);
 			gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 			gmres.SetRelTol(config.SolverTolerance);
 			gmres.SetAbsTol(0.0);
@@ -499,13 +509,22 @@ public:
     // depend on frequency. It is, however, constant across the terminal columns
     // of a single frequency point, which is where the reuse pays off: one
     // factorization serves every terminal at that frequency.
+    void EnsurePreconditionerForActiveFrequency() {
+        if (preconditioner && preconditioned_omega == omega) { return; }
+        auto operation = Reporter().Start("AMG preconditioner setup");
+        preconditioner = std::make_unique<MqsBlockPreconditioner>(
+            port_operator->Layout(), S_AA->real().SpMat(), S_AA->imag().SpMat(), omega,
+            ess_mesh_tdofs, port_conductances, [](mfem::SparseMatrix& field) {
+                return std::make_unique<AmgPreconditioner>(field);
+            });
+        preconditioned_omega = omega;
+    }
+
     void EnsureFactorizationForActiveFrequency() {
         if (direct_solver && factored_omega == omega) { return; }
 
         auto operation = Reporter().Start(
             "sparse direct factorization at " + std::to_string(frequency) + " Hz");
-        direct_solver.reset();
-
         packed_matrix = port_operator->AssemblePackedMatrix();
 
         // Apply the same essential-DOF elimination that ComplexOperator's
@@ -516,7 +535,12 @@ public:
             packed_matrix->EliminateRowCol(ess_packed_tdofs[i], mfem::Operator::DIAG_ONE);
         }
 
-        direct_solver = std::make_unique<ComplexDirectSolver>(*packed_matrix);
+        // One solver per mesh: refactoring it at a new frequency reuses its
+        // ordering.
+        if (!direct_solver) {
+            direct_solver = std::make_unique<ComplexDirectSolver>(port_operator->Layout());
+        }
+        direct_solver->Factor(*packed_matrix);
         factored_omega = omega;
     }
 

@@ -16,6 +16,7 @@
 
 #include "mfem.hpp"
 #include "vector_potential_solver_3d.hpp"
+#include "mqs_block_preconditioner.hpp"
 #include "mqs_massive_port_operator.hpp"
 #include "../coefficients/complex_vector_magnitude_coefficient.hpp"
 #include "../coefficients/mqs_vector_electric_field.hpp"
@@ -292,52 +293,7 @@ private:
 	std::unique_ptr<ComplexDirectSolver> direct_solver;
 
 #ifdef MFEM_USE_MPI
-	// Block-diagonal preconditioner of the packed system: AMS on
-	// K + omega M_sigma for each field block, the exact inverse of the
-	// port corner [0, G/omega; -G/omega, 0] for each port.
-	class BlockPreconditioner : public mfem::Solver {
-	public:
-		BlockPreconditioner(const MqsMassivePortOperator& op, mfem::SparseMatrix& K,
-							mfem::SparseMatrix& M_sigma, double omega,
-							const mfem::Array<int>& ess, std::vector<mfem::real_t> conductances,
-							mfem::FiniteElementSpace& nd)
-			: mfem::Solver(op.Layout().FullSize()), op(op), omega(omega),
-			  conductances(std::move(conductances)) {
-			field.reset(mfem::Add(1.0, K, omega, M_sigma));
-			for (int i = 0; i < ess.Size(); ++i) {
-				field->EliminateRowCol(ess[i], mfem::Operator::DIAG_ONE);
-			}
-			ams = std::make_unique<SerialAmsPreconditioner>(*field, nd, /*singular=*/false);
-		}
-
-		void Mult(const mfem::Vector& x, mfem::Vector& y) const override {
-			const int n = op.Layout().NDofs();
-			auto in = op.View(x);
-			auto out = op.View(y);
-			mfem::Vector r(n), z(n);
-			for (int part = 0; part < 2; ++part) {
-				for (int i = 0; i < n; ++i) { r(i) = part ? in.ImMesh(i) : in.ReMesh(i); }
-				z = 0.0;
-				ams->Mult(r, z);
-				for (int i = 0; i < n; ++i) { (part ? out.ImMesh(i) : out.ReMesh(i)) = z(i); }
-			}
-			for (int p = 0; p < op.Layout().NPorts(); ++p) {
-				const double g = conductances[p] / omega;
-				out.RePort(p) = -in.ImPort(p) / g;
-				out.ImPort(p) = in.RePort(p) / g;
-			}
-		}
-
-		void SetOperator(const mfem::Operator&) override {}
-
-	private:
-		const MqsMassivePortOperator& op;
-		double omega;
-		std::vector<mfem::real_t> conductances;
-		std::unique_ptr<mfem::SparseMatrix> field;  // referenced by ams
-		std::unique_ptr<SerialAmsPreconditioner> ams;
-	};
-	std::unique_ptr<BlockPreconditioner> preconditioner;
+	std::unique_ptr<MqsBlockPreconditioner> preconditioner;  // AMS on the field blocks
 #endif
 
 	void ActivateFrequency(double f) {
@@ -473,12 +429,16 @@ private:
 			std::ostringstream label;
 			label << "sparse direct factorization at " << frequency << " Hz";
 			auto operation = Reporter().Start(label.str());
-			direct_solver.reset();
 			packed_matrix = port_operator->AssemblePackedMatrix();
 			for (int i = 0; i < ess_packed_tdofs.Size(); ++i) {
 				packed_matrix->EliminateRowCol(ess_packed_tdofs[i], mfem::Operator::DIAG_ONE);
 			}
-			direct_solver = std::make_unique<ComplexDirectSolver>(*packed_matrix);
+			// One solver per mesh: refactoring it at a new frequency reuses its
+			// ordering.
+			if (!direct_solver) {
+				direct_solver = std::make_unique<ComplexDirectSolver>(port_operator->Layout());
+			}
+			direct_solver->Factor(*packed_matrix);
 		}
 		else {
 #ifdef MFEM_USE_MPI
@@ -488,9 +448,12 @@ private:
 				if (c.Type == ConductorType::Massive) conductances.push_back(c.PathIntegral);
 			}
 			preconditioner.reset();
-			preconditioner = std::make_unique<BlockPreconditioner>(
-				*port_operator, stiffness->SpMat(), sigma_mass->SpMat(), omega,
-				ess_tdof_list, std::move(conductances), *fespace);
+			preconditioner = std::make_unique<MqsBlockPreconditioner>(
+				port_operator->Layout(), stiffness->SpMat(), sigma_mass->SpMat(), omega,
+				ess_tdof_list, std::move(conductances), [&](mfem::SparseMatrix& field) {
+					return std::make_unique<SerialAmsPreconditioner>(field, *fespace,
+																	 /*singular=*/false);
+				});
 #endif
 		}
 		prepared_omega = omega;
