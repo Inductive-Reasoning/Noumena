@@ -855,3 +855,51 @@ TEST_CASE("ConfigValidator checks 3D coil directions", "[config_validator][3d][c
 		error_for([](json& d) { d["center"] = {0.0, 0.0, 0.0}; }, "terminals[0].direction.center");
 	}
 }
+
+TEST_CASE("ConfigValidator validates excitation phases and winding turns",
+		  "[config_validator][phase][turns]") {
+	auto errors = [](const json& config, const std::string& field) {
+		ConfigValidator validator;
+		return !validator.Validate(config) && HasError(validator, field);
+	};
+
+	SECTION("a phase is accepted in MQS and rejected in static physics") {
+		json mqs = ValidMqsConfig();
+		mqs["scenarios"][0]["excitations"][0]["phase"] = -120.0;
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(mqs));
+
+		json statics = ValidConfig();
+		statics["scenarios"][0]["excitations"][0]["phase"] = 90.0;
+		REQUIRE(errors(statics, "scenarios[0].excitations[0].phase"));
+		statics["scenarios"][0]["excitations"][0]["phase"] = "90";
+		REQUIRE(errors(statics, "scenarios[0].excitations[0].phase"));
+	}
+
+	SECTION("turns belong to stranded magnetic terminals") {
+		json stranded = ValidMqsConfig();
+		stranded["terminals"][0]["conductor_type"] = "stranded";
+		stranded["terminals"][0]["turns"] = 300;
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(stranded));
+
+		json fractional = stranded;
+		fractional["terminals"][0]["turns"] = 2.5;
+		REQUIRE(validator.Validate(fractional));
+		for (const double bad : { 0.0, -3.0 }) {
+			json invalid = stranded;
+			invalid["terminals"][0]["turns"] = bad;
+			REQUIRE(errors(invalid, "terminals[0].turns"));
+		}
+		json text = stranded;
+		text["terminals"][0]["turns"] = "300";
+		REQUIRE(errors(text, "terminals[0].turns"));
+
+		json massive = ValidMqsConfig();
+		massive["terminals"][0]["turns"] = 2;
+		REQUIRE(errors(massive, "terminals[0].turns"));
+		json electrostatic = ValidConfig();
+		electrostatic["terminals"][0]["turns"] = 2;
+		REQUIRE(errors(electrostatic, "terminals[0].turns"));
+	}
+}

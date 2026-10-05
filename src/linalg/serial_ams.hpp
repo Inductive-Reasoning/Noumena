@@ -4,6 +4,7 @@
 #pragma once
 
 #include "mfem.hpp"
+#include "../parallel/mpi_runtime.hpp"
 
 #ifdef MFEM_USE_MPI
 
@@ -121,11 +122,20 @@ private:
 			MPI_COMM_WORLD, nd_starts[1], col_starts[1], nd_starts, col_starts, &m);
 	}
 
-	// The configuration of mfem::HypreAMS::MakeSolver (CPU branch).
+	// The configuration of mfem::HypreAMS::MakeSolver (CPU branch), except
+	// the smoothers when threaded. MFEM's (hybrid l1 Gauss-Seidel in AMS,
+	// hybrid l1-SSOR in its subspace AMG solves) are the stronger on one
+	// thread, but threaded they decouple into per-thread blocks and lose
+	// strength; Chebyshev keeps its iteration count at any thread count. On
+	// TEAM 7 (0.9M complex unknowns, order 2) the solve took 428 s with
+	// Gauss-Seidel on one thread, 410 s with it on four (97 GMRES iterations
+	// instead of 84 at order 1), and 168 s with Chebyshev on four, which is
+	// 574 s on one.
 	void MakeSolver(bool singular) {
-		const int rlx_type = 2, rlx_sweeps = 1;
+		const bool threaded = parallel::Threads() > 1;
+		const int rlx_type = threaded ? 16 : 2, rlx_sweeps = 1;
 		const mfem::real_t rlx_weight = 1.0, rlx_omega = 1.0;
-		const int amg_coarsen_type = 10, amg_agg_levels = 1, amg_rlx_type = 8;
+		const int amg_coarsen_type = 10, amg_agg_levels = 1, amg_rlx_type = threaded ? 16 : 8;
 		const mfem::real_t theta = 0.25;
 		const int amg_interp_type = 6, amg_Pmax = 4;
 

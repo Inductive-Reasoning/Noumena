@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -53,8 +54,11 @@
  * n x A fixed on the whole boundary: every gradient of a nodal function that
  * vanishes on the n x A = 0 walls is in its null space. Sources are made
  * orthogonal to those gradients (DivergenceFreeProjector), so the singular
- * system is consistent. Where a solver needs a nonsingular matrix it adds a
- * small mass term beta (A, w),
+ * system is consistent. The direct solvers impose the discrete Coulomb gauge
+ * exactly instead, by a Lagrange multiplier
+ * (DivergenceFreeProjector::GaugeConstraint), which leaves the field
+ * equations untouched. The iterative MQS solver, which needs a nonsingular
+ * matrix, adds a small mass term beta (A, w),
  *     beta = kRegularization * nu_min / L^2,
  * with L the mesh bounding-box diagonal and nu_min the smallest reluctivity.
  * With an orthogonal source this selects the Coulomb-gauged solution and
@@ -92,6 +96,7 @@ protected:
 		/// Stranded: the cross-section A_cs = integral |w|. Massive: the DC
 		/// conductance G = integral sigma |w|^2.
 		double PathIntegral = 0.0;
+		double Turns = 1.0;                   // stranded only; massive is 1
 	};
 
 	/// Terminal conductors in config.Terminals (name) order. Rebuilt per mesh
@@ -177,8 +182,9 @@ protected:
 		return mfem::Vector(load);
 	}
 
-	/// The divergence-free load of 1 A through @p c: J = w / (|w| A_cs)
-	/// stranded, the DC distribution sigma w / G massive.
+	/// The divergence-free load of 1 A in each turn of @p c: J = N w / (|w| A_cs)
+	/// stranded with N turns, the DC distribution sigma w / G massive. Its
+	/// product with A is the flux linkage of all N turns.
 	///
 	/// The load is projected within the conductor
 	/// (DivergenceFreeProjector::ProjectWithin), so the result is the nearest
@@ -199,7 +205,7 @@ protected:
 	/// gradient carries none along the path, since integral grad(psi) . w = 0
 	/// for the harmonic path w (no lateral flux, psi = 0 at electrodes).
 	mfem::Vector ProjectedUnitCurrentLoad(const TerminalConductor& c) {
-		const double scale = 1.0 / c.PathIntegral;
+		const double scale = c.Turns / c.PathIntegral;
 		mfem::Vector load = AssembleConductorLoad(c, scale);
 		const double removed = projector->ProjectWithin(load, c.Marker);
 		ConductorCurrentCoefficient J(*c.Path, ConductivityOf(c), scale);
@@ -280,6 +286,7 @@ private:
 		TerminalConductor c;
 		c.Name = name;
 		c.Type = term.Conductor;
+		c.Turns = term.Turns;
 		c.Direction = term.Direction->Type;
 		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
 		c.Marker = DomainMarkerFromAttrs(group.AttributeIds, "terminal '" + name + "'");
@@ -356,6 +363,35 @@ private:
 		return extent;
 	}
 
+	// The connected pieces of the n x A = 0 boundary: a piece number for each
+	// boundary element on it (-1 elsewhere). Elements sharing a vertex are in
+	// one piece, since a continuous potential cannot differ between them.
+	std::vector<int> WallPieces() const {
+		std::vector<int> root(mesh.GetNV());
+		for (int v = 0; v < mesh.GetNV(); ++v) { root[v] = v; }
+		auto find = [&](int v) {
+			while (root[v] != v) { v = root[v] = root[root[v]]; }
+			return v;
+		};
+		auto on_wall = [&](int be) {
+			const int a = mesh.GetBdrAttribute(be);
+			return a >= 1 && a <= ess_bdr.Size() && ess_bdr[a - 1];
+		};
+		mfem::Array<int> vertices;
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			if (!on_wall(be)) continue;
+			mesh.GetBdrElementVertices(be, vertices);
+			for (int v : vertices) { root[find(v)] = find(vertices[0]); }
+		}
+		std::vector<int> piece(mesh.GetNBE(), -1);
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			if (!on_wall(be)) continue;
+			mesh.GetBdrElementVertices(be, vertices);
+			piece[be] = find(vertices[0]);
+		}
+		return piece;
+	}
+
 	std::unique_ptr<ConductorPath> MakeConductorPath(
 		const std::string& name, const CurrentDirection& d,
 		const mfem::Array<int>& conductor, mfem::Coefficient* conductivity) {
@@ -395,6 +431,36 @@ private:
 					"The electrodes of terminal '" + name + "' must lie on a "
 					"'dirichlet' (n x A = 0) boundary; for a closed loop use a 'cut'.");
 			}
+			// The electrodes must share one connected piece of that wall. If
+			// they do not, a closed loop on the rest of the boundary (n x H = 0)
+			// runs between the pieces around the conductor: tangential H is
+			// zero along it, so by Ampere's law no net current can pass through
+			// it, yet all of the terminal's current does. The problem then has
+			// no solution, and the solve would return a wrong field without
+			// failing. (Discretely: a potential that is 1 on one piece and 0 on
+			// the others has a gradient the n x A = 0 space contains, and
+			// testing the field equation with it demands zero net current into
+			// the piece.)
+			const std::vector<int> pieces = WallPieces();
+			std::set<int> touched;
+			for (int be = 0; be < mesh.GetNBE(); ++be) {
+				const int a = mesh.GetBdrAttribute(be) - 1;
+				if (a < 0 || a >= n_bdr || !(input[a] || output[a])) continue;
+				int e1, e2;
+				mesh.GetFaceElements(mesh.GetBdrElementFaceIndex(be), &e1, &e2);
+				const bool borders = (e1 >= 0 && conductor[mesh.GetAttribute(e1) - 1])
+					|| (e2 >= 0 && conductor[mesh.GetAttribute(e2) - 1]);
+				if (borders) touched.insert(pieces[be]);
+			}
+			MFEM_VERIFY(touched.size() <= 1,
+				"The electrodes of terminal '" + name + "' lie on separate pieces of the "
+				"'dirichlet' (n x A = 0) boundary that do not touch. A closed loop can "
+				"then be drawn on the rest of the boundary, which is n x H = 0, between "
+				"the pieces and around the conductor. Tangential H is zero along it, so "
+				"by Ampere's law no net current can pass through the loop, yet all of "
+				"the terminal's current does: the problem has no solution. Join the "
+				"electrodes by a connected 'dirichlet' region, e.g. make the walls "
+				"between them 'dirichlet' too.");
 			return std::make_unique<ConductionPath>(mesh, config.Order, conductor,
 													conductivity, d, input, output, none);
 		}

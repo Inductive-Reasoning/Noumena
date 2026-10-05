@@ -3,12 +3,14 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "axisym/axisymmetric_curl_curl_integrator.hpp"
 #include "axisym/axisymmetric_diffusion_integrator.hpp"
 #include "axisym/axisymmetric_lf_integrator.hpp"
 #include "axisym/axisymmetric_mass_integrator.hpp"
 #include "axisym/axisymmetric_boundary_lf_integrator.hpp"
+#include "axisym/radial_quadrature.hpp"
 #include "core/constants.hpp"
 
 #include <algorithm>
@@ -146,12 +148,13 @@ TEST_CASE("Axisymmetric quadrature accounts for element transformations",
 
 namespace {
 
-// One element spanning r in [s*h, s*h + h], z in [0, 1].
-std::unique_ptr<mfem::Mesh> MakeRadialBand(double r_min, double width)
+// A band spanning r in [r_min, r_min + width], z in [0, 1]: one
+// quadrilateral, or two triangles.
+std::unique_ptr<mfem::Mesh> MakeRadialBand(double r_min, double width,
+										   mfem::Element::Type type = mfem::Element::QUADRILATERAL)
 {
    auto mesh = std::make_unique<mfem::Mesh>(
-	  mfem::Mesh::MakeCartesian2D(1, 1, mfem::Element::QUADRILATERAL,
-								  true, width, 1.0));
+	  mfem::Mesh::MakeCartesian2D(1, 1, type, true, width, 1.0));
    for (int v = 0; v < mesh->GetNV(); ++v)
    {
 	  mesh->GetVertex(v)[0] += r_min;
@@ -190,28 +193,30 @@ double CurlCurlEnergy(mfem::Mesh &mesh)
 // integration interval as s -> 0. A basis-degree-only rule is therefore blind
 // to the hard case, and a thin band close to the axis was integrated with tens
 // of percent of error. A_phi = 1 does not vanish near the axis, so it exercises
-// the term directly, and its energy has the closed form 2*pi*ln(b/a).
+// the term directly, and its energy has the closed form 2*pi*ln(b/a). Triangles
+// need orders past MFEM's positive-weight tables near the axis.
 TEST_CASE("Near-axis annular curl-curl quadrature meets its accuracy target",
 		  "[axisymmetric][quadrature]")
 {
    const double width = 1.0;
+   const mfem::Element::Type type = GENERATE(mfem::Element::QUADRILATERAL,
+											 mfem::Element::TRIANGLE);
 
    // kResolvedRadiusRatio is the documented limit of the capped rule.
-   const double ratios[] = {
-	  3.0, 1.0, 0.1, 0.03,
-	  AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio};
+   const double ratios[] = {3.0, 1.0, 0.1, 0.03, axisym::kResolvedRadiusRatio};
 
    for (double s : ratios)
    {
 	  const double a = s * width;
 	  const double b = a + width;
-	  auto mesh = MakeRadialBand(a, width);
+	  auto mesh = MakeRadialBand(a, width, type);
 
 	  const double exact = Constants::TWO_PI * std::log(b / a);
 	  const double relative_error =
 		 std::abs(CurlCurlEnergy(*mesh) - exact) / exact;
 
-	  INFO("r_min/width = " << s);
+	  INFO((type == mfem::Element::TRIANGLE ? "triangles" : "quadrilateral")
+		   << ", r_min/width = " << s);
 	  REQUIRE(relative_error < 1.0e-10);
    }
 }
@@ -232,7 +237,7 @@ TEST_CASE("Curl-curl quadrature degrades only past its documented ratio",
    const double relative_error =
 	  std::abs(CurlCurlEnergy(*mesh) - exact) / exact;
 
-   REQUIRE(s < AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio);
+   REQUIRE(s < axisym::kResolvedRadiusRatio);
    // Far better than the ~40% the basis-degree-only rule produced here, but
    // short of the 1e-10 target, which is exactly what the warning reports.
    REQUIRE(relative_error > 1.0e-10);
@@ -256,16 +261,16 @@ TEST_CASE("Axisymmetric boundary load includes radial measure",
            == Catch::Approx(Constants::TWO_PI * 6.0).epsilon(1.0e-12));
 }
 
-TEST_CASE("Curl-curl quadrature stays on positive-weight simplex rules",
+TEST_CASE("Curl-curl quadrature on triangles stays positive past the tabulated orders",
           "[axisymmetric][quadrature][curlcurl]")
 {
-   // A triangle hugging the axis: r_min/width = 1e-3 drives RadialExtraOrder
-   // far past the tabulated positive-weight range, so this is the geometry
-   // that exercises the clamp in GetRule.
+   // A triangle hugging the axis: r_min/width = 1e-3 needs an order far past
+   // the highest triangle rule MFEM tabulates with positive weights.
+   const double a = 1.0e-3;
    mfem::Mesh mesh(2, 3, 1, 0, 2);
-   mesh.AddVertex(1.0e-3, 0.0);
+   mesh.AddVertex(a, 0.0);
    mesh.AddVertex(1.0, 0.0);
-   mesh.AddVertex(1.0e-3, 1.0);
+   mesh.AddVertex(a, 1.0);
    mesh.AddTriangle(0, 1, 2, 1);
    mesh.FinalizeTriMesh(1, 0, true);
 
@@ -275,23 +280,27 @@ TEST_CASE("Curl-curl quadrature stays on positive-weight simplex rules",
    mfem::ElementTransformation &transformation =
       *mesh.GetElementTransformation(0);
 
-   // Without the clamp this element would request an order in the
-   // Grundmann-Moller fallback range, where weights alternate in sign.
+   // MFEM's own rule at this order would be Grundmann-Moller, with weights
+   // alternating in sign (minimum -1.5e17 at order 125); the collapsed Gauss
+   // rule has positive weights at interior points.
    const mfem::IntegrationRule &rule =
       AxisymmetricCurlCurlIntegrator::GetRule(element, element, transformation);
-   // Measured with the clamp disabled: order 125, minimum weight -1.5e17,
-   // and the element matrix loses positive definiteness.
-   REQUIRE(rule.GetOrder()
-           <= AxisymmetricCurlCurlIntegrator::kMaxPositiveWeightSimplexOrder);
-
-   double min_weight = rule.IntPoint(0).weight;
-   for (int i = 1; i < rule.GetNPoints(); ++i)
+   REQUIRE(rule.GetOrder() > axisym::kMaxTabulatedTriangleOrder);
+   for (int i = 0; i < rule.GetNPoints(); ++i)
    {
-      min_weight = std::min(min_weight, (double)rule.IntPoint(i).weight);
+      const mfem::IntegrationPoint &ip = rule.IntPoint(i);
+      REQUIRE(ip.weight > 0.0);
+      REQUIRE(ip.x > 0.0);
+      REQUIRE(ip.y > 0.0);
+      REQUIRE(ip.x + ip.y < 1.0);
    }
-   REQUIRE(min_weight > 0.0);
 
-   // The point of the clamp: the assembled operator stays positive definite.
+   // A_phi = 1 has the energy 2 pi integral dA / r over the triangle,
+   // 2 pi (ln(1/a) - (1 - a)) / (1 - a).
+   const double exact = Constants::TWO_PI * (std::log(1.0 / a) - (1.0 - a)) / (1.0 - a);
+   REQUIRE(CurlCurlEnergy(mesh) == Catch::Approx(exact).epsilon(1.0e-3));
+
+   // And the assembled operator stays positive definite.
    // Tested by attempting a Cholesky factorization, which succeeds exactly
    // when the matrix is positive definite. MFEM here is built without LAPACK,
    // so this is also the check that does not need an eigensolver.

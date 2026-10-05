@@ -16,12 +16,13 @@
 
 #include "mfem.hpp"
 #include "vector_potential_solver_3d.hpp"
+#include "mqs_block_preconditioner.hpp"
 #include "mqs_massive_port_operator.hpp"
 #include "../coefficients/complex_vector_magnitude_coefficient.hpp"
 #include "../coefficients/mqs_vector_electric_field.hpp"
 #include "../core/constants.hpp"
 #include "../linalg/serial_ams.hpp"
-#include "../linalg/sparse_direct_solver.hpp"
+#include "../linalg/complex_direct_solver.hpp"
 
 /**
  * @brief 3D time-harmonic magnetoquasistatics (eddy currents) in the vector
@@ -59,9 +60,12 @@
  * flux linkage lambda = b'_k . A (b'_k its projected unit load), with
  * V = j omega lambda. Written as one R and one L matrix per frequency.
  *
- * @par Regularization
- * Both linear solvers solve a regularized system: in the nonconducting
- * regions curl-curl alone is singular. Tested with a gradient grad(psi),
+ * @par Gauge
+ * In the nonconducting regions curl-curl alone is singular. The direct
+ * solver imposes the Coulomb gauge there by a Lagrange multiplier, with the
+ * multiplier constant on each conductor so that the eddy-current equations
+ * are left exactly as they are (see DivergenceFreeProjector::GaugeConstraint).
+ * The iterative solver regularizes instead. Tested with a gradient grad(psi),
  * the regularized field equation reads
  *     integral (beta + j omega sigma) A . grad(psi) = 0,
  * so beta enters charge conservation in, and at the surface of, every
@@ -78,8 +82,8 @@
  * above round-off, with a warning if the floor binds.
  *
  * @par Linear solvers
- *  - "direct": the packed real form of the complex system, factored once per
- *    frequency by sparse LU and reused for every terminal column.
+ *  - "direct": the gauged complex system factored once per frequency (see
+ *    ComplexDirectSolver) and reused for every terminal column.
  *  - "iterative" (MPI/HYPRE build only): GMRES preconditioned block-
  *    diagonally, with hypre's AMS on K + omega M_sigma for both the real and
  *    the imaginary field block (the frequency-robust choice for
@@ -116,6 +120,7 @@ public:
 	void Setup() override {
 		MFEM_VERIFY(!config.Scenarios.empty(),
 			"Magnetoquasistatic simulations require at least one frequency scenario.");
+		WarnOnSlowComplexDirectSolve();
 		for (const Region& region : config.Regions) {
 			MFEM_VERIFY(region.CurrentConstraint == RegionCurrentConstraint::None,
 				"Region '" + region.EntityGroupName + "' has current_constraint "
@@ -134,12 +139,15 @@ public:
 		BuildSpaceAndConductors();
 		const int n = fespace->GetTrueVSize();
 
+		const bool direct = config.LinearSolver == LinearSolverType::Direct;
 		{
 			auto operation = Reporter().Start("field matrix assembly");
-			regularization = std::make_unique<mfem::ConstantCoefficient>(EddyCurrentRegularization());
 			stiffness = std::make_unique<mfem::BilinearForm>(fespace.get());
 			stiffness->AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
-			stiffness->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
+			if (!direct) {
+				regularization = std::make_unique<mfem::ConstantCoefficient>(EddyCurrentRegularization());
+				stiffness->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
+			}
 			stiffness->Assemble();
 			stiffness->Finalize();
 
@@ -184,8 +192,20 @@ public:
 		preconditioner.reset();
 #endif
 		prepared_omega = 0.0;
-		if (config.LinearSolver == LinearSolverType::Direct) {
-			WarnOnLargeDirectSolve(2 * port_operator->Layout().HalfSize());
+
+		// The direct path gauges the field block by a Lagrange multiplier,
+		// the Coulomb gauge in the nonconducting regions (see
+		// ComplexDirectSolver); the iterative one is regularized instead.
+		gauge.reset();
+		if (direct) {
+			mfem::Array<int> conducting(mesh.attributes.Max());
+			for (int a = 1; a <= conducting.Size(); ++a) {
+				conducting[a - 1] = (*sigma_coeff)(a) > 0.0 ? 1 : 0;
+			}
+			gauge = std::make_unique<GaugeConstraintRows>(
+				*projector->GaugeConstraint(conducting), ess_tdof_list);
+			WarnOnLargeDirectSolve(port_operator->Layout().HalfSize(),
+								   ComplexDirectSolver::kLarge3DUnknowns);
 		}
 	}
 
@@ -195,8 +215,9 @@ public:
 				auto operation = Reporter().Start("scenario '" + name + "'");
 				ActivateFrequency(scenario.Frequency);
 				Solve(scenario);
-				ReportRegionLosses(ComputeRegionLosses());
-				SaveScenario(name, scenario);
+				const std::vector<RegionLoss> losses = ComputeRegionLosses();
+				ReportRegionLosses(losses);
+				SaveScenario(name, scenario, {}, losses);
 			}
 			return;
 		}
@@ -286,55 +307,11 @@ private:
 	// Solver state for the active frequency (prepared_omega).
 	double prepared_omega = 0.0;
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
-	std::unique_ptr<SparseLUSolver> direct_solver;
+	std::unique_ptr<GaugeConstraintRows> gauge;  // direct path; see BuildOperators()
+	std::unique_ptr<ComplexDirectSolver> direct_solver;
 
 #ifdef MFEM_USE_MPI
-	// Block-diagonal preconditioner of the packed system: AMS on
-	// K + omega M_sigma for each field block, the exact inverse of the
-	// port corner [0, G/omega; -G/omega, 0] for each port.
-	class BlockPreconditioner : public mfem::Solver {
-	public:
-		BlockPreconditioner(const MqsMassivePortOperator& op, mfem::SparseMatrix& K,
-							mfem::SparseMatrix& M_sigma, double omega,
-							const mfem::Array<int>& ess, std::vector<mfem::real_t> conductances,
-							mfem::FiniteElementSpace& nd)
-			: mfem::Solver(op.Layout().FullSize()), op(op), omega(omega),
-			  conductances(std::move(conductances)) {
-			field.reset(mfem::Add(1.0, K, omega, M_sigma));
-			for (int i = 0; i < ess.Size(); ++i) {
-				field->EliminateRowCol(ess[i], mfem::Operator::DIAG_ONE);
-			}
-			ams = std::make_unique<SerialAmsPreconditioner>(*field, nd, /*singular=*/false);
-		}
-
-		void Mult(const mfem::Vector& x, mfem::Vector& y) const override {
-			const int n = op.Layout().NDofs();
-			auto in = op.View(x);
-			auto out = op.View(y);
-			mfem::Vector r(n), z(n);
-			for (int part = 0; part < 2; ++part) {
-				for (int i = 0; i < n; ++i) { r(i) = part ? in.ImMesh(i) : in.ReMesh(i); }
-				z = 0.0;
-				ams->Mult(r, z);
-				for (int i = 0; i < n; ++i) { (part ? out.ImMesh(i) : out.ReMesh(i)) = z(i); }
-			}
-			for (int p = 0; p < op.Layout().NPorts(); ++p) {
-				const double g = conductances[p] / omega;
-				out.RePort(p) = -in.ImPort(p) / g;
-				out.ImPort(p) = in.RePort(p) / g;
-			}
-		}
-
-		void SetOperator(const mfem::Operator&) override {}
-
-	private:
-		const MqsMassivePortOperator& op;
-		double omega;
-		std::vector<mfem::real_t> conductances;
-		std::unique_ptr<mfem::SparseMatrix> field;  // referenced by ams
-		std::unique_ptr<SerialAmsPreconditioner> ams;
-	};
-	std::unique_ptr<BlockPreconditioner> preconditioner;
+	std::unique_ptr<MqsBlockPreconditioner> preconditioner;  // AMS on the field blocks
 #endif
 
 	void ActivateFrequency(double f) {
@@ -423,17 +400,20 @@ private:
 		x = 0.0;
 		auto b = port_operator->View(rhs);
 		for (size_t k = 0; k < conductors.size(); ++k) {
-			const double current = ExcitationFor(scenario, conductors[k].Name);
+			const std::complex<double> current = ExcitationFor(scenario, conductors[k].Name);
 			if (current == 0.0) continue;
 			if (port_of[k] < 0) {
 				for (int i = 0; i < layout.NDofs(); ++i) {
-					b.ReMesh(i) += current * stranded_loads[k](i);
+					b.ReMesh(i) += current.real() * stranded_loads[k](i);
+					b.ImMesh(i) += current.imag() * stranded_loads[k](i);
 				}
 			}
 			else {
 				// The port row carries I / (j omega) = -j I / omega (see
 				// MqsMassivePortOperator); I is a peak phasor.
-				b.ImPort(port_of[k]) = -current / omega;
+				const std::complex<double> port_rhs = current / std::complex<double>(0.0, omega);
+				b.RePort(port_of[k]) = port_rhs.real();
+				b.ImPort(port_of[k]) = port_rhs.imag();
 			}
 		}
 		for (int i = 0; i < ess_packed_tdofs.Size(); ++i) { rhs(ess_packed_tdofs[i]) = 0.0; }
@@ -467,12 +447,17 @@ private:
 			std::ostringstream label;
 			label << "sparse direct factorization at " << frequency << " Hz";
 			auto operation = Reporter().Start(label.str());
-			direct_solver.reset();
 			packed_matrix = port_operator->AssemblePackedMatrix();
 			for (int i = 0; i < ess_packed_tdofs.Size(); ++i) {
 				packed_matrix->EliminateRowCol(ess_packed_tdofs[i], mfem::Operator::DIAG_ONE);
 			}
-			direct_solver = std::make_unique<SparseLUSolver>(*packed_matrix);
+			// One solver per mesh: refactoring it at a new frequency reuses its
+			// ordering.
+			if (!direct_solver) {
+				direct_solver = std::make_unique<ComplexDirectSolver>(port_operator->Layout(),
+																	  gauge.get());
+			}
+			direct_solver->Factor(*packed_matrix);
 		}
 		else {
 #ifdef MFEM_USE_MPI
@@ -482,9 +467,12 @@ private:
 				if (c.Type == ConductorType::Massive) conductances.push_back(c.PathIntegral);
 			}
 			preconditioner.reset();
-			preconditioner = std::make_unique<BlockPreconditioner>(
-				*port_operator, stiffness->SpMat(), sigma_mass->SpMat(), omega,
-				ess_tdof_list, std::move(conductances), *fespace);
+			preconditioner = std::make_unique<MqsBlockPreconditioner>(
+				port_operator->Layout(), stiffness->SpMat(), sigma_mass->SpMat(), omega,
+				ess_tdof_list, std::move(conductances), [&](mfem::SparseMatrix& field) {
+					return std::make_unique<SerialAmsPreconditioner>(field, *fespace,
+																	 /*singular=*/false);
+				});
 #endif
 		}
 		prepared_omega = omega;
@@ -502,22 +490,7 @@ private:
 		gmres.SetMaxIter(config.SolverMaxIter);
 		gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 		gmres.Mult(rhs, x);
-
-		std::ostringstream msg;
-		msg << std::scientific << std::setprecision(3);
-		if (gmres.GetConverged()) {
-			msg << "GMRES converged in " << gmres.GetNumIterations()
-				<< " iterations (relative residual " << gmres.GetFinalRelNorm() << ").";
-			Reporter().Diagnostic(msg.str());
-		}
-		else {
-			msg << "GMRES did not converge: relative residual " << gmres.GetFinalRelNorm()
-				<< " after " << gmres.GetNumIterations() << " iterations, above "
-				   "solver_tolerance " << config.SolverTolerance << ". Raise "
-				   "solver_max_iter, loosen solver_tolerance, or use the direct "
-				   "solver; results may be inaccurate.";
-			Reporter().Warning(msg.str());
-		}
+		RequireConverged(gmres, "GMRES");
 #else
 		(void)rhs;
 		(void)x;

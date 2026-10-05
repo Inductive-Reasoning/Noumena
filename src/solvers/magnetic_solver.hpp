@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <complex>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -16,6 +17,10 @@
 #include "physics_solver.hpp"
 #include "../axisym/axisymmetric_curl_curl_integrator.hpp"
 #include "../axisym/magnetic_axis_boundary.hpp"
+#include "../axisym/radial_quadrature.hpp"
+#include "../coefficients/axisymmetric_conductance_coefficient.hpp"
+#include "../io/region_loss.hpp"
+#include "../linalg/complex_direct_solver.hpp"
 
 /**
  * @brief What every magnetic vector-potential solver shares, in 2D or 3D.
@@ -31,10 +36,7 @@ class MagneticSolverBase : public PhysicsSolver {
 public:
 	/// One conductive region's time-averaged dissipation [W], and the label
 	/// under which it reports.
-	struct RegionLoss {
-		std::string Name;
-		double Power = 0.0;
-	};
+	using RegionLoss = ::RegionLoss;
 
 protected:
 	// nu = 1/mu (reluctivity) and the field-solve conductivity sigma, keyed
@@ -50,6 +52,17 @@ protected:
 		return 1.0 / (Constants::MU_0 * m.RelPermeability);
 	}
 	static double Conductivity(const Material& m) { return m.Conductivity; }
+
+	// The time-harmonic direct solve is fast only with STRUMPACK; say so when
+	// this build falls back to Eigen. See ComplexDirectSolver.
+	void WarnOnSlowComplexDirectSolve() const {
+		if (ComplexDirectSolver::kUsesStrumpack || config.LinearSolver != LinearSolverType::Direct) {
+			return;
+		}
+		Reporter().Warning("This build has no STRUMPACK (CMake option USE_STRUMPACK), so the "
+			"direct solve factors the real form of the complex system with Eigen's SparseLU, "
+			"which is 10 to 60 times slower and needs 5 to 10 times the memory.");
+	}
 
 	void BuildReluctivity() {
 		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);
@@ -215,8 +228,8 @@ protected:
 private:
 	// Element-wise integral of @p density over the given attributes, with the
 	// geometric measure (2 pi r in axisymmetry). The rule is sized for a
-	// density quadratic in the solution; the axisymmetric drive field's 1/r
-	// factors are why it is not borrowed from a source integrator.
+	// density quadratic in the solution and, in axisymmetry, for the 1/r of a
+	// massive conductor's drive field V / (2 pi r) (radial_quadrature.hpp).
 	double IntegrateOverAttributes(mfem::Coefficient& density,
 								   const std::set<int>& attrs) const {
 		double total = 0.0;
@@ -226,7 +239,9 @@ private:
 			mfem::ElementTransformation& T = *mesh.GetElementTransformation(e);
 			const mfem::FiniteElement& fe = *fespace->GetFE(e);
 			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
-			const mfem::IntegrationRule& ir = mfem::IntRules.Get(fe.GetGeomType(), order);
+			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+				? axisym::RadialRule(fe.GetGeomType(), order, T)
+				: mfem::IntRules.Get(fe.GetGeomType(), order);
 			for (int q = 0; q < ir.GetNPoints(); ++q) {
 				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
 				T.SetIntPoint(&ip);
@@ -308,15 +323,15 @@ protected:
 		WarnOnUnderResolvedRadialQuadrature();
 	}
 
-	// The curl-curl 1/r term is integrated by a geometry-aware rule whose cost
-	// is set by s = r_min/h per element (see
-	// AxisymmetricCurlCurlIntegrator::RadialExtraOrder). 1/r is rational, so no
-	// polynomial rule integrates it exactly and the rule must be capped; an
-	// element that is both very thin radially and very close to the axis can
-	// therefore fall outside the accuracy target. Such an element is rare and
-	// always a meshing choice, but the resulting error is silent, so report it
-	// once. The electrostatic r-weighted diffusion integrand is polynomial and
-	// is integrated exactly, so no equivalent concern exists there.
+	// The 1/r integrands (curl-curl, a massive conductor's conductance and
+	// drive-field loss) are integrated by a geometry-aware rule whose order is
+	// set by s = r_min/h per element (radial_quadrature.hpp). 1/r is rational,
+	// so the added order is capped, and an element that is both very thin
+	// radially and very close to the axis falls outside the accuracy target.
+	// Such an element is rare and always a meshing choice, but the resulting
+	// error is silent, so report it once. The electrostatic r-weighted
+	// diffusion integrand is polynomial and is integrated exactly, so no
+	// equivalent concern exists there.
 	void WarnOnUnderResolvedRadialQuadrature() {
 		int worst_element = -1;
 		double worst_ratio = std::numeric_limits<double>::max();
@@ -324,8 +339,7 @@ protected:
 		for (int e = 0; e < mesh.GetNE(); ++e) {
 			double min_radius = 0.0;
 			double radial_width = 0.0;
-			AxisymmetricCurlCurlIntegrator::RadialExtent(
-				*mesh.GetElementTransformation(e), min_radius, radial_width);
+			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
 
 			// Elements meeting the axis are excluded by design: there the
 			// divergent directions are removed by the A_phi = 0 constraint.
@@ -340,18 +354,18 @@ protected:
 		}
 
 		if (worst_element < 0) { return; }
-		if (worst_ratio >= AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio) {
+		if (worst_ratio >= axisym::kResolvedRadiusRatio) {
 			return;
 		}
 
 		std::ostringstream msg;
 		msg << std::setprecision(3)
 			<< "Element " << worst_element << " has r_min/width = " << worst_ratio
-			<< ", below the ratio " << AxisymmetricCurlCurlIntegrator::kResolvedRadiusRatio
-			<< " at which the curl-curl 1/r quadrature reaches its accuracy "
-			   "target. The capped rule integrates such elements approximately; "
-			   "widen the innermost radial band or move it away from the axis if "
-			   "near-axis accuracy matters.";
+			<< ", below the ratio " << axisym::kResolvedRadiusRatio
+			<< " at which the 1/r quadrature reaches its accuracy target. The "
+			   "capped rule integrates such elements approximately; widen the "
+			   "innermost radial band or move it away from the axis if near-axis "
+			   "accuracy matters.";
 		Reporter().Warning(msg.str());
 	}
 
@@ -421,8 +435,9 @@ protected:
 		}
 	}
 
-	// Uniform current density I/area over the terminal's domain attributes,
-	// laid out per mesh attribute for a PWConstCoefficient.
+	// Uniform current density N I/area over the terminal's domain attributes,
+	// for a winding of N turns each carrying I, laid out per mesh attribute
+	// for a PWConstCoefficient.
 	//
 	// This is a 2D-reduction relation. The terminal region is a conductor
 	// CROSS-SECTION here, so its measure is an area and I/area is a current
@@ -437,29 +452,104 @@ protected:
 		MFEM_VERIFY(area > 0.0,
 			"Current terminal '" + terminal_name + "' has zero cross-section.");
 
-		return AttributeVector(group.AttributeIds, current / area);
+		return AttributeVector(group.AttributeIds, term.Turns * current / area);
 	}
 
-	// Scenario source current density, summed over the terminals @p include
-	// accepts. Current enters the model only through Terminals, so this is a
-	// pure function of sc.Excitations: a terminal the scenario does not drive
-	// contributes nothing. In CouplingMatrix mode the scenario carries a single
-	// unit excitation, so this IS the drive for that column rather than
-	// background data, and must not be suppressed the way boundary data is.
-	mfem::Vector BuildCurrentDensity(
+	// A massive conductor carries its DC conduction distribution
+	// J = sigma w V, with the path w = 1 per unit length in the plane and
+	// w = 1/(2 pi r) around the axis, and V the voltage driving the current.
+	// Its conductance is G = integral sigma |w|^2 dV, so a current I has
+	// V = I / G; this is the distribution an MQS massive conductor tends to as
+	// the frequency goes to zero, and the one 3D gives a massive conductor.
+	//
+	// MassiveConductorLoad is the load of J for V = 1: integral sigma w v dV.
+	// Weighted by the measure (2 pi r around the axis), sigma w becomes plain
+	// sigma, so it is the same unweighted domain form in both geometries.
+	// Assembly is restricted to the conductor's elements, so its cost is
+	// proportional to the conductor rather than to the mesh.
+	mfem::Vector MassiveConductorLoad(const std::string& name,
+									  const std::vector<int>& attributes) const {
+		mfem::Array<int> marker =
+			DomainMarkerFromAttrs(attributes, "massive conductor '" + name + "'");
+		mfem::LinearForm load(fespace.get());
+		load.AddDomainIntegrator(new mfem::DomainLFIntegrator(*sigma_coeff), marker);
+		load.Assemble();
+		return mfem::Vector(load);
+	}
+
+	// DC conductance G of a massive conductor: the integral of sigma over its
+	// elements in the plane, of sigma/(2 pi r) around the axis, where the rule
+	// also resolves the 1/r factor by the element's distance from the axis
+	// (radial_quadrature.hpp). A rule of fixed order cannot: a ring's
+	// conductance sigma h ln(b/a) / (2 pi) grows without bound as a -> 0.
+	double MassiveConductance(const std::string& name,
+							  const std::vector<int>& attributes) const {
+		const std::set<int> attrs(attributes.begin(), attributes.end());
+		AxisymmetricConductanceCoeff axisymmetric(*sigma_coeff);
+		mfem::Coefficient& integrand = geometry == GeometryType::Axisymmetric
+			? static_cast<mfem::Coefficient&>(axisymmetric) : *sigma_coeff;
+		double G = 0.0;
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
+			mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
+			const mfem::Geometry::Type shape = mesh.GetElementBaseGeometry(e);
+			const int order = 2 * config.Order + T->OrderW() + 2;
+			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
+				? axisym::RadialRule(shape, order, *T)
+				: mfem::IntRules.Get(shape, order);
+			for (int i = 0; i < ir.GetNPoints(); ++i) {
+				const mfem::IntegrationPoint& ip = ir.IntPoint(i);
+				T->SetIntPoint(&ip);
+				G += ip.weight * T->Weight() * integrand.Eval(*T, ip);
+			}
+		}
+		MFEM_VERIFY(G > 0.0, "Massive conductor '" + name + "' has zero conductance.");
+		return G;
+	}
+
+	// A massive conductor needs a positive conductivity throughout and, around
+	// the axis, must not reach it: its conductance integral sigma/(2 pi r)
+	// diverges there.
+	void ValidateMassiveConductor(const std::string& name,
+								  const std::vector<int>& attributes) const {
+		ValidateMassiveConductivity(name, attributes);
+		if (geometry != GeometryType::Axisymmetric) { return; }
+		const std::set<int> attrs(attributes.begin(), attributes.end());
+		mfem::Vector pos(mesh.SpaceDimension());
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
+			double min_radius = 0.0, radial_width = 0.0;
+			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
+			MFEM_VERIFY(min_radius > axisymmetric_mesh.tolerance,
+				"Massive conductor '" + name + "' touches the symmetry axis. Its DC "
+				"conductance integral sigma/(2*pi*r) is divergent; model it as a "
+				"stranded conductor or move it off the axis.");
+		}
+	}
+
+	// Real and imaginary parts of the scenario source current density, summed
+	// over the terminals @p include accepts. Current enters the model only
+	// through Terminals, so this is a pure function of sc.Excitations: a
+	// terminal the scenario does not drive contributes nothing. In
+	// CouplingMatrix mode the scenario carries a single unit excitation, so
+	// this IS the drive for that column rather than background data, and must
+	// not be suppressed the way boundary data is.
+	void BuildCurrentDensity(
 		const Scenario& sc,
-		const std::function<bool(const Terminal&)>& include) const {
-		mfem::Vector j_src(mesh.attributes.Max());
-		j_src = 0.0;
+		const std::function<bool(const Terminal&)>& include,
+		mfem::Vector& j_re, mfem::Vector& j_im) const {
+		j_re.SetSize(mesh.attributes.Max());
+		j_im.SetSize(mesh.attributes.Max());
+		j_re = 0.0;
+		j_im = 0.0;
 
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.DriveQuantity != Quantity::Current) continue;
 			if (!include(term)) continue;
 
-			const double I = ExcitationFor(sc, term_name);
-			if (I == 0.0) continue;
-			j_src += BuildTerminalCurrentDensity(term_name, I);
+			const std::complex<double> I = ExcitationFor(sc, term_name);
+			if (I.real() != 0.0) { j_re += BuildTerminalCurrentDensity(term_name, I.real()); }
+			if (I.imag() != 0.0) { j_im += BuildTerminalCurrentDensity(term_name, I.imag()); }
 		}
-		return j_src;
 	}
 };

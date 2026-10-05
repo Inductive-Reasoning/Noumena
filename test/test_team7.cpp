@@ -18,10 +18,10 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
-#include <sstream>
 #include <string>
 #include <vector>
 
+#include "csv_rows.hpp"
 #include "config/input_parser.hpp"
 #include "io/mesh_loader.hpp"
 #include "parallel/mpi_runtime.hpp"
@@ -31,28 +31,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const fs::path kExample = fs::path(MFEM_ELECTROMAG_TEST_DATA) / ".." / ".." / "examples" / "team7";
-
-using Row = std::map<std::string, std::string>;
-
-// The rows of a CSV file with a header line, skipping '#' comments.
-std::vector<Row> ReadCsv(const fs::path& path) {
-	std::ifstream in(path);
-	REQUIRE(in);
-	std::vector<std::string> header;
-	std::vector<Row> rows;
-	for (std::string line; std::getline(in, line);) {
-		if (line.empty() || line[0] == '#') continue;
-		std::vector<std::string> cells;
-		std::stringstream stream(line);
-		for (std::string cell; std::getline(stream, cell, ',');) { cells.push_back(cell); }
-		if (header.empty()) { header = cells; continue; }
-		Row row;
-		for (size_t c = 0; c < header.size(); ++c) { row[header[c]] = cells.at(c); }
-		rows.push_back(row);
-	}
-	return rows;
-}
+const fs::path kExample = fs::path(MFEM_ELECTROMAG_EXAMPLES) / "team7";
 
 // A table's probe, the field component it compares, and the factor from SI
 // to the table's unit.
@@ -63,7 +42,7 @@ struct Table {
 
 } // namespace
 
-TEST_CASE("TEAM 7 matches its measurements", "[.][team7][solvers][mqs][3d]") {
+TEST_CASE("TEAM 7 stays within its regression bounds of the measurements", "[.][team7][solvers][mqs][3d]") {
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 7 needs the iterative solver of the MPI build.");
 	}
@@ -98,11 +77,11 @@ TEST_CASE("TEAM 7 matches its measurements", "[.][team7][solvers][mqs][3d]") {
 		{ "A4B4 f50 wt0", 0.17 }, { "A4B4 f50 wt90", 0.21 },    // 13%, 17%
 		{ "A4B4 f200 wt0", 0.17 }, { "A4B4 f200 wt90", 0.25 } };  // 14%, 22%
 
-	const std::vector<Row> measured = ReadCsv(kExample / "measured.csv");
+	const std::vector<CsvRow> measured = ReadCsvRows(kExample / "measured.csv");
 	for (const auto& [name, table] : tables) {
 		for (const auto& [frequency, scenario] : scenarios) {
 			std::map<double, std::pair<double, double>> computed;  // x [mm] -> (wt0, wt90)
-			for (const Row& s : ReadCsv(output / "probes" / (scenario + "_" + table.probe + ".csv"))) {
+			for (const CsvRow& s : ReadCsvRows(output / "probes" / (scenario + "_" + table.probe + ".csv"))) {
 				const double re = std::stod(s.at(table.field + "_Real_" + table.component));
 				const double im = std::stod(s.at(table.field + "_Imag_" + table.component));
 				const double x = std::round(1e6 * std::stod(s.at("x"))) / 1e3;
@@ -111,7 +90,7 @@ TEST_CASE("TEAM 7 matches its measurements", "[.][team7][solvers][mqs][3d]") {
 			for (const std::string phase : { "wt0", "wt90" }) {
 				double sum = 0.0, peak = 0.0;
 				int count = 0;
-				for (const Row& row : measured) {
+				for (const CsvRow& row : measured) {
 					if (row.at("line") != name) continue;
 					const auto at = computed.find(std::stod(row.at("x_mm")));
 					REQUIRE(at != computed.end());

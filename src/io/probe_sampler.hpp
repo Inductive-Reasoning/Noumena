@@ -124,7 +124,9 @@ private:
 
 	// Bounding box of every element, from its map sampled on a reference
 	// lattice (exact for straight elements), widened by a tenth of its size
-	// to cover a curved element's bulge between the samples.
+	// to cover most of a curved element's bulge between the samples. The
+	// boxes only order the search (Locate): a point they miss is still looked
+	// for in every other element.
 	std::vector<Box> ElementBoxes() const {
 		const int dim = mesh_.SpaceDimension();
 		std::vector<Box> boxes(mesh_.GetNE());
@@ -158,17 +160,21 @@ private:
 			<< " coordinates in a mesh of space dimension " << dim << ".");
 		mfem::Vector x(dim);
 		for (int c = 0; c < dim; ++c) { x(c) = point[c]; }
-		for (int e = 0; e < mesh_.GetNE(); ++e) {
-			if (!attributes.empty() && !attributes.count(mesh_.GetAttribute(e))) continue;
-			bool inside_box = true;
-			for (int c = 0; c < dim && inside_box; ++c) {
-				inside_box = x(c) >= boxes[e].Low(c) && x(c) <= boxes[e].High(c);
-			}
-			if (!inside_box) continue;
-			mfem::InverseElementTransformation inverse(mesh_.GetElementTransformation(e));
-			Location location{ e, {} };
-			if (inverse.Transform(x, location.Point) == mfem::InverseElementTransformation::Inside) {
-				return location;
+		// First the elements whose box holds the point, then, since a box can
+		// miss part of a curved element, all the others.
+		for (const bool in_box_pass : { true, false }) {
+			for (int e = 0; e < mesh_.GetNE(); ++e) {
+				if (!attributes.empty() && !attributes.count(mesh_.GetAttribute(e))) continue;
+				bool inside_box = true;
+				for (int c = 0; c < dim && inside_box; ++c) {
+					inside_box = x(c) >= boxes[e].Low(c) && x(c) <= boxes[e].High(c);
+				}
+				if (inside_box != in_box_pass) continue;
+				mfem::InverseElementTransformation inverse(mesh_.GetElementTransformation(e));
+				Location location{ e, {} };
+				if (inverse.Transform(x, location.Point) == mfem::InverseElementTransformation::Inside) {
+					return location;
+				}
 			}
 		}
 		std::ostringstream where;

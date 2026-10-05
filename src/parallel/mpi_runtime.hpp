@@ -6,6 +6,9 @@
 #include <memory>
 
 #include "mfem.hpp"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /**
  * @brief Process-level MPI/HYPRE setup, shared by the executable and tests.
@@ -21,7 +24,10 @@
  */
 namespace parallel {
 
-/// Initialize MPI and HYPRE. MFEM finalizes both at program exit.
+/// Initialize MPI and HYPRE (MFEM finalizes both at program exit), and, in
+/// an OpenMP build, MFEM's "omp" device, which threads its sparse
+/// matrix-vector products and vector operations over OMP_NUM_THREADS. It is
+/// configured once, before any MFEM object, and lives for the process.
 inline void Initialize(int& argc, char**& argv) {
 #ifdef MFEM_USE_MPI
 	mfem::Mpi::Init(argc, argv);
@@ -29,6 +35,18 @@ inline void Initialize(int& argc, char**& argv) {
 #else
 	(void)argc;
 	(void)argv;
+#endif
+#ifdef MFEM_USE_OPENMP
+	static mfem::Device device("omp");
+#endif
+}
+
+/// The number of threads the linear algebra runs on.
+inline int Threads() {
+#ifdef _OPENMP
+	return omp_get_max_threads();
+#else
+	return 1;
 #endif
 }
 

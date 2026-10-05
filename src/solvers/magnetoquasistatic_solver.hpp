@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cctype>
+#include <complex>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -21,12 +22,13 @@
 #include "../core/constants.hpp"
 #include "../config/boundary_validation.hpp"
 #include "../core/problem_config.hpp"
+#include "mqs_block_preconditioner.hpp"
 #include "mqs_massive_port_operator.hpp"
+#include "../linalg/amg_preconditioner.hpp"
 #include "../linalg/complex_block_layout.hpp"
-#include "../coefficients/axisymmetric_conductance_coefficient.hpp"
 #include "../io/gmsh_results_writer.hpp"
 #include "amr_support.hpp"
-#include "../linalg/sparse_direct_solver.hpp"
+#include "../linalg/complex_direct_solver.hpp"
 
 class MagnetoquasistaticSolver : public MagneticSolver {
     enum class ImprintMode { Field, CouplingPerturbation };
@@ -48,11 +50,13 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	// the mesh or the active frequency changes; factored_omega records which
 	// frequency the current factors belong to.
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
-	std::unique_ptr<SparseLUSolver> direct_solver;
+	std::unique_ptr<ComplexDirectSolver> direct_solver;
+	// GMRES preconditioner of the iterative path, for one frequency.
+	std::unique_ptr<MqsBlockPreconditioner> preconditioner;
+	mfem::real_t preconditioned_omega = 0.0;
 	mfem::real_t factored_omega = 0.0;
 
     // Coefficients
-    std::unique_ptr<mfem::PWConstCoefficient> j_coeff;     
     mfem::Vector neumann_rhs;
     std::vector<mfem::real_t> port_conductances;
     
@@ -106,87 +110,6 @@ class MagnetoquasistaticSolver : public MagneticSolver {
     }
 
     std::vector<ImpedancePoint> coupling_results;
-
-    // Function to build the port vector for a specific port attribute
-    //
-    // The massive-port row is physical as written and needs no normalization
-    // adjustment: the field-row blocks (curl-curl K, sigma mass M_sigma, domain
-    // load) all carry the full 2*pi*r measure. Weighting the field source
-    // sigma*V/(2*pi*r) by that measure leaves exactly V * integral(sigma*v dr dz),
-    // which is this plain (unweighted) domain form.
-    std::unique_ptr<mfem::Vector> BuildPortVector(mfem::FiniteElementSpace* fespace,
-                            const std::vector<int>& port_attributes,
-                            mfem::Coefficient& conductivity,
-                            const std::string& port_name)
-    {
-        // Restrict integration to this specific port's attributes
-        mfem::Array<int> port_marker =
-            DomainMarkerFromAttrs(port_attributes, "massive port '" + port_name + "'");
-
-        // Assemble the LinearForm using a scalar domain integrator. The attribute
-        // marker restricts assembly to this port's elements, so the cost is
-        // proportional to the port rather than to the whole mesh; with one port per
-        // turn, assembling over every element would be quadratic overall.
-        mfem::LinearForm port_lf(fespace);
-        port_lf.AddDomainIntegrator(
-            new mfem::DomainLFIntegrator(conductivity), port_marker);
-        port_lf.Assemble();
-
-        // Extract and return as a standalone Vector
-        auto port_vector = std::make_unique<mfem::Vector>(port_lf.Size());
-        *port_vector = port_lf;
-        return port_vector;
-    }
-
-    // Smallest physical radius attained by the elements carrying any of
-    // @p attribute_ids, sampled through the element transformations so curved
-    // geometry is respected.
-    double MinRadiusOverAttributes(const std::vector<int>& attribute_ids) const
-    {
-        std::set<int> attrs(attribute_ids.begin(), attribute_ids.end());
-        double min_r = std::numeric_limits<double>::max();
-        mfem::Vector pos(mesh.SpaceDimension());
-
-        for (int e = 0; e < mesh.GetNE(); ++e) {
-            if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-            mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-            const mfem::IntegrationRule& nodes = fespace->GetFE(e)->GetNodes();
-            for (int i = 0; i < nodes.GetNPoints(); ++i) {
-                const mfem::IntegrationPoint& ip = nodes.IntPoint(i);
-                T->SetIntPoint(&ip);
-                T->Transform(ip, pos);
-                min_r = std::min(min_r, pos(0));
-            }
-        }
-        return min_r;
-    }
-
-    // DC conductance of a massive port: the integral of sigma over its
-    // elements in 3D, of sigma/(2*pi*r) in axisymmetry. The rule is sized for
-    // the 1/r factor as well as for sigma: a one-point rule, the default for a
-    // piecewise-constant test space, under-reports a ring's conductance by
-    // a part in (h/r)^2.
-    double ComputePortConductance(const std::vector<int>& port_attributes,
-                                  mfem::Coefficient& conductivity) const
-    {
-        std::set<int> attrs(port_attributes.begin(), port_attributes.end());
-        AxisymmetricConductanceCoeff axisymmetric(conductivity);
-        mfem::Coefficient& integrand = geometry == GeometryType::Axisymmetric
-            ? static_cast<mfem::Coefficient&>(axisymmetric) : conductivity;
-        double G_dc = 0.0;
-        for (int e = 0; e < mesh.GetNE(); ++e) {
-            if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-            mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-            const mfem::IntegrationRule& ir = mfem::IntRules.Get(
-                mesh.GetElementBaseGeometry(e), 2 * config.Order + T->OrderW() + 2);
-            for (int i = 0; i < ir.GetNPoints(); ++i) {
-                const mfem::IntegrationPoint& ip = ir.IntPoint(i);
-                T->SetIntPoint(&ip);
-                G_dc += ip.weight * T->Weight() * integrand.Eval(*T, ip);
-            }
-        }
-        return G_dc;
-    }
 
     // The complex block system is solved as a single real vector laid out
     // [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; ComplexPortVectorView and
@@ -312,6 +235,7 @@ public:
         omega = Constants::TWO_PI * frequency;
 
         InitializeMagneticGeometry();
+        WarnOnSlowComplexDirectSolve();
         for (const auto& [term_name, term] : config.Terminals) {
             MFEM_VERIFY(term.DriveQuantity == Quantity::Current,
                 "Magnetoquasistatic terminal '" + term_name +
@@ -338,6 +262,7 @@ public:
         // boundaries, so they are deliberately NOT registered into the set here.
         boundary_conditions = BuildBoundaryConditions();
         BuildEssentialBoundaryMarker();
+        RequireReferencePotential();
 
         // Build the FE space and everything bound to it for the starting mesh.
         BuildOperators();
@@ -390,23 +315,10 @@ public:
                 Reporter().Status("  assembled " + std::to_string(port_index) + " of " +
                     std::to_string(massive_ports.size()) + " massive ports");
             }
-            if (geometry == GeometryType::Axisymmetric) {
-                // G_dc = integral sigma/(2*pi*r) diverges for a toroidal massive
-                // conductor whose cross-section reaches the symmetry axis.
-                MFEM_VERIFY(
-                    MinRadiusOverAttributes(port.AttributeIds) > axisymmetric_mesh.tolerance,
-                    "Massive port '" + port.Name + "' touches the symmetry axis. "
-                    "Its DC conductance integral sigma/(2*pi*r) is divergent; "
-                    "model it as a stranded conductor or move it off the axis.");
-            }
-            ValidateMassiveConductivity(port.Name, port.AttributeIds);
-            port_loads.push_back(
-                BuildPortVector(fespace.get(), port.AttributeIds, *sigma_coeff,
-                                port.Name));
-            const double G_dc = ComputePortConductance(port.AttributeIds, *sigma_coeff);
-            MFEM_VERIFY(G_dc > 0.0,
-                "Massive port '" + port.Name + "' has zero conductance.");
-            port_conductances.push_back(G_dc);
+            ValidateMassiveConductor(port.Name, port.AttributeIds);
+            port_loads.push_back(std::make_unique<mfem::Vector>(
+                MassiveConductorLoad(port.Name, port.AttributeIds)));
+            port_conductances.push_back(MassiveConductance(port.Name, port.AttributeIds));
         }
         }
 
@@ -429,6 +341,7 @@ public:
 		direct_solver.reset();
 		packed_matrix.reset();
 		factored_omega = 0.0;
+		preconditioner.reset();
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
@@ -467,34 +380,38 @@ public:
         *b_combined = 0.0;
         auto b = port_operator->View(*b_combined);
 
-        // Source
-        auto j_src = BuildCurrentDensity(sc);
-        j_coeff = std::make_unique<mfem::PWConstCoefficient>(j_src);
-
-        // Assemble the source term (J is assumed real) into the Re_Mesh block.
-        mfem::LinearForm b_source(fespace.get());
-        b_source.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(*j_coeff));
-        b_source.Assemble();
-        const mfem::real_t* b_source_data = b_source.GetData();   // bypass LinearForm::operator()
+        // Stranded source, its real and imaginary parts into the Re_Mesh and
+        // Im_Mesh blocks.
+        mfem::Vector j_re, j_im;
+        BuildCurrentDensity(sc, j_re, j_im);
+        mfem::PWConstCoefficient j_re_coeff(j_re), j_im_coeff(j_im);
+        mfem::LinearForm b_re(fespace.get()), b_im(fespace.get());
+        b_re.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(j_re_coeff));
+        b_im.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(j_im_coeff));
+        b_re.Assemble();
+        b_im.Assemble();
         for (int d = 0; d < port_operator->Layout().NDofs(); ++d) {
-            b.ReMesh(d) += b_source_data[d];
+            b.ReMesh(d) += b_re[d];
+            b.ImMesh(d) += b_im[d];
             if (mode == ImprintMode::Field) {
                 b.ReMesh(d) += neumann_rhs[d];
             }
         }
 
-        // Drive the active port(s) via the imaginary port block Im_Port.
+        // Drive the massive ports.
         //
         // The prescribed excitation IS the current phasor I, and the RHS entry
-        // that produces it is I/(j*omega) in this block ordering (which equals
-        // -j*I/omega for a real in-phase current, hence the sign and 1/omega).
+        // that produces it is I/(j*omega) = -j*I/omega in this block ordering.
         // It is used unscaled, so the PEAK-phasor convention enters the solve
         // here and every downstream quantity -- solved port voltages, the
         // coupling matrix, and the 1/2 in the loss density -- inherits it.
         int p = 0;
         for (const auto& [term_name, term] : config.Terminals) {
             if (term.Conductor != ConductorType::Massive) continue;   // keep p aligned
-            b.ImPort(p) = -ExcitationFor(sc, term_name) / omega;
+            const std::complex<double> port_rhs =
+                ExcitationFor(sc, term_name) / std::complex<double>(0.0, omega);
+            b.RePort(p) = port_rhs.real();
+            b.ImPort(p) = port_rhs.imag();
             ++p;
         }
 
@@ -514,8 +431,9 @@ public:
                 ImprintScenario(scenario, ImprintMode::Field);
                 SolveSystem();
                 AccumulateScenarioError();
-                ReportRegionLosses(ComputeRegionLosses());
-                SaveScenario(name, scenario);
+                const std::vector<RegionLoss> losses = ComputeRegionLosses();
+                ReportRegionLosses(losses);
+                SaveScenario(name, scenario, {}, losses);
             }
             return;
         }
@@ -563,13 +481,19 @@ public:
 			direct_solver->Mult(B_vec, X_vec);
 		}
 		else {
-			// Iterative Complex Solver
+			// GMRES preconditioned by AMG on K + omega M_sigma for both field
+			// blocks (see MqsBlockPreconditioner).
+			EnsurePreconditionerForActiveFrequency();
 			mfem::GMRESSolver gmres;
 			gmres.SetOperator(*A_op.Ptr());
+			gmres.SetPreconditioner(*preconditioner);
+			gmres.SetKDim(200);
 			gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
 			gmres.SetRelTol(config.SolverTolerance);
+			gmres.SetAbsTol(0.0);
 			gmres.SetMaxIter(config.SolverMaxIter);
 			gmres.Mult(B_vec, X_vec);
+			RequireConverged(gmres, "GMRES");
 		}
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh
@@ -585,13 +509,22 @@ public:
     // depend on frequency. It is, however, constant across the terminal columns
     // of a single frequency point, which is where the reuse pays off: one
     // factorization serves every terminal at that frequency.
+    void EnsurePreconditionerForActiveFrequency() {
+        if (preconditioner && preconditioned_omega == omega) { return; }
+        auto operation = Reporter().Start("AMG preconditioner setup");
+        preconditioner = std::make_unique<MqsBlockPreconditioner>(
+            port_operator->Layout(), S_AA->real().SpMat(), S_AA->imag().SpMat(), omega,
+            ess_mesh_tdofs, port_conductances, [](mfem::SparseMatrix& field) {
+                return std::make_unique<AmgPreconditioner>(field);
+            });
+        preconditioned_omega = omega;
+    }
+
     void EnsureFactorizationForActiveFrequency() {
         if (direct_solver && factored_omega == omega) { return; }
 
         auto operation = Reporter().Start(
             "sparse direct factorization at " + std::to_string(frequency) + " Hz");
-        direct_solver.reset();
-
         packed_matrix = port_operator->AssemblePackedMatrix();
 
         // Apply the same essential-DOF elimination that ComplexOperator's
@@ -602,7 +535,12 @@ public:
             packed_matrix->EliminateRowCol(ess_packed_tdofs[i], mfem::Operator::DIAG_ONE);
         }
 
-        direct_solver = std::make_unique<SparseLUSolver>(*packed_matrix);
+        // One solver per mesh: refactoring it at a new frequency reuses its
+        // ordering.
+        if (!direct_solver) {
+            direct_solver = std::make_unique<ComplexDirectSolver>(port_operator->Layout());
+        }
+        direct_solver->Factor(*packed_matrix);
         factored_omega = omega;
     }
 
@@ -823,9 +761,10 @@ public:
     // Stranded-conductor source current density for a scenario. Massive
     // conductors are driven through the port block instead, so they are
     // excluded here.
-    mfem::Vector BuildCurrentDensity(const Scenario& sc) const {
-        return MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
+    void BuildCurrentDensity(const Scenario& sc, mfem::Vector& j_re,
+                             mfem::Vector& j_im) const {
+        MagneticSolver::BuildCurrentDensity(sc, [](const Terminal& term) {
             return term.Conductor == ConductorType::Stranded;
-        });
+        }, j_re, j_im);
     }
 };

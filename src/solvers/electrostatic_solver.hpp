@@ -33,10 +33,9 @@ class ElectrostaticSolver : public PhysicsSolver {
 	std::vector<std::unique_ptr<mfem::ConstantCoefficient>> robin_coeffs;
 	std::vector<std::unique_ptr<mfem::Array<int>>> robin_markers;
 
-	// Domain stiffness alone, for the coupling charge extraction Q = K0*x.
-	// Assembled by its own form rather than snapshotted from `a`, because `a`
-	// also carries Robin boundary terms. See BuildOperators().
-	std::unique_ptr<mfem::SparseMatrix> K0;
+	// The system operator before essential elimination, for the coupling
+	// charge extraction Q = K*x. See BuildOperators().
+	std::unique_ptr<mfem::SparseMatrix> K;
 	std::unique_ptr<mfem::DenseMatrix> C; // Coupling Matrix for terminals
 
 	// Terminal name -> boundary marker, resolved once at setup. This solver
@@ -105,6 +104,7 @@ public:
 		}
 
 		BuildEssentialBoundaryMarker();
+		RequireReferencePotential();
 
 		// Build the FE space and everything bound to it for the starting mesh.
 		BuildOperators();
@@ -149,11 +149,6 @@ public:
 		x = std::make_unique<mfem::GridFunction>(fespace.get());
 		*x = 0.0;
 
-		// System operator: domain stiffness plus the Robin boundary terms
-		// (RobinCoeff * V, v) over each Robin boundary, all under the
-		// geometry's measure.
-		a = std::make_unique<mfem::BilinearForm>(fespace.get());
-		a->AddDomainIntegrator(MakeStiffnessIntegrator()); // a takes ownership
 		robin_coeffs.clear();
 		robin_markers.clear();
 		for (const auto& bc : boundary_conditions) {
@@ -161,29 +156,27 @@ public:
 			robin_coeffs.push_back(
 				std::make_unique<mfem::ConstantCoefficient>(bc.Condition.RobinCoeff));
 			robin_markers.push_back(std::make_unique<mfem::Array<int>>(bc.Marker));
-			a->AddBoundaryIntegrator(
-				Geometry().NewBoundaryMassIntegrator(*robin_coeffs.back()),
-				*robin_markers.back());
 		}
+		a = std::make_unique<mfem::BilinearForm>(fespace.get());
+		AddOperatorIntegrators(*a);
 		a->Assemble();
 
-		// UNCONSTRAINED domain stiffness for the charge extraction Q = K0*x.
-		//
-		// INVARIANT: K0 must contain the DOMAIN stiffness and nothing else. The
-		// charge extraction is Gauss's law over the volume; the Robin terms in
-		// `a` are part of the operator but not part of that relation, so
-		// including them would silently shift every extracted charge and
-		// capacitance with no error and no failing assertion. K0 is therefore
-		// assembled by its own domain-only form, which makes the invariant
-		// structural instead of an assembly-ordering rule. Only coupling runs
-		// extract charge, so only they pay for it.
-		K0.reset();
+		// The same operator, unconstrained, for the charge extraction Q = K*x.
+		// Essential elimination rewrites `a`'s matrix, so K is assembled by a
+		// form of its own from the same integrators. It must be the whole
+		// operator, Robin terms included: a terminal DOF's basis function also
+		// reaches onto any Robin boundary next to the terminal, and the charge
+		// on the terminal is that DOF's full residual. With the domain
+		// stiffness alone, the flux through the adjoining Robin faces would be
+		// counted as terminal charge. Only coupling runs extract charge, so
+		// only they pay for it.
+		K.reset();
 		if (config.AnalysisType == AnalysisType::CouplingMatrix) {
-			mfem::BilinearForm domain(fespace.get());
-			domain.AddDomainIntegrator(MakeStiffnessIntegrator());
-			domain.Assemble();
-			domain.Finalize();
-			K0.reset(domain.LoseMat());
+			mfem::BilinearForm unconstrained(fespace.get());
+			AddOperatorIntegrators(unconstrained);
+			unconstrained.Assemble();
+			unconstrained.Finalize();
+			K.reset(unconstrained.LoseMat());
 		}
 
 		// Linear Form (RHS)
@@ -230,6 +223,18 @@ public:
 	// (2*pi*r for axisymmetric, the plain Cartesian Laplacian in 2D and 3D).
 	mfem::BilinearFormIntegrator* MakeStiffnessIntegrator() const {
 		return Geometry().NewDiffusionIntegrator(*epsilon_coeff);
+	}
+
+	// The system operator's integrators: the domain stiffness plus the Robin
+	// terms (RobinCoeff * V, v) over each Robin boundary, all under the
+	// geometry's measure. The form takes ownership of the integrators; the
+	// Robin coefficients and markers stay with this solver.
+	void AddOperatorIntegrators(mfem::BilinearForm& form) const {
+		form.AddDomainIntegrator(MakeStiffnessIntegrator());
+		for (size_t i = 0; i < robin_coeffs.size(); ++i) {
+			form.AddBoundaryIntegrator(
+				Geometry().NewBoundaryMassIntegrator(*robin_coeffs[i]), *robin_markers[i]);
+		}
 	}
 
 	// Estimate per-element error on the CURRENT mesh. The scenario-wide fold (a
@@ -311,7 +316,7 @@ public:
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.DriveQuantity == Quantity::Voltage) {
 				mfem::Array<int> marker(terminal_markers.at(term_name));
-				mfem::ConstantCoefficient c(ExcitationFor(sc, term_name));
+				mfem::ConstantCoefficient c(ExcitationFor(sc, term_name).real());
 				x->ProjectBdrCoefficient(c, marker);
 			}
 			else
@@ -404,13 +409,13 @@ public:
 private:
 	// CouplingMatrix post-solve action for one column: with the just-solved
 	// potential in *x (terminal `col` driven at 1 V, the rest grounded by the
-	// synthesized scenario), gather the reaction charge Q = K0*x onto every
+	// synthesized scenario), gather the reaction charge Q = K*x onto every
 	// conductor's boundary DOFs and write column `col` of C. Off-diagonals are
-	// negative, diagonals positive. K0 carries the full geometric measure in
+	// negative, diagonals positive. K carries the full geometric measure in
 	// both planar and axisymmetric mode, so Q is already in coulombs and needs
 	// no geometry-dependent scaling here.
 	// The coupling solve is imprinted in CouplingPerturbation mode, so the load
-	// vector is identically zero and K0*x is the full reaction, with no RHS
+	// vector is identically zero and K*x is the full reaction, with no RHS
 	// contribution left to subtract.
 	// Terminal order matches BuildSolveScenarios() / WriteCouplingMatrix()
 	// (config.Terminals order).
@@ -420,7 +425,7 @@ private:
 		for (const auto& kv : config.Terminals) terms.push_back(&kv);
 
 		mfem::Vector Q(fespace->GetVSize());
-		K0->Mult(*x, Q);
+		K->Mult(*x, Q);
 
 		for (int k = 0; k < static_cast<int>(terms.size()); ++k) {
 			mfem::Array<int> vdofs_k;

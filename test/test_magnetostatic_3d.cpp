@@ -342,9 +342,7 @@ TEST_CASE("3D field scenario is consistent with the inductance matrix",
 		REQUIRE(lambda[i] == Catch::Approx(expected).epsilon(1e-8));
 		energy += 0.5 * I[i] * expected;
 	}
-	// The field energy omits the (relative 1e-6) regularization term that the
-	// operator includes, hence the looser tolerance.
-	REQUIRE(solver.MagneticEnergy() == Catch::Approx(energy).epsilon(1e-5));
+	REQUIRE(solver.MagneticEnergy() == Catch::Approx(energy).epsilon(1e-8));
 }
 
 // The projector must remove exactly the gradient part of a load. A uniform
@@ -386,6 +384,42 @@ TEST_CASE("Coil loads are made discretely divergence-free",
 
 	const mfem::Vector& coil_load = solver.TerminalLoads()[0];
 	REQUIRE(projector.GradientResidual(coil_load) < 1e-9 * coil_load.Norml2());
+}
+
+// The direct solve gauges A with a Lagrange multiplier instead of a
+// regularizing mass term, so it solves the unperturbed curl-curl equations
+// and its solution satisfies the discrete Coulomb gauge G^T M A = 0 to
+// round-off (3e-12 here), with no 1/beta amplification of round-off in the
+// gradient directions.
+TEST_CASE("The 3D direct solve imposes the discrete Coulomb gauge exactly",
+		  "[solvers][magnetostatic][3d][gauge]") {
+	AnnulusSpec spec;
+	spec.nr = 4;
+	spec.nz = 5;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	json config = MakeAnnulusConfig(spec, true, 2, "magnetostatics", "field");
+	config["simulation"]["linear_solver"] = "direct";
+	config["scenarios"] = json::array({{{"name", "Drive"}, {"excitations", json::array({
+		{{"terminal", "C1"}, {"value", 1.0}}})}}});
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 12);
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+	solver.Setup();
+	solver.Run();
+
+	const mfem::GridFunction& A = solver.GetSolution();
+	mfem::FiniteElementSpace nd(&mesh, A.FESpace()->FEColl());  // the same DOFs
+	mfem::ConstantCoefficient one(1.0);
+	mfem::BilinearForm mass(&nd);
+	mass.AddDomainIntegrator(new mfem::VectorFEMassIntegrator(one));
+	mass.Assemble();
+	mass.Finalize();
+	mfem::Vector MA(A.Size());
+	mass.Mult(A, MA);
+	const double residual = solver.Projector().GradientResidual(MA);
+	INFO("|G^T M A| / |M A| = " << residual / MA.Norml2());
+	REQUIRE(residual < 1e-10 * MA.Norml2());
+	// The coil's flux linkage is twice the field energy at 1 A.
+	REQUIRE(solver.FluxLinkages()[0] == Catch::Approx(2.0 * solver.MagneticEnergy()).epsilon(1e-10));
 }
 
 // A closed coil described by a cut must carry the same current as the same
@@ -668,6 +702,17 @@ TEST_CASE("3D current terminals are validated", "[solvers][magnetostatic][3d]") 
 		config["boundary_conditions"][0]["entity_group"] = "Sides";
 		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
 		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("must lie on a 'dirichlet'"));
+	}
+
+	SECTION("electrodes on unconnected pieces of the n x A = 0 wall are rejected") {
+		// Only the bottom and top faces are n x A = 0: no path along the wall
+		// joins the electrodes for the current to return by.
+		mfem::Mesh mesh = MakeBarMesh();
+		json config = MakeBarConfig();
+		config["entity_groups"].push_back({{"name", "Ends"}, {"dim", 2}, {"attribute_ids", {1, 6}}});
+		config["boundary_conditions"][0]["entity_group"] = "Ends";
+		MagnetostaticSolver3D solver(mesh, DecodeConfig(config));
+		REQUIRE_THROWS_WITH(solver.Setup(), ContainsSubstring("separate pieces"));
 	}
 
 	SECTION("a terminal without a direction is rejected") {

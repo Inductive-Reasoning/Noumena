@@ -86,10 +86,9 @@ private:
 //
 // Why this exists alongside SparseDirectSolver: the time-harmonic MQS system is
 // the packed real form [R, -I; I, R] of a complex operator, bordered by the
-// massive-port coupling. That matrix is symmetric but INDEFINITE (the port
-// corner enters with a negative sign, and the real/imaginary coupling makes the
-// packed form non-positive-definite), so a Cholesky-type factorization is not
-// applicable. LU makes no definiteness assumption.
+// massive-port coupling. That packed matrix is not symmetric even where R and I
+// are (its off-diagonal blocks are -I and +I), nor definite, so a Cholesky-type
+// factorization does not apply. LU assumes neither.
 //
 // The reuse argument is the same as for the SPD case: a coupling sweep solves
 // one right-hand side per terminal against the matrix for a single frequency,

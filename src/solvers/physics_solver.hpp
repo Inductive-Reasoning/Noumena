@@ -3,9 +3,13 @@
 
 #pragma once
 #include <cmath>
+#include <complex>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 #include "mfem.hpp"
 #include "../core/problem_config.hpp"
 #include "../io/field_export.hpp"
@@ -118,6 +122,53 @@ protected:
         ess_bdr = boundary_conditions.DirichletMarker(mesh.bdr_attributes.Max());
     }
 
+    // Every connected piece of the mesh needs something that fixes the scalar
+    // potential on it: a boundary in ess_bdr (a Dirichlet condition, a voltage
+    // terminal, the axis of an axisymmetric magnetic run) or a Robin boundary
+    // with a positive coefficient. Without one the operator is singular on that
+    // piece: its solution is fixed only up to a constant, and a load with a net
+    // flux into it has no solution at all -- yet a direct factorization would
+    // return a field anyway. Call after BuildEssentialBoundaryMarker().
+    void RequireReferencePotential() const {
+        std::vector<int> root(mesh.GetNE());
+        for (int e = 0; e < mesh.GetNE(); ++e) { root[e] = e; }
+        auto find = [&](int e) {
+            while (root[e] != e) { e = root[e] = root[root[e]]; }
+            return e;
+        };
+        for (int f = 0; f < mesh.GetNumFaces(); ++f) {
+            int e1, e2;
+            mesh.GetFaceElements(f, &e1, &e2);
+            if (e1 >= 0 && e2 >= 0) { root[find(e1)] = find(e2); }
+        }
+
+        auto fixes_potential = [&](int attribute) {
+            if (attribute <= ess_bdr.Size() && ess_bdr[attribute - 1]) { return true; }
+            for (const auto& bc : boundary_conditions) {
+                if (bc.IsRobin() && bc.Condition.RobinCoeff > 0.0
+                    && attribute <= bc.Marker.Size() && bc.Marker[attribute - 1]) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::vector<bool> fixed(mesh.GetNE(), false);
+        for (int be = 0; be < mesh.GetNBE(); ++be) {
+            if (!fixes_potential(mesh.GetBdrAttribute(be))) { continue; }
+            int e1, e2;
+            mesh.GetFaceElements(mesh.GetBdrElementFaceIndex(be), &e1, &e2);
+            fixed[find(e1)] = true;
+        }
+        for (int e = 0; e < mesh.GetNE(); ++e) {
+            MFEM_VERIFY(fixed[find(e)],
+                "Nothing fixes the potential on the part of the mesh containing element "
+                << e << " (domain attribute " << mesh.GetAttribute(e) << "): no 'dirichlet' "
+                "boundary, terminal, symmetry axis or Robin boundary with a positive "
+                "robin_coefficient touches it, so its solution is determined only up to a "
+                "constant. Add a 'dirichlet' boundary (or terminal) on it.");
+        }
+    }
+
     // ---- Shared helpers for derived solvers ---------------------------------
 
     StatusReporter& Reporter() const {
@@ -145,8 +196,6 @@ protected:
     // previously used here squares-roots its tolerance argument, so a
     // configured 1e-12 used to mean 1e-6 for these solvers only.)
     //
-    // Non-convergence is reported rather than silent: mfem::PCG returned the
-    // last iterate without comment, which reads exactly like a converged run.
     void SolveSpdIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
                              const mfem::Vector& B, mfem::Vector& X) const {
         mfem::CGSolver cg;
@@ -157,32 +206,36 @@ protected:
         cg.SetMaxIter(config.SolverMaxIter);
         cg.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
         cg.Mult(B, X);
+        RequireConverged(cg, "CG");
+    }
 
+    // Report a finished Krylov solve. Non-convergence is an error: the last
+    // iterate of a solve that missed solver_tolerance is not a result, and
+    // passing it on as one (with a warning that is easily missed) would put
+    // an unconverged field into every output and coupling matrix.
+    void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name) const {
         std::ostringstream msg;
         msg << std::scientific << std::setprecision(3);
-        if (cg.GetConverged()) {
-            msg << "CG converged in " << cg.GetNumIterations()
-                << " iterations (relative residual " << cg.GetFinalRelNorm() << ").";
-            Reporter().Diagnostic(msg.str());
-        }
-        else {
-            msg << "CG did not converge: relative residual " << cg.GetFinalRelNorm()
-                << " after " << cg.GetNumIterations() << " iterations, above "
+        if (!solver.GetConverged()) {
+            msg << name << " did not converge: relative residual " << solver.GetFinalRelNorm()
+                << " after " << solver.GetNumIterations() << " iterations, above "
                    "solver_tolerance " << config.SolverTolerance << ". Raise "
-                   "solver_max_iter, loosen solver_tolerance, or use the direct "
-                   "solver; results may be inaccurate.";
-            Reporter().Warning(msg.str());
+                   "solver_max_iter, loosen solver_tolerance, or use the direct solver.";
+            throw std::runtime_error(msg.str());
         }
+        msg << name << " converged in " << solver.GetNumIterations()
+            << " iterations (relative residual " << solver.GetFinalRelNorm() << ").";
+        Reporter().Diagnostic(msg.str());
     }
 
     // Eigen's simplicial LDL^T is fine for 2D meshes but its fill-in grows much
     // faster in 3D: measured on a P2 Laplacian, 14 s / 0.24 GB at 36k unknowns
     // and 346 s / 1.5 GB at 118k. Warn before a 3D factorization that size so
-    // the run does not just appear to hang.
-    void WarnOnLargeDirectSolve(int true_dofs) const {
-        constexpr int kLarge3DDirectDofs = 50000;
+    // the run does not just appear to hang. The time-harmonic solvers pass
+    // their own limit (see ComplexDirectSolver).
+    void WarnOnLargeDirectSolve(int true_dofs, int large = 50000) const {
         if (config.LinearSolver != LinearSolverType::Direct) return;
-        if (geometry != GeometryType::Cartesian3D || true_dofs <= kLarge3DDirectDofs) return;
+        if (geometry != GeometryType::Cartesian3D || true_dofs <= large) return;
         Reporter().Warning("Direct factorization of a 3D system with " +
             std::to_string(true_dofs) + " unknowns may take many minutes and "
             "gigabytes of memory. Set simulation.linear_solver to 'iterative' "
@@ -290,18 +343,24 @@ protected:
         return v;
     }
 
-    // The drive a scenario applies to a terminal, or 0.0 when the scenario does
-    // not mention it. Excitations are prescribed as a list rather than a map, so
-    // this is the single place that resolves one against a terminal name.
+    // The phasor Value * exp(j Phase) a scenario applies to a terminal, or 0
+    // when the scenario does not mention it. Excitations are prescribed as a
+    // list rather than a map, so this is the single place that resolves one
+    // against a terminal name. Static solvers take its real part: their phase
+    // is zero (validated).
     //
-    // The value is returned unscaled. For time-harmonic solvers it is a PEAK
-    // (amplitude) phasor by convention; this function is convention-agnostic
-    // and performs no rms/peak conversion. See Excitation in problem_config.hpp.
-    static double ExcitationFor(const Scenario& sc,
-                                const std::string& terminal_name) {
-        double value = 0.0;
+    // The amplitude is returned unscaled. For time-harmonic solvers it is a
+    // PEAK amplitude by convention; this function performs no rms/peak
+    // conversion. See Excitation in problem_config.hpp.
+    static std::complex<double> ExcitationFor(const Scenario& sc,
+                                              const std::string& terminal_name) {
+        std::complex<double> value = 0.0;
         for (const auto& exc : sc.Excitations) {
-            if (exc.TerminalName == terminal_name) { value = exc.Value; }
+            if (exc.TerminalName == terminal_name) {
+                // Not std::polar, which needs a nonnegative amplitude.
+                const double radians = exc.Phase * Constants::TWO_PI / 360.0;
+                value = exc.Value * std::complex<double>(std::cos(radians), std::sin(radians));
+            }
         }
         return value;
     }
@@ -485,9 +544,10 @@ protected:
     // out to whichever formats are enabled. The writer owns the format details;
     // solvers only declare WHAT to export via CollectExportFields().
     void SaveScenario(const std::string& scenario_name, const Scenario& scenario,
-        const std::string& driven_terminal = {}) {
+        const std::string& driven_terminal = {}, const std::vector<RegionLoss>& losses = {}) {
         if (!result_writer || !result_writer->WantsFields()) return;
-        result_writer->WriteScenario(scenario_name, scenario, CollectExportFields(), driven_terminal);
+        result_writer->WriteScenario(scenario_name, scenario, CollectExportFields(), driven_terminal,
+            losses);
     }
 
     // Unit label for an extracted coupling quantity: absolute for the

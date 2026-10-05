@@ -10,6 +10,7 @@
 #include "mfem.hpp"
 #include "axisymmetric_measure.hpp"
 #include "axisymmetric_field_relations.hpp"
+#include "radial_quadrature.hpp"
 
 /**
  * @brief Thread-safe axisymmetric curl-curl bilinear form integrator for magnetostatics
@@ -60,121 +61,6 @@ public:
       MFEM_ASSERT(nu_ != nullptr, "Reluctivity coefficient cannot be null");
    }
 
-   // Relative accuracy targeted for the non-polynomial 1/r term. This is a
-   // quadrature-design target, not a field value, so it stays double: the
-   // Bernstein-ellipse analysis in RadialExtraOrder is done in double
-   // regardless of MFEM's storage precision, and 1e-10 is not representable
-   // as a meaningful float target.
-   static constexpr double kRadialQuadratureTolerance = 1.0e-10;
-
-   // Ceiling on the extra points added for the 1/r term. Reached only for
-   // elements whose inner radius is a tiny fraction of their radial width;
-   // see GetRule for what that costs and why it is acceptable.
-   //
-   // Note this ceiling is not what actually limits the rule in practice:
-   // kMaxPositiveWeightSimplexOrder below binds first on simplices, and by a
-   // wide margin. The cap here only matters on tensor-product geometries.
-   static constexpr int kMaxRadialExtraOrder = 120;
-
-   // Highest simplex order for which MFEM tabulates a positive-weight rule.
-   // Above this, IntRules.Get falls back to Grundmann-Moller, whose weights
-   // alternate in sign and grow without bound. Those rules are unusable here:
-   // the 1/r factor is largest exactly where the negative weights sit, so the
-   // element matrix loses its positive definiteness to catastrophic
-   // cancellation rather than merely losing digits. A lower-order rule with
-   // positive weights is strictly the better failure mode, so GetRule clamps.
-   //
-   // Measured against MFEM 4.10 by walking IntRules.Get(TRIANGLE, o): the
-   // first rule carrying a negative weight is order 26, and the first with a
-   // point on the element boundary is order 16. Both are properties of the
-   // rule tables, so this constant must be rechecked when MFEM is upgraded.
-   static constexpr int kMaxPositiveWeightSimplexOrder = 25;
-
-   // Smallest r_min/width at which the capped rule still meets
-   // kRadialQuadratureTolerance. Measured: relative energy error stays near
-   // 1e-11 down to this ratio, then degrades (about 1e-8 at 5e-3, 1e-5 at
-   // 2e-3). Solvers use this to warn about under-resolved elements.
-   //
-   // This does NOT bracket the clamp above. Inverting RadialExtraOrder for
-   // kRadialQuadratureTolerance = 1e-10 puts the order-26 crossing at
-   // r_min/width ~= 0.21, about 20x looser than this ratio. An element can
-   // therefore hit kMaxPositiveWeightSimplexOrder while still looking well
-   // resolved by this measure. The two thresholds answer different questions:
-   // this one is about accuracy, that one about whether a usable rule exists.
-   static constexpr double kResolvedRadiusRatio = 1.0e-2;
-
-   /**
-    * @brief Additional integration order needed to resolve the 1/r term.
-    *
-    * The integrand splits into a polynomial part and the single non-polynomial
-    * term N_j N_k / r. On an element spanning r in [a, a+h], mapping to the
-    * reference interval x in [-1, 1] gives r = a + h(1+x)/2, so 1/r has a pole
-    * at x0 = -(1 + 2s) with s = a/h. Gauss-Legendre applied to a function whose
-    * nearest singularity lies at x0 converges geometrically like rho^-n, where
-    *
-    *     rho = |x0| + sqrt(x0^2 - 1)
-    *
-    * is the Bernstein-ellipse parameter. Achieving a relative accuracy eps
-    * therefore needs roughly ln(1/eps)/ln(rho) points, which blows up as
-    * s -> 0 because rho -> 1.
-    *
-    * This is why a fixed polynomial-order heuristic cannot work: it depends
-    * only on the basis degree, while the actual difficulty is set by the
-    * geometric ratio s. Measured convergence orders match this estimate closely
-    * across s in [1e-3, 3].
-    *
-    * Returns 0 when the element touches the axis. There s = 0 and no finite
-    * rule converges, because the exact integral of N_j N_k / r diverges
-    * logarithmically for basis functions that do not vanish at r = 0. That
-    * divergence is a property of individual basis functions, not of the
-    * solution: axis regularity forces A_phi -> 0 linearly, and the essential
-    * A_phi = 0 constraint removes exactly the offending directions. Spending
-    * quadrature there would refine a quantity that elimination discards.
-    */
-   static int RadialExtraOrder(double min_radius, double radial_width)
-   {
-      if (!(radial_width > 0.0) || !(min_radius > 0.0)) { return 0; }
-
-      const double s = min_radius / radial_width;
-      const double x0 = 1.0 + 2.0 * s;
-      const double rho = x0 + std::sqrt(x0 * x0 - 1.0);
-      if (!(rho > 1.0)) { return kMaxRadialExtraOrder; }
-
-      const double points =
-         std::log(1.0 / kRadialQuadratureTolerance) / std::log(rho);
-      if (!(points > 0.0)) { return 0; }
-      if (points >= static_cast<double>(kMaxRadialExtraOrder))
-      {
-         return kMaxRadialExtraOrder;
-      }
-      return static_cast<int>(std::ceil(points));
-   }
-
-   // Radial extent of an element, sampled through its transformation so curved
-   // geometry is respected.
-   static void RadialExtent(const mfem::ElementTransformation &Trans,
-                            mfem::real_t &min_radius, mfem::real_t &radial_width)
-   {
-      auto &T = const_cast<mfem::ElementTransformation &>(Trans);
-      const mfem::IntegrationRule &vertices =
-         *mfem::Geometries.GetVertices(T.GetGeometryType());
-
-      mfem::real_t min_r = std::numeric_limits<mfem::real_t>::max();
-      mfem::real_t max_r = std::numeric_limits<mfem::real_t>::lowest();
-      mfem::Vector pos(T.GetSpaceDim());
-      for (int i = 0; i < vertices.GetNPoints(); ++i)
-      {
-         const mfem::IntegrationPoint &ip = vertices.IntPoint(i);
-         T.SetIntPoint(&ip);
-         T.Transform(ip, pos);
-         min_r = std::min(min_r, pos(0));
-         max_r = std::max(max_r, pos(0));
-      }
-
-      min_radius = min_r;
-      radial_width = max_r - min_r;
-   }
-
    static const mfem::IntegrationRule &GetRule(
       const mfem::FiniteElement &trial_fe,
       const mfem::FiniteElement &test_fe,
@@ -188,32 +74,8 @@ public:
       const int polynomial_order =
          std::max(gradient_order, radial_reaction_order);
 
-      // Non-polynomial 1/r part: cost is set by the element's geometry, not by
-      // the basis degree, so it must be added on top.
-      mfem::real_t min_radius = 0.0;
-      mfem::real_t radial_width = 0.0;
-      RadialExtent(Trans, min_radius, radial_width);
-      int order = polynomial_order
-         + RadialExtraOrder(min_radius, radial_width);
-
-      if (trial_fe.Space() == mfem::FunctionSpace::rQk)
-      {
-         return mfem::RefinedIntRules.Get(trial_fe.GetGeomType(), order);
-      }
-
-      // On simplices, refuse to cross into the negative-weight fallback rules;
-      // see kMaxPositiveWeightSimplexOrder. Clamping silently under-integrates
-      // the 1/r term, but it keeps the element matrix positive definite, which
-      // is the property the solver actually depends on. Elements that reach
-      // here are already flagged to the user by the kResolvedRadiusRatio check
-      // in the solvers, so the accuracy loss is reported through that path.
-      const mfem::Geometry::Type geom = trial_fe.GetGeomType();
-      if ((geom == mfem::Geometry::TRIANGLE || geom == mfem::Geometry::TETRAHEDRON)
-          && order > kMaxPositiveWeightSimplexOrder)
-      {
-         order = kMaxPositiveWeightSimplexOrder;
-      }
-      return mfem::IntRules.Get(geom, order);
+      // The N_j N_k / r part: see radial_quadrature.hpp.
+      return axisym::RadialRule(trial_fe.GetGeomType(), polynomial_order, Trans);
    }
 
    void AssembleElementMatrix(const mfem::FiniteElement &el,

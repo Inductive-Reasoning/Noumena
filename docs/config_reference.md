@@ -99,7 +99,8 @@ right-hand side, and its accuracy does not depend on a residual tolerance.
 
 For `3d` the default is `iterative`. The direct solver's fill-in grows far
 faster in 3D (a P2 Laplacian took 346 s and 1.5 GB at 118k unknowns), and a
-warning is printed before a 3D direct factorization above 50k unknowns.
+warning is printed before a 3D direct factorization above 50k unknowns
+(200k complex unknowns for MQS with STRUMPACK, below).
 
 `iterative` means, for electrostatics and magnetostatics, conjugate gradients
 preconditioned by algebraic multigrid (AMGCL: smoothed aggregation with
@@ -107,15 +108,27 @@ Chebyshev smoothing, which stays stable at every element order; threaded with
 OpenMP, set `OMP_NUM_THREADS` to control it). Its iteration count grows slowly,
 if at all, as the mesh is refined (13-14 for order-3 tetrahedra up to 389k
 unknowns, 23-63 for order-2 hexahedra up to 913k), and the multigrid
-hierarchy is built once per mesh and reused for every scenario. The MQS solver
-uses unpreconditioned GMRES. 3D magnetostatics uses CG preconditioned by
+hierarchy is built once per mesh and reused for every scenario. 2D MQS uses
+GMRES preconditioned block-diagonally by the same AMG on `K + ωM_σ` for the
+real and imaginary field blocks, with the exact inverse of the massive-port
+corner; the preconditioner is rebuilt at each frequency. 3D magnetostatics uses CG preconditioned by
 hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
 constant under refinement; 3D MQS uses GMRES preconditioned block-diagonally
-by AMS on `K + ωM_σ` (MPI/HYPRE build only). The 3D MQS `direct` solver is a
-sparse LU of the complex system, refactored per frequency; no MUMPS or other
-parallel direct solver is included. In every solver `solver_tolerance` is the relative
-residual `||b - Ax|| / ||b||`; a run that does not reach it within
-`solver_max_iter` iterations prints a warning.
+by AMS on `K + ωM_σ` (MPI/HYPRE build only). AMS smooths with hybrid
+Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
+loses strength; the iteration counts differ accordingly. The MQS `direct`
+solver (2D and 3D) factors the complex field block once per frequency with
+STRUMPACK, a multifrontal LU with METIS ordering, when the build includes it
+(CMake option `USE_STRUMPACK`, on by default; see the README). The massive
+ports are eliminated through their small dense Schur complement, so the
+sparse factorization never sees their dense rows and columns, and a frequency
+sweep reuses the ordering and redoes only the numerical factorization. Without it,
+it falls back to Eigen's sparse LU of the packed real form, which is 10 to 60
+times slower and larger, and says so at startup. In every iterative solver `solver_tolerance` is the
+relative residual the Krylov method monitors, which it measures through the
+preconditioner (CG in the preconditioner's norm, GMRES on the preconditioned
+residual), so the raw `||b - Ax|| / ||b||` can be larger. A solve that does not
+reach it within `solver_max_iter` iterations stops the run with an error.
 
 `frequency` is **not** valid here. It belongs on each scenario; see
 [`scenarios`](#scenarios).
@@ -221,6 +234,15 @@ Object. Optional; absent or `enabled: false` means a single solve.
 Unknown keys in this block are ignored, so a producer and the solver can evolve
 independently.
 
+The error indicator is a Zienkiewicz-Zhu flux-recovery estimate of the field
+error (the flux of `V`, `A_z` or `A_φ`), divided by the square root of the
+solution's energy so it does not scale with the drive, and combined over
+scenarios as a root sum of squares. It is a heuristic for where to refine,
+not a bound: it does not control the error of capacitances, impedances or
+losses, and among many scenarios one hard scenario's contribution can be
+diluted by the rest. For MQS the normalizing energy, `½(A_Rᵀ K A_R + A_Iᵀ K A_I)`,
+is twice the time-averaged magnetic energy of the peak phasors (`¼∫ν|B̂|²`).
+
 ---
 
 ## `entity_groups`
@@ -302,7 +324,13 @@ Array of objects.
   (see [Open-boundary truncation](open_boundary.md)). Coupling-matrix runs keep
   the `alpha` term in the operator but omit `value`, like all boundary data.
 
-Boundaries with no entry are homogeneous Neumann. Axis regularity on `r = 0` in
+Boundaries with no entry are homogeneous Neumann. In the scalar (2D and
+electrostatic) formulations every connected piece of the mesh needs something
+that fixes its potential -- a `dirichlet` boundary, a terminal, the axis of an
+axisymmetric magnetic run, or a `robin` boundary with a positive coefficient --
+and setup rejects a model with a piece that has none: its potential would be
+determined only up to a constant, and with a net flux into it there would be no
+solution at all. Axis regularity on `r = 0` in
 axisymmetric magnetic runs is imposed automatically and must **not** be
 prescribed here.
 
@@ -319,6 +347,7 @@ Array of objects naming drive/measurement sites.
 | `entity_group` | string | yes | -- | Role depends on `quantity` |
 | `conductor_type` | string | no | `massive` | `massive`, `stranded` |
 | `direction` | object | 3D magnetic current terminals | -- | Current path of a 3D conductor; see below |
+| `turns` | number | no | `1` | Turns of a `stranded` magnetic winding; see below |
 
 | `quantity` | Required group role | Realization |
 |------------|---------------------|-------------|
@@ -334,10 +363,24 @@ series); `massive` solves for the true current distribution including skin
 and proximity effects. A `stranded` conductor carries no eddy current: its
 material's `sigma` is taken as the wire's conductivity and does not enter the
 field solve, so it neither screens the field nor dissipates. The winding's own
-resistance is not included in `R`. 2D magnetostatics treats both as uniform `I / area`. 3D
-magnetostatics gives a `massive` conductor its DC distribution `σ E` (which
-differs from uniform where the path length varies, e.g. `J ∝ 1/r` in a ring),
-so a `massive` 3D conductor needs a material with positive `sigma`.
+resistance is not included in `R`. Magnetostatics, 2D and 3D, gives a
+`stranded` conductor the uniform `N I / area` and a `massive` one its DC
+conduction distribution `σ E` -- the limit of the MQS distribution as the
+frequency goes to zero, so the two solvers agree there. It differs from
+uniform where the path length varies across the conductor (`J ∝ σ/r` in a
+ring: for a thick one, b/a = 3, the inductance is 16% below the stranded
+value) or the conductivity does. A `massive` conductor therefore needs a
+material with positive `sigma`, in every solver; a multi-turn coil is
+`stranded`.
+
+`turns` is the number of turns `N` of a `stranded` winding, any positive
+number (an effective turn count need not be an integer), and is rejected on
+any other terminal (a massive conductor is a single turn). The terminal's
+excitation is the current in each turn, so the winding carries `N I`
+ampere-turns, and its flux linkage, coupling-matrix entries and impedances are
+those of all `N` turns: its self inductance and resistance scale as `N^2`,
+its mutual terms as `N`. With the default `N = 1` the excitation is the
+winding's ampere-turns.
 
 `direction` is required on every current terminal of a `3d` magnetic model and
 rejected everywhere else (a 2D model's current direction is fixed by its
@@ -371,13 +414,21 @@ geometry). It says where the conductor's current flows:
 - `electrodes`: an open conductor (a bus bar, a lead). Current enters through
   the `input` boundary group and leaves through `output`. Both must lie on a
   `dirichlet` (`n × A = 0`) boundary, the only place current can enter or
-  leave the model consistently.
+  leave the model consistently. Both must lie on one connected piece of it:
+  otherwise a closed loop on the remaining `n × H = 0` boundary runs around
+  the conductor between the pieces, and by Ampère's law (tangential H is zero
+  along it) no net current could pass through it. Such a model has no
+  solution and is rejected. Only part of the walls need be `dirichlet`, as
+  long as that part joins the electrodes.
 
 Whatever the type, a terminal's current must balance in its conductor: be
 divergence-free, and leave it only through its electrodes. Setup measures how
 much of the current density (in L2 norm) the divergence-free projection has to
-remove and warns above 2%; the effect on energies and inductances is about
-that fraction squared. Correct directions lose only discretization noise. The
+remove and warns above 2%. That fraction is a property of the source, not a
+bound on the error of fields, inductances or losses; in the TEAM 7 and 21a
+coils (2.6% and 4.7% removed) solving with the exact winding current instead
+changed the results by 0.1-0.4%. Correct directions lose only discretization
+noise. The
 warning catches an `azimuthal` direction about the wrong axis (about 1% per mm
 of offset on a 5 cm coil) or on a shape that is not revolved, a coarsely
 faceted round conductor (a few percent at 16 straight segments), and a
@@ -427,6 +478,7 @@ Each entry of `excitations`:
 |-----|------|----------|---------|
 | `terminal` | string | yes | A defined terminal name |
 | `value` | number | yes | Volts or amps, per that terminal's `quantity` |
+| `phase` | number | no | Phase in degrees (default 0); MQS only |
 
 A terminal omitted from `excitations` defaults to zero of its quantity:
 grounded for voltage, open for current. Omission is meaningful, not an error.
@@ -434,6 +486,11 @@ grounded for voltage, open for current. Omission is meaningful, not an error.
 > **Excitation values are PEAK (amplitude) phasors in time-harmonic runs.**
 > There is no rms/peak selector and no conversion. See
 > [faq.md](faq.md#are-excitations-peak-or-rms).
+
+An MQS excitation is the phasor `value * exp(j phase)`, with time dependence
+`exp(j omega t)`: the terminal's current is `value * cos(omega t + phase)`. A
+balanced three-phase set is three terminals at phases 0, -120 and 120. Static
+physics rejects a nonzero `phase`.
 
 ### `frequency` (MQS only)
 

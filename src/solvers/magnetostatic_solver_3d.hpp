@@ -10,7 +10,7 @@
 #include "mfem.hpp"
 #include "vector_potential_solver_3d.hpp"
 #include "../linalg/serial_ams.hpp"
-#include "../linalg/sparse_direct_solver.hpp"
+#include "../linalg/gauged_direct_solver.hpp"
 
 /**
  * @brief 3D magnetostatics in the full vector potential A (H(curl)).
@@ -45,8 +45,9 @@
  *    arbitrary, so it is removed afterwards
  *    (DivergenceFreeProjector::RemoveGradient), putting A in the discrete
  *    Coulomb gauge.
- *  - "direct": the regularized system (see VectorPotentialSolver3D), which
- *    lands in the same gauge. Its fill-in limits it to small 3D problems.
+ *  - "direct": the system gauged by a Lagrange multiplier
+ *    (GaugedDirectSolver), which imposes the same discrete Coulomb gauge
+ *    exactly. Its fill-in limits it to moderate 3D problems.
  */
 class MagnetostaticSolver3D : public VectorPotentialSolver3D {
 public:
@@ -66,7 +67,7 @@ public:
 	const mfem::GridFunction& GetSolution() const { return *A; }
 
 	/// Magnetic energy W = 1/2 integral(nu |curl A|^2) [J] of the current
-	/// solution, excluding the regularization term.
+	/// solution.
 	double MagneticEnergy() const {
 		mfem::BilinearForm k(fespace.get());
 		k.AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
@@ -101,10 +102,6 @@ public:
 		const bool direct = config.LinearSolver == LinearSolverType::Direct;
 		a = std::make_unique<mfem::BilinearForm>(fespace.get());
 		a->AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
-		if (direct) {
-			regularization = std::make_unique<mfem::ConstantCoefficient>(RegularizationWeight());
-			a->AddDomainIntegrator(new mfem::VectorFEMassIntegrator(*regularization));
-		}
 		a->Assemble();
 		a->FormSystemMatrix(ess_tdof_list, A_op);
 
@@ -117,7 +114,8 @@ public:
 		if (direct) {
 			WarnOnLargeDirectSolve(fespace->GetTrueVSize());
 			auto operation = Reporter().Start("sparse direct factorization");
-			direct_solver = std::make_unique<SparseDirectSolver>(*matrix);
+			const auto gauge = projector->GaugeConstraint(mfem::Array<int>());
+			direct_solver = std::make_unique<GaugedDirectSolver>(*matrix, *gauge, ess_tdof_list);
 		}
 		else {
 #ifdef MFEM_USE_MPI
@@ -180,11 +178,10 @@ protected:
 
 private:
 	std::unique_ptr<mfem::GridFunction> A;
-	std::unique_ptr<mfem::ConstantCoefficient> regularization;
 	std::unique_ptr<mfem::BilinearForm> a;
 	std::unique_ptr<mfem::LinearForm> b;
 	mfem::OperatorHandle A_op;
-	std::unique_ptr<SparseDirectSolver> direct_solver;
+	std::unique_ptr<GaugedDirectSolver> direct_solver;
 #ifdef MFEM_USE_MPI
 	std::unique_ptr<SerialAmsPreconditioner> ams;  // iterative path
 #endif
@@ -208,7 +205,7 @@ private:
 		if (source) { projector->Project(*b); }
 
 		for (size_t k = 0; k < conductors.size(); ++k) {
-			const double current = ExcitationFor(scenario, conductors[k].Name);
+			const double current = ExcitationFor(scenario, conductors[k].Name).real();
 			if (current != 0.0) { b->Add(current, terminal_loads[k]); }
 		}
 	}

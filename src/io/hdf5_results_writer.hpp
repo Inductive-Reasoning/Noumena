@@ -10,6 +10,7 @@
 #include <highfive/H5File.hpp>
 #include "field_export.hpp"
 #include "probe_sampler.hpp"
+#include "region_loss.hpp"
 #include "../core/problem_config.hpp"
 
 class Hdf5ResultsWriter {
@@ -46,7 +47,8 @@ public:
 
 	void WriteScenario(const std::string& id, const std::string& name,
 		const Scenario& scenario, const FieldExportSet& fields,
-		const std::vector<ProbeSamples>& probes, const std::string& driven_terminal = {}) {
+		const std::vector<ProbeSamples>& probes, const std::string& driven_terminal = {},
+		const std::vector<RegionLoss>& losses = {}) {
 		if (!file_.exist("scenarios")) file_.createGroup("scenarios");
 		auto group = file_.getGroup("scenarios").createGroup(id);
 		group.createAttribute("name", name);
@@ -54,14 +56,16 @@ public:
 		if (scenario.Frequency > 0.0) group.createAttribute("frequency_hz", scenario.Frequency);
 		if (!driven_terminal.empty()) group.createAttribute("driven_terminal", driven_terminal);
 		std::vector<std::string> terminals;
-		std::vector<double> values;
+		std::vector<double> values, phases;
 		for (const auto& excitation : scenario.Excitations) {
 			terminals.push_back(excitation.TerminalName);
 			values.push_back(excitation.Value);
+			phases.push_back(excitation.Phase);
 		}
 		auto excitations = group.createGroup("excitations");
 		excitations.createDataSet("terminal_names", terminals);
 		excitations.createDataSet("values", values);
+		excitations.createDataSet("phases_deg", phases);
 		auto field_group = group.createGroup("fields");
 		mfem::L2_FECollection collection(std::max(0, order_ - 1), mesh_.Dimension());
 		for (const auto& field : fields.Fields()) {
@@ -77,6 +81,18 @@ public:
 			}
 		}
 		if (!probes.empty()) WriteProbes(group.createGroup("probes"), probes);
+		if (!losses.empty()) {
+			// Time-averaged Joule loss of every conducting region [W].
+			std::vector<std::string> names;
+			std::vector<double> power;
+			for (const RegionLoss& loss : losses) {
+				names.push_back(loss.Name);
+				power.push_back(loss.Power);
+			}
+			auto loss_group = group.createGroup("losses");
+			loss_group.createDataSet("region_names", names);
+			loss_group.createDataSet("power_w", power);
+		}
 		file_.flush();
 	}
 
