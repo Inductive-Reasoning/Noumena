@@ -107,8 +107,8 @@ std::string WriteToString(mfem::Mesh& mesh, int order,
 						  gmsh_results::MshVersion version) {
 	const auto path = std::filesystem::temp_directory_path()
 					  / (version == gmsh_results::MshVersion::V4_1
-							 ? "mfem_em_fmt_41.msh"
-							 : "mfem_em_fmt_22.msh");
+							 ? "noumena_fmt_41.msh"
+							 : "noumena_fmt_22.msh");
 	gmsh_results::WriteGmshResults(path.string(), mesh, order, {}, version);
 
 	std::ifstream in(path, std::ios::binary);
@@ -259,7 +259,7 @@ TEST_CASE("Results writer defaults to MSH 2.2", "[gmsh][msh][output]") {
 
 	// Called without a version argument, exactly as existing callers do.
 	const auto path = std::filesystem::temp_directory_path()
-					  / "mfem_em_fmt_default.msh";
+					  / "noumena_fmt_default.msh";
 	gmsh_results::WriteGmshResults(path.string(), mesh, 1, {});
 
 	std::ifstream in(path, std::ios::binary);

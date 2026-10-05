@@ -228,7 +228,7 @@ TEST_CASE("InputParser throws on missing file", "[input_parser]") {
 }
 
 TEST_CASE("InputParser resolves paths relative to the config file", "[input_parser]") {
-    const fs::path directory = fs::temp_directory_path() / "mfem-electromag-parser-test";
+    const fs::path directory = fs::temp_directory_path() / "noumena-parser-test";
     const fs::path config_path = directory / "config.json";
     fs::create_directories(directory);
 
@@ -272,7 +272,7 @@ TEST_CASE("Output directory resolves relative to the configuration", "[input_par
     }
 
     SECTION("absolute path is preserved") {
-        const fs::path results_path = fs::temp_directory_path() / "mfem-electromag-results";
+        const fs::path results_path = fs::temp_directory_path() / "noumena-results";
         test_config["output"]["directory"] = results_path.string();
         InputParser parser(test_config);
         REQUIRE(parser.GetProblemConfig().Output.Directory == results_path);

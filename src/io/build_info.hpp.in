@@ -22,7 +22,7 @@ constexpr const char* kCommit = "@GIT_COMMIT@@GIT_DIRTY@";
 constexpr const char* kBuildDate = __DATE__ " " __TIME__;
 
 inline std::string Describe() {
-	return std::string("mfem-electromag ") + kVersion +
+	return std::string("noumena ") + kVersion +
 		" (commit " + kCommit + ", built " + kBuildDate +
 #ifdef MFEM_USE_MPI
 		", MPI/HYPRE"

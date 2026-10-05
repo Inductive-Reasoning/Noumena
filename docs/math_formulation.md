@@ -1,6 +1,6 @@
 # Mathematical Formulation
 
-This document describes the mathematical formulation for the three physics types supported by MFEM-ElectroMag: Electrostatics, Magnetostatics, and Magnetoquasistatics, all in the axisymmetric coordinate system.
+This document describes the mathematical formulation for the three physics types supported by Noumena: Electrostatics, Magnetostatics, and Magnetoquasistatics, all in the axisymmetric coordinate system.
 
 ## Coordinate System
 

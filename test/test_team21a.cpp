@@ -31,7 +31,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const fs::path kExample = fs::path(MFEM_ELECTROMAG_EXAMPLES) / "team21a";
+const fs::path kExample = fs::path(NOUMENA_EXAMPLES) / "team21a";
 
 // Relative bound on |loss / measured - 1| per slit count (the converged
 // solution is +2.4%, -0.9%, +1.4% and -19%: P21a-3 is low, as the problem's
@@ -46,10 +46,10 @@ TEST_CASE("TEAM 21a stays within its regression bounds of the measurements", "[.
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 21a needs the iterative solver of the MPI build.");
 	}
-#ifndef MFEM_ELECTROMAG_GMSH
+#ifndef NOUMENA_GMSH
 	SKIP("TEAM 21a generates its meshes with Gmsh, which CMake did not find.");
 #else
-	const fs::path work = fs::temp_directory_path() / "mfem_em_team21a";
+	const fs::path work = fs::temp_directory_path() / "noumena_team21a";
 	fs::remove_all(work);
 	fs::create_directories(work);
 	const std::vector<CsvRow> measured = ReadCsvRows(kExample / "measured.csv");
@@ -57,7 +57,7 @@ TEST_CASE("TEAM 21a stays within its regression bounds of the measurements", "[.
 	for (int slits = 0; slits <= 3; ++slits) {
 		INFO("P21a-" << slits);
 		const fs::path mesh_file = work / ("team21a-" + std::to_string(slits) + ".msh");
-		const std::string command = std::string("\"") + MFEM_ELECTROMAG_GMSH + "\" -3 -format msh2 -setnumber slits "
+		const std::string command = std::string("\"") + NOUMENA_GMSH + "\" -3 -format msh2 -setnumber slits "
 			+ std::to_string(slits) + " \"" + (kExample / "team21a.geo").string() + "\" -o \""
 			+ mesh_file.string() + "\" > \"" + (work / "gmsh.log").string() + "\" 2>&1";
 		REQUIRE(std::system(command.c_str()) == 0);

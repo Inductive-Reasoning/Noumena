@@ -1,7 +1,7 @@
-# MFEM-ElectroMag Examples
+# Noumena Examples
 
 This directory contains example problems demonstrating electromagnetic field simulations
-using MFEM-ElectroMag. All use second order (`"order": 2`) elements. The TEAM benchmarks
+using Noumena. All use second order (`"order": 2`) elements. The TEAM benchmarks
 are 3D models; the rest use the axisymmetric (r-z) formulation.
 
 **Units: SI, with mesh coordinates in metres.** Every `.geo` here is written in metres,
@@ -63,10 +63,10 @@ The config path is the only required argument. Relative paths inside the config
 examples can be run from anywhere:
 
 ```bash
-./build/mfem-electromag examples/simple_capacitor/config.json
-./build/mfem-electromag examples/solenoid/config.json
-./build/mfem-electromag examples/current_loop/config.json
-./build/mfem-electromag examples/eddy_current/config.json
+./build/noumena examples/simple_capacitor/config.json
+./build/noumena examples/solenoid/config.json
+./build/noumena examples/current_loop/config.json
+./build/noumena examples/eddy_current/config.json
 ```
 
 Useful options:
@@ -123,8 +123,8 @@ As the frequency goes to zero the magnetoquasistatic curl-curl system loses its
 agree on the same mesh. `current_loop/` exercises this:
 
 ```bash
-./build/mfem-electromag examples/current_loop/config.json              # magnetostatic
-./build/mfem-electromag examples/current_loop/config_mqs_lowfreq.json  # MQS at 0.1 Hz
+./build/noumena examples/current_loop/config.json              # magnetostatic
+./build/noumena examples/current_loop/config_mqs_lowfreq.json  # MQS at 0.1 Hz
 ```
 
 The two configs are identical apart from `physics_type`, the added `frequency`, and the

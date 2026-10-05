@@ -34,7 +34,7 @@ The meshes are not committed; generate them with Gmsh (one per variant):
 ```bash
 cd examples/team21a
 for n in 0 1 2 3; do gmsh -3 -format msh2 -setnumber slits $n team21a.geo -o team21a-$n.msh; done
-for n in 0 1 2 3; do ../../build-mpi/mfem-electromag config-$n.json; done
+for n in 0 1 2 3; do ../../build-mpi/noumena config-$n.json; done
 pip install h5py   # compare.py reads the losses from the HDF5 results
 python3 compare.py
 ```

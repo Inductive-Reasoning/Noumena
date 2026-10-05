@@ -19,7 +19,7 @@ namespace {
 
 struct TemporaryHdf5File {
 	std::filesystem::path path = std::filesystem::temp_directory_path()
-		/ ("mfem_em_hdf5_" + std::to_string(
+		/ ("noumena_hdf5_" + std::to_string(
 			std::chrono::steady_clock::now().time_since_epoch().count()) + ".h5");
 
 	~TemporaryHdf5File() {

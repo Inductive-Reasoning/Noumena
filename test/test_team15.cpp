@@ -32,7 +32,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const fs::path kExample = fs::path(MFEM_ELECTROMAG_EXAMPLES) / "team15";
+const fs::path kExample = fs::path(NOUMENA_EXAMPLES) / "team15";
 
 // The model is the y >= 0 half of problem 1's winding.
 constexpr double kScale = 2.0;
@@ -77,10 +77,10 @@ TEST_CASE("TEAM 15 stays within its regression bounds of the measurements", "[.]
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 15 needs the iterative solver of the MPI build.");
 	}
-#ifndef MFEM_ELECTROMAG_GMSH
+#ifndef NOUMENA_GMSH
 	SKIP("TEAM 15 generates its meshes with Gmsh, which CMake did not find.");
 #else
-	const fs::path work = fs::temp_directory_path() / "mfem_em_team15";
+	const fs::path work = fs::temp_directory_path() / "noumena_team15";
 	fs::remove_all(work);
 	fs::create_directories(work);
 	const std::vector<CsvRow> measured = ReadCsvRows(kExample / "measured.csv");
@@ -89,7 +89,7 @@ TEST_CASE("TEAM 15 stays within its regression bounds of the measurements", "[.]
 		INFO("x = " << x_mm << " mm");
 		const double x = x_mm / 1000.0;
 		const fs::path mesh_file = work / "team15.msh";
-		const std::string command = std::string("\"") + MFEM_ELECTROMAG_GMSH
+		const std::string command = std::string("\"") + NOUMENA_GMSH
 			+ "\" -3 -format msh2 -setnumber problem 1 -setnumber X " + std::to_string(x) + " \""
 			+ (kExample / "team15.geo").string() + "\" -o \"" + mesh_file.string() + "\" > \""
 			+ (work / "gmsh.log").string() + "\" 2>&1";

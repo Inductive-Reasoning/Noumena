@@ -17,10 +17,10 @@
 # imported as STRUMPACK::strumpack. To use an existing installation instead,
 # set STRUMPACK_ROOT to its prefix.
 #
-# Sets ELECTROMAG_HAVE_STRUMPACK.
+# Sets NOUMENA_HAVE_STRUMPACK.
 
-set(ELECTROMAG_STRUMPACK_VERSION "v8.0.0" CACHE STRING "STRUMPACK release built when STRUMPACK_ROOT is not set")
-set(ELECTROMAG_HAVE_STRUMPACK OFF)
+set(NOUMENA_STRUMPACK_VERSION "v8.0.0" CACHE STRING "STRUMPACK release built when STRUMPACK_ROOT is not set")
+set(NOUMENA_HAVE_STRUMPACK OFF)
 
 include(CheckLanguage)
 check_language(Fortran)
@@ -36,9 +36,9 @@ find_package(LAPACK QUIET)  # finds BLAS too
 if(METIS_DIR AND EXISTS "${METIS_DIR}")
     list(APPEND CMAKE_PREFIX_PATH "${METIS_DIR}")
 endif()
-find_path(ELECTROMAG_METIS_INCLUDE_DIR metis.h)
-find_library(ELECTROMAG_METIS_LIBRARY metis)
-if(NOT LAPACK_FOUND OR NOT ELECTROMAG_METIS_INCLUDE_DIR OR NOT ELECTROMAG_METIS_LIBRARY)
+find_path(NOUMENA_METIS_INCLUDE_DIR metis.h)
+find_library(NOUMENA_METIS_LIBRARY metis)
+if(NOT LAPACK_FOUND OR NOT NOUMENA_METIS_INCLUDE_DIR OR NOT NOUMENA_METIS_LIBRARY)
     message(WARNING "USE_STRUMPACK: STRUMPACK needs BLAS/LAPACK and METIS 5 (set METIS_DIR "
         "to its prefix), and they were not all found, so it is not used and the direct MQS "
         "solve falls back to Eigen's much slower SparseLU.")
@@ -52,13 +52,13 @@ if(NOT STRUMPACK_ROOT)
         set(_strumpack_openmp OFF)
     endif()
     set(_strumpack_prefix "${CMAKE_BINARY_DIR}/tpl/strumpack")
-    set(_strumpack_stamp "${_strumpack_prefix}/.built-${ELECTROMAG_STRUMPACK_VERSION}-openmp-${_strumpack_openmp}")
+    set(_strumpack_stamp "${_strumpack_prefix}/.built-${NOUMENA_STRUMPACK_VERSION}-openmp-${_strumpack_openmp}")
     if(NOT EXISTS "${_strumpack_stamp}")
-        message(STATUS "Building STRUMPACK ${ELECTROMAG_STRUMPACK_VERSION} (one-time, at configure)...")
+        message(STATUS "Building STRUMPACK ${NOUMENA_STRUMPACK_VERSION} (one-time, at configure)...")
         FetchContent_Declare(
             strumpack
             GIT_REPOSITORY https://github.com/pghysels/STRUMPACK.git
-            GIT_TAG        ${ELECTROMAG_STRUMPACK_VERSION}
+            GIT_TAG        ${NOUMENA_STRUMPACK_VERSION}
             GIT_SHALLOW    TRUE
             GIT_PROGRESS   TRUE
             SOURCE_SUBDIR  do-not-configure-strumpack  # built below, not added
@@ -110,11 +110,11 @@ if(NOT STRUMPACK_ROOT)
             message(FATAL_ERROR "Building STRUMPACK failed (see output above). "
                 "Configure with -DUSE_STRUMPACK=OFF to build without it.")
         endif()
-        file(WRITE "${_strumpack_stamp}" "${ELECTROMAG_STRUMPACK_VERSION}\n")
+        file(WRITE "${_strumpack_stamp}" "${NOUMENA_STRUMPACK_VERSION}\n")
     endif()
     set(STRUMPACK_ROOT "${_strumpack_prefix}")
 endif()
 
 find_package(STRUMPACK CONFIG REQUIRED)
 message(STATUS "STRUMPACK: ${STRUMPACK_DIR}")
-set(ELECTROMAG_HAVE_STRUMPACK ON)
+set(NOUMENA_HAVE_STRUMPACK ON)

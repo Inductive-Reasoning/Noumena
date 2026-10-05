@@ -26,7 +26,7 @@ needs no special treatment: the plate is simply a conductor with a hole.
 ## Running
 
 ```bash
-./build-mpi/mfem-electromag examples/team7/config.json   # MPI build: iterative solver
+./build-mpi/noumena examples/team7/config.json   # MPI build: iterative solver
 python3 examples/team7/compare.py                         # computed vs measured
 ```
 

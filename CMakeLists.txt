@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18) # HDF5 requires 3.18+
-project(MFEM-ElectroMag VERSION 0.1.0 LANGUAGES C CXX)
+project(Noumena VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -98,10 +98,10 @@ endif()
 # This creates the 'mfem' target available for linking.
 # EXCLUDE_FROM_ALL above keeps MFEM out of the default build set so Visual
 # Studio's Output window isn't dominated by MFEM compile messages; the 'mfem'
-# library is still built on demand when mfem-electromag links it.
+# library is still built on demand when noumena links it.
 FetchContent_MakeAvailable(mfem)
 if(USE_MPI)
-    electromag_wrap_build_tree_tpl_includes(mfem)
+    noumena_wrap_build_tree_tpl_includes(mfem)
 endif()
 
 # Eigen supplies the sparse Cholesky (SimplicialLDLT) behind the "direct"
@@ -211,30 +211,30 @@ if(USE_STRUMPACK)
 endif()
 
 # Links STRUMPACK into a target, and tells its code so, when the build has it.
-function(electromag_link_strumpack target)
-    if(ELECTROMAG_HAVE_STRUMPACK)
+function(noumena_link_strumpack target)
+    if(NOUMENA_HAVE_STRUMPACK)
         target_link_libraries(${target} PRIVATE STRUMPACK::strumpack)
-        target_compile_definitions(${target} PRIVATE MFEM_ELECTROMAG_STRUMPACK)
+        target_compile_definitions(${target} PRIVATE NOUMENA_STRUMPACK)
     endif()
 endfunction()
 
-add_executable(mfem-electromag src/main.cpp)
-electromag_link_strumpack(mfem-electromag)
-target_link_libraries(mfem-electromag PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
+add_executable(noumena src/main.cpp)
+noumena_link_strumpack(noumena)
+target_link_libraries(noumena PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
 if(USE_MPI)
-    target_link_libraries(mfem-electromag PRIVATE MPI::MPI_CXX)
+    target_link_libraries(noumena PRIVATE MPI::MPI_CXX)
 endif()
 
 # main.cpp instantiates every solver and writer through heavily templated MFEM
 # and nlohmann/json code, which exceeds the default COFF section limit (65279)
 # and fails with C1128. /bigobj raises it; it has no runtime cost.
 if(MSVC)
-    target_compile_options(mfem-electromag PRIVATE /bigobj)
+    target_compile_options(noumena PRIVATE /bigobj)
 endif()
 
 # Project headers are included by bare name ("physics_solver.hpp"), so that
 # neither src/ nor test/ depends on the relative path between them.
-target_include_directories(mfem-electromag PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(noumena PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # Build identity banner: regenerate build_info.hpp on every build so a stale
 # executable is obvious at runtime. GenerateBuildInfo.cmake uses configure_file,
@@ -251,14 +251,14 @@ add_custom_target(build_info ALL
     COMMENT "Generating build info header"
     VERBATIM
 )
-add_dependencies(mfem-electromag build_info)
-target_include_directories(mfem-electromag PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(noumena build_info)
+target_include_directories(noumena PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
 # OpenMP support
 if(USE_OPENMP)
     find_package(OpenMP)
     if(OpenMP_CXX_FOUND)
-        target_link_libraries(mfem-electromag PRIVATE OpenMP::OpenMP_CXX)
+        target_link_libraries(noumena PRIVATE OpenMP::OpenMP_CXX)
         message(STATUS "OpenMP found and enabled. Use OMP_NUM_THREADS to control parallelism.")
     else()
         message(WARNING "OpenMP requested but not found. Building without OpenMP support.")
@@ -320,7 +320,7 @@ if(BUILD_TESTING)
     # The test runner supplies its own main (test_main.cpp) so an MPI build
     # can initialize MPI and HYPRE around the Catch2 session.
     target_link_libraries(mfem_tests PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2)
-    electromag_link_strumpack(mfem_tests)
+    noumena_link_strumpack(mfem_tests)
     if(USE_MPI)
         target_link_libraries(mfem_tests PRIVATE MPI::MPI_CXX)
     endif()
@@ -331,16 +331,16 @@ if(BUILD_TESTING)
     target_include_directories(mfem_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
     # Committed test inputs (meshes and the Gmsh scripts that generate them).
     target_compile_definitions(mfem_tests PRIVATE
-        MFEM_ELECTROMAG_TEST_DATA="${CMAKE_SOURCE_DIR}/test/data"
-        MFEM_ELECTROMAG_EXAMPLES="${CMAKE_SOURCE_DIR}/examples")
+        NOUMENA_TEST_DATA="${CMAKE_SOURCE_DIR}/test/data"
+        NOUMENA_EXAMPLES="${CMAKE_SOURCE_DIR}/examples")
     # Gmsh, for the on-demand benchmarks whose meshes are generated rather
     # than committed (they skip without it).
     find_program(GMSH_EXECUTABLE gmsh)
     if(GMSH_EXECUTABLE)
-        target_compile_definitions(mfem_tests PRIVATE MFEM_ELECTROMAG_GMSH="${GMSH_EXECUTABLE}")
+        target_compile_definitions(mfem_tests PRIVATE NOUMENA_GMSH="${GMSH_EXECUTABLE}")
     endif()
 
-    # Same COFF section limit as mfem-electromag: the solver test translation
+    # Same COFF section limit as noumena: the solver test translation
     # units instantiate the full solver/writer stack.
     if(MSVC)
         target_compile_options(mfem_tests PRIVATE /bigobj)

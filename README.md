@@ -1,6 +1,8 @@
-# MFEM-ElectroMag
+# Noumena
 
 A finite element solver for electromagnetic problems using MFEM (Modular Finite Element Methods). This solver supports electrostatic, magnetostatic, and magnetoquasistatic problems in axisymmetric and planar 2D geometries and in full 3D.
+
+Noumena is an independent project built on MFEM; it is not affiliated with or endorsed by the MFEM team or LLNL.
 
 ## Features
 
@@ -63,8 +65,8 @@ sudo apt-get install -y cmake g++ git
 sudo apt-get install -y gfortran libopenblas-dev libmetis-dev
 
 # Clone the repository
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 
 # Build
 mkdir build
@@ -80,8 +82,8 @@ make -j$(nproc)
 brew install cmake git
 
 # Clone the repository
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 
 # Build
 mkdir build
@@ -99,8 +101,8 @@ Using Visual Studio:
 # Download from: https://cmake.org/download/ and https://git-scm.com/
 
 # Clone the repository
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 
 # Create build directory
 mkdir build
@@ -122,8 +124,8 @@ Using MinGW/MSYS2:
 pacman -S mingw-w64-x86_64-cmake mingw-w64-x86_64-gcc git
 
 # Clone and build
-git clone https://github.com/xfmrexpert/MFEM-ElectroMag.git
-cd MFEM-ElectroMag
+git clone https://github.com/xfmrexpert/Noumena.git
+cd Noumena
 mkdir build
 cd build
 cmake .. -G "MinGW Makefiles"
@@ -188,23 +190,23 @@ faster than on one (168 s against 428 s).
 
 Under `mpirun`, Open MPI binds a rank to one core, which leaves every thread
 sharing it. Run the executable directly, or pass `--bind-to none`
-(`mpirun --bind-to none -np 1 ./mfem-electromag config.json`).
+(`mpirun --bind-to none -np 1 ./noumena config.json`).
 
 ## Usage
 
-After building, the executable `mfem-electromag` will be in the `build` directory:
+After building, the executable `noumena` will be in the `build` directory:
 
 ```bash
 # Run with a configuration file
-./mfem-electromag path/to/config.json
+./noumena path/to/config.json
 
 # Example: the shipped examples (see examples/README.md)
-./mfem-electromag ../examples/simple_capacitor/config.json
-./mfem-electromag ../examples/solenoid/config.json
-./mfem-electromag ../examples/eddy_current/config.json
+./noumena ../examples/simple_capacitor/config.json
+./noumena ../examples/solenoid/config.json
+./noumena ../examples/eddy_current/config.json
 
 # Run with OpenMP parallelism (if enabled)
-OMP_NUM_THREADS=4 ./mfem-electromag config.json
+OMP_NUM_THREADS=4 ./noumena config.json
 ```
 
 ### Command-Line Options

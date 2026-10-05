@@ -57,7 +57,7 @@
 // refactoring at a new frequency redoes only the numerical factorization.
 class ComplexDirectSolver : public mfem::Solver {
 public:
-#ifdef MFEM_ELECTROMAG_STRUMPACK
+#ifdef NOUMENA_STRUMPACK
 	static constexpr bool kUsesStrumpack = true;
 	// Complex unknowns of a 3D system above which the factorization is large:
 	// 33k took a second and 0.4 GB, and the factors of a 3D mesh grow like

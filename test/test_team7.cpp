@@ -31,7 +31,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const fs::path kExample = fs::path(MFEM_ELECTROMAG_EXAMPLES) / "team7";
+const fs::path kExample = fs::path(NOUMENA_EXAMPLES) / "team7";
 
 // A table's probe, the field component it compares, and the factor from SI
 // to the table's unit.
@@ -46,7 +46,7 @@ TEST_CASE("TEAM 7 stays within its regression bounds of the measurements", "[.][
 	if (!parallel::Enabled()) {
 		SKIP("TEAM 7 needs the iterative solver of the MPI build.");
 	}
-	const fs::path output = fs::temp_directory_path() / "mfem_em_team7";
+	const fs::path output = fs::temp_directory_path() / "noumena_team7";
 	fs::remove_all(output);
 
 	std::ifstream file(kExample / "config.json");

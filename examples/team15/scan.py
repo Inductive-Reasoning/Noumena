@@ -57,7 +57,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("problem", type=int, choices=(1, 2))
     parser.add_argument("--step", type=float, help="position step in mm (default: the measured positions)")
-    parser.add_argument("--solver", default=str(HERE.parent.parent / "build-mpi" / "mfem-electromag"))
+    parser.add_argument("--solver", default=str(HERE.parent.parent / "build-mpi" / "noumena"))
     parser.add_argument("--gmsh", default="gmsh")
     args = parser.parse_args()
 

@@ -20,7 +20,7 @@
 # source portably is awkward: its CMake needs a generated include directory,
 # does not install under MSVC, and needs GKlib linked alongside it.)
 
-set(ELECTROMAG_HYPRE_VERSION "v3.0.0" CACHE STRING "HYPRE release built when HYPRE_DIR is not set")
+set(NOUMENA_HYPRE_VERSION "v3.0.0" CACHE STRING "HYPRE release built when HYPRE_DIR is not set")
 
 find_package(MPI REQUIRED COMPONENTS C CXX)
 
@@ -37,13 +37,13 @@ endif()
 set(_hypre_bundled "${CMAKE_BINARY_DIR}/tpl/hypre")
 if(NOT HYPRE_DIR OR HYPRE_DIR STREQUAL _hypre_bundled)
     set(_hypre_prefix "${_hypre_bundled}")
-    set(_hypre_stamp "${_hypre_prefix}/.built-${ELECTROMAG_HYPRE_VERSION}-openmp-${_hypre_openmp}")
+    set(_hypre_stamp "${_hypre_prefix}/.built-${NOUMENA_HYPRE_VERSION}-openmp-${_hypre_openmp}")
     if(NOT EXISTS "${_hypre_stamp}")
-        message(STATUS "Building HYPRE ${ELECTROMAG_HYPRE_VERSION} (one-time, at configure)...")
+        message(STATUS "Building HYPRE ${NOUMENA_HYPRE_VERSION} (one-time, at configure)...")
         FetchContent_Declare(
             hypre
             GIT_REPOSITORY https://github.com/hypre-space/hypre.git
-            GIT_TAG        ${ELECTROMAG_HYPRE_VERSION}
+            GIT_TAG        ${NOUMENA_HYPRE_VERSION}
             GIT_SHALLOW    TRUE
             GIT_PROGRESS   TRUE
             SOURCE_SUBDIR  do-not-configure-hypre  # built below, not added
@@ -85,7 +85,7 @@ if(NOT HYPRE_DIR OR HYPRE_DIR STREQUAL _hypre_bundled)
         if(NOT _hypre_result EQUAL 0)
             message(FATAL_ERROR "Building HYPRE failed (see output above).")
         endif()
-        file(WRITE "${_hypre_stamp}" "${ELECTROMAG_HYPRE_VERSION}\n")
+        file(WRITE "${_hypre_stamp}" "${NOUMENA_HYPRE_VERSION}\n")
     endif()
     set(HYPRE_DIR "${_hypre_prefix}" CACHE PATH "HYPRE installation prefix" FORCE)
 endif()
@@ -111,7 +111,7 @@ set(MFEM_USE_MPI ON CACHE BOOL "Build MFEM with MPI" FORCE)
 # after MFEM has been added the build-tree TPL include paths are wrapped in
 # $<BUILD_INTERFACE:...>: they still apply to everything built here, and the
 # install export no longer sees them.
-function(electromag_wrap_build_tree_tpl_includes target)
+function(noumena_wrap_build_tree_tpl_includes target)
     get_target_property(_dirs ${target} INTERFACE_INCLUDE_DIRECTORIES)
     if(NOT _dirs)
         return()

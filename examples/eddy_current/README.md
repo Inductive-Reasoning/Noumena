@@ -75,7 +75,7 @@ cmake -S . -B build
 cmake --build build --config Release
 
 # Run simulation
-./build/mfem-electromag examples/eddy_current/config.json
+./build/noumena examples/eddy_current/config.json
 ```
 
 This config does **not** enable file output. Add a top-level `output` block:

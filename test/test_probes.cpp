@@ -131,7 +131,7 @@ TEST_CASE("A probe line spans its ends evenly", "[probes][input_parser]") {
 // the archive; a point on the interface takes the values of the side its
 // entity group names, and is rejected outside it.
 TEST_CASE("Probes sample the exported fields at their points", "[probes][solvers]") {
-	const fs::path directory = fs::temp_directory_path() / "mfem_em_probes";
+	const fs::path directory = fs::temp_directory_path() / "noumena_probes";
 	fs::remove_all(directory);
 	const json probes = json::array({
 		{{"name", "column"}, {"line", {{"from", {0.3, 0.1}}, {"to", {0.3, 0.9}}, {"count", 4}}}},

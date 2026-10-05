@@ -27,7 +27,7 @@ namespace gmsh_fixture {
 /// named @p name; Gmsh's log is kept there only if it fails.
 inline std::unique_ptr<mfem::Mesh> Mesh(const std::string& name, const std::string& geo,
 										int dimension, int order) {
-#ifndef MFEM_ELECTROMAG_GMSH
+#ifndef NOUMENA_GMSH
 	(void)name; (void)geo; (void)dimension; (void)order;
 	SKIP("This test generates its mesh with Gmsh, which CMake did not find.");
 	return nullptr;
@@ -35,12 +35,12 @@ inline std::unique_ptr<mfem::Mesh> Mesh(const std::string& name, const std::stri
 	namespace fs = std::filesystem;
 	// Per process, so tests run in parallel do not share files.
 	static const fs::path work = fs::temp_directory_path() /
-		("mfem_em_gmsh_" + std::to_string(std::random_device{}()));
+		("noumena_gmsh_" + std::to_string(std::random_device{}()));
 	fs::create_directories(work);
 	const fs::path script = work / (name + ".geo"), mesh = work / (name + ".msh"),
 				   log = work / (name + ".log");
 	std::ofstream(script) << geo;
-	const std::string command = std::string("\"") + MFEM_ELECTROMAG_GMSH + "\" -" +
+	const std::string command = std::string("\"") + NOUMENA_GMSH + "\" -" +
 		std::to_string(dimension) + " -order " + std::to_string(order) +
 		" -format msh2 \"" + script.string() + "\" -o \"" + mesh.string() + "\" > \"" +
 		log.string() + "\" 2>&1";

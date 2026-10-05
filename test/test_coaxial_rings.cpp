@@ -47,7 +47,7 @@ constexpr double kCopper = 5.8e7;
 constexpr double kQuadrants = 4.0;
 
 std::string DataFile(const std::string& name) {
-	return std::string(MFEM_ELECTROMAG_TEST_DATA) + "/" + name;
+	return std::string(NOUMENA_TEST_DATA) + "/" + name;
 }
 
 enum class Wall { FluxTangent, FluxNormal };  // n x A = 0, n x H = 0

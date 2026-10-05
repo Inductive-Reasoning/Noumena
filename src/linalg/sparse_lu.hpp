@@ -14,7 +14,7 @@
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
 
-#ifdef MFEM_ELECTROMAG_STRUMPACK
+#ifdef NOUMENA_STRUMPACK
 #include <StrumpackSparseSolver.hpp>
 #endif
 
@@ -157,7 +157,7 @@ public:
 	/// Factor @p A, reusing the previous factorization's analysis when its
 	/// sparsity pattern is unchanged.
 	void Factor(const CsrMatrix<T>& A) {
-#ifdef MFEM_ELECTROMAG_STRUMPACK
+#ifdef NOUMENA_STRUMPACK
 		const bool same_pattern = solver && A.row_ptr == row_ptr && A.col == col;
 		n = A.n;
 		row_ptr = A.row_ptr;
@@ -199,7 +199,7 @@ public:
 	/// x = A^-1 b for @p count right-hand sides of length n stored one after
 	/// another.
 	void Solve(const T* b, T* x, int count) const {
-#ifdef MFEM_ELECTROMAG_STRUMPACK
+#ifdef NOUMENA_STRUMPACK
 		const strumpack::ReturnCode status = solver->solve(count, b, n, x, n);
 		MFEM_VERIFY(status == strumpack::ReturnCode::SUCCESS,
 			"STRUMPACK solve failed (return code " << static_cast<int>(status) << ").");
@@ -216,7 +216,7 @@ public:
 
 private:
 	int n = 0;
-#ifdef MFEM_ELECTROMAG_STRUMPACK
+#ifdef NOUMENA_STRUMPACK
 	std::vector<int> row_ptr, col;  // pattern of the last factorization
 	std::unique_ptr<strumpack::SparseSolver<T, int>> solver;
 #else

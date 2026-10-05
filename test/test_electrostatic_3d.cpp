@@ -51,7 +51,7 @@ TwoSphereCapacitance Lekner(double a, double b, double c) {
 // (second-order curved tetrahedra; see two_spheres.geo).
 constexpr double kA = 0.01, kB = 0.02, kC = 0.05, kFarField = 0.25;
 
-std::string TwoSphereMesh() { return std::string(MFEM_ELECTROMAG_TEST_DATA) + "/two_spheres.msh"; }
+std::string TwoSphereMesh() { return std::string(NOUMENA_TEST_DATA) + "/two_spheres.msh"; }
 
 json TwoSphereConfig(int order, const std::string& linear_solver, const json& far_field) {
 	return json{
