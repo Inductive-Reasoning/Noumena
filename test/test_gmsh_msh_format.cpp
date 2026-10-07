@@ -272,6 +272,44 @@ TEST_CASE("Results writer defaults to MSH 2.2", "[gmsh][msh][output]") {
 	REQUIRE_FALSE(Contains(out, "$Entities"));
 }
 
+TEST_CASE("Results writer keys interpolation schemes by element family",
+		  "[gmsh][msh][output]") {
+	// Gmsh keys a scheme by the element family (3 for triangles), not by the
+	// element type (9 for the 6-node triangle, 2 for the 3-node one, which is
+	// the family of lines); Gmsh itself writes a triangle scheme under 3.
+	mfem::Mesh mesh = LoadMsh(kMsh22);
+	const std::string out = WriteToString(mesh, 2, gmsh_results::MshVersion::V2_2);
+	REQUIRE(Contains(out, "$InterpolationScheme\n\"MFEM_Lagrange_P2\"\n1\n3\n2\n"));
+}
+
+TEST_CASE("Results writer writes coordinates exactly and reuses the mesh block",
+		  "[gmsh][msh][output]") {
+	mfem::Mesh mesh = LoadMsh(kMsh22);
+	// Far from the origin a fixed 10 digits would lose the 1e-7 offset.
+	mesh.Transform([](const mfem::Vector& x, mfem::Vector& y) {
+		y = x;
+		y(0) += 1000.0000001;
+	});
+	const std::string first = WriteToString(mesh, 1, gmsh_results::MshVersion::V2_2);
+	REQUIRE(Contains(first, " 1000.0000001 "));
+
+	const auto path = std::filesystem::temp_directory_path() / "noumena_fmt_cached.msh";
+	gmsh_results::MeshExport cache;
+	for (int pass = 0; pass < 2; ++pass) {
+		gmsh_results::WriteGmshResults(path.string(), mesh, 1, {},
+									   gmsh_results::MshVersion::V2_2, &cache);
+		std::ifstream in(path, std::ios::binary);
+		std::ostringstream ss;
+		ss << in.rdbuf();
+		REQUIRE(ss.str() == first);
+	}
+	mesh.UniformRefinement();  // a new sequence: the cache is rebuilt
+	gmsh_results::WriteGmshResults(path.string(), mesh, 1, {},
+								   gmsh_results::MshVersion::V2_2, &cache);
+	REQUIRE(cache.sequence == mesh.GetSequence());
+	REQUIRE(static_cast<int>(cache.nodes.elem_nodes.size()) == mesh.GetNE());
+}
+
 TEST_CASE("MSH 4.1 output carries attributes as entity physical tags", "[gmsh][msh][output]") {
 	mfem::Mesh mesh = LoadMsh(kMsh22);
 	const std::string out =

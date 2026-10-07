@@ -137,13 +137,15 @@ public:
 		}
 
 		gmsh_results::WriteGmshResults(out_path.string(), mesh, order, views,
-									   gmsh_version);
+									   gmsh_version, &gmsh_mesh);
 		Reporter().Diagnostic("Wrote " + out_path.string());
 	}
 
 private:
 	mfem::Mesh& mesh;
 	int solution_order;
+	// The mesh-side part of the Gmsh files, shared by every scenario on a mesh.
+	mutable gmsh_results::MeshExport gmsh_mesh;
 
 	StatusReporter& Reporter() const {
 		return StatusReporter::Global();
