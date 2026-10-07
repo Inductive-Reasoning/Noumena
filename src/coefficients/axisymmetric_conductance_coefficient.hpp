@@ -19,7 +19,7 @@ public:
     explicit AxisymmetricConductanceCoeff(mfem::Coefficient& sigma)
         : conductivity(sigma) { }
 
-    virtual double Eval(mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip) override
+    virtual mfem::real_t Eval(mfem::ElementTransformation &T, const mfem::IntegrationPoint &ip) override
     {
         T.SetIntPoint(&ip);
         mfem::Vector transip;

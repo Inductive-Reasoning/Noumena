@@ -13,7 +13,7 @@
 #include "radial_quadrature.hpp"
 
 /**
- * @brief Thread-safe axisymmetric curl-curl bilinear form integrator for magnetostatics
+ * @brief Axisymmetric curl-curl bilinear form integrator for magnetostatics
  *        with A = A_phi(r,z) e_phi.
  *
  * Assembles, with the full axisymmetric measure (see axisymmetric_measure.hpp):
@@ -30,7 +30,9 @@
  *   (r_min > 0) need no axis condition at all.
  *
  * Notes:
- *   - This class is THREAD-SAFE: all scratch storage is local to AssembleElementMatrix().
+ *   - Assembly keeps its scratch storage local, but the axis-aware quadrature
+ *     (axisym::RadialRule) mutates the element transformation and fills MFEM's
+ *     global rule caches, so elements must not be assembled concurrently.
  *   - Assembly does NOT clamp r. Standard interior quadrature keeps r > 0 even for
  *     elements touching the axis, so a zero radius there signals a bad custom rule
  *     or a bad mesh and is reported rather than papered over. The 1/r term must be
@@ -90,7 +92,7 @@ public:
       elmat.SetSize(ndof);
       elmat = 0.0;
 
-      // Thread-safe scratch (local)
+      // Scratch storage, local to this call
       mfem::Vector      shape(ndof);
       mfem::DenseMatrix dshape_ref(ndof, dim);
       mfem::DenseMatrix dshape_phys(ndof, dim);
@@ -168,7 +170,7 @@ public:
        mfem::Vector& u,
        const mfem::FiniteElement& flux_elem,
        mfem::Vector& flux,
-       bool with_coef = false,
+       bool with_coef = true,  // the base class's default
        const mfem::IntegrationRule* ir = nullptr) override
    {
        const int ndof = el.GetDof();
@@ -233,6 +235,12 @@ public:
    // Returns mfem::real_t to match the base class declaration exactly; see the
    // note on AxisymmetricDiffusionIntegrator::ComputeFluxEnergy for why a
    // double here would silently stop overriding in a single-precision build.
+   //
+   // The energy is integral nu |flux|^2 r: it takes the flux of B, as from
+   // ComputeElementFlux with with_coef = false, the convention of MFEM's
+   // DiffusionIntegrator (Q |flux|^2), so an estimator using it calls
+   // SetWithCoeff(false). Anisotropic estimation is not supported: d_energy
+   // comes back zero.
    mfem::real_t ComputeFluxEnergy(const mfem::FiniteElement& flux_elem,
        mfem::ElementTransformation& Trans,
        mfem::Vector& flux,
@@ -261,7 +269,8 @@ public:
 
        if (d_energy)
        {
-           d_energy->SetSize(0);
+           d_energy->SetSize(space_dim);
+           *d_energy = 0.0;
        }
 
        mfem::real_t energy = 0.0;
