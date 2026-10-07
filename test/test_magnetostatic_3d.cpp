@@ -422,6 +422,115 @@ TEST_CASE("The 3D direct solve imposes the discrete Coulomb gauge exactly",
 	REQUIRE(solver.FluxLinkages()[0] == Catch::Approx(2.0 * solver.MagneticEnergy()).epsilon(1e-10));
 }
 
+// When the n x A = 0 boundary falls into separate pieces (here the bottom and
+// top faces of a cube, the sides being n x H = 0), a potential that is 1 on
+// one piece and 0 on the other has a gradient curl-curl annihilates too. The
+// projection must remove it from a load, and the gauge must constrain it, or
+// the gauged direct system is singular. A conductor touching both pieces
+// joins them, since its potential is one constant.
+TEST_CASE("A n x A = 0 boundary in separate pieces is projected and gauged",
+		  "[solvers][magnetostatic][3d][gauge]") {
+	mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(3, 3, 3, mfem::Element::HEXAHEDRON);
+	mfem::ND_FECollection nd_fec(2, 3);
+	mfem::FiniteElementSpace nd(&mesh, &nd_fec);
+	mfem::Array<int> ess_bdr(mesh.bdr_attributes.Max());
+	ess_bdr = 0;
+	ess_bdr[0] = 1;  // z = 0
+	ess_bdr[5] = 1;  // z = 1
+	DivergenceFreeProjector projector(nd, ess_bdr);
+
+	// The gradient of z: 0 on the bottom, 1 on the top.
+	mfem::H1_FECollection h1_fec(2, 3);
+	mfem::FiniteElementSpace h1(&mesh, &h1_fec);
+	mfem::GridFunction z(&h1);
+	mfem::FunctionCoefficient height([](const mfem::Vector& x) { return x(2); });
+	z.ProjectCoefficient(height);
+	mfem::DiscreteLinearOperator gradient(&h1, &nd);
+	gradient.AddDomainInterpolator(new mfem::GradientInterpolator);
+	gradient.Assemble();
+	gradient.Finalize();
+	mfem::Vector grad_z(nd.GetVSize());
+	gradient.Mult(z, grad_z);
+	mfem::ConstantCoefficient one(1.0);
+	mfem::BilinearForm mass(&nd);
+	mass.AddDomainIntegrator(new mfem::VectorFEMassIntegrator(one));
+	mass.Assemble();
+	mass.Finalize();
+
+	SECTION("the projection removes the gradient of a wall-piece potential") {
+		mfem::Vector load(nd.GetVSize());
+		mass.Mult(grad_z, load);
+		const double norm = load.Norml2();
+		REQUIRE(projector.GradientResidual(load) > 1e-3 * norm);
+		projector.Project(load);
+		INFO("left " << load.Norml2() / norm);
+		REQUIRE(load.Norml2() < 1e-8 * norm);
+	}
+
+	SECTION("the gauged direct system is nonsingular") {
+		mfem::Array<int> ess_tdofs;
+		nd.GetEssentialTrueDofs(ess_bdr, ess_tdofs);
+		mfem::BilinearForm curl_curl(&nd);
+		curl_curl.AddDomainIntegrator(new mfem::CurlCurlIntegrator(one));
+		curl_curl.Assemble();
+		mfem::SparseMatrix K;
+		curl_curl.FormSystemMatrix(ess_tdofs, K);
+
+		// A balanced load: a uniform current along x, projected.
+		mfem::Vector x_hat(3);
+		x_hat = 0.0;
+		x_hat(0) = 1.0;
+		mfem::VectorConstantCoefficient current(x_hat);
+		mfem::LinearForm source(&nd);
+		source.AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(current));
+		source.Assemble();
+		mfem::Vector b(source);
+		projector.Project(b);
+		for (int d : ess_tdofs) { b(d) = 0.0; }
+
+		GaugedDirectSolver solver(K, *projector.GaugeConstraint(mfem::Array<int>()), ess_tdofs);
+		mfem::Vector A(nd.GetVSize()), r(nd.GetVSize()), MA(nd.GetVSize());
+		solver.Mult(b, A);
+		K.Mult(A, r);
+		r -= b;
+		mass.Mult(A, MA);
+		INFO("residual " << r.Norml2() / b.Norml2() << ", gauge " << projector.GradientResidual(MA) / MA.Norml2());
+		REQUIRE(r.Norml2() < 1e-10 * b.Norml2());
+		REQUIRE(projector.GradientResidual(MA) < 1e-10 * MA.Norml2());
+		REQUIRE(std::abs(MA * grad_z) < 1e-10 * MA.Norml2() * grad_z.Norml2());
+	}
+
+	SECTION("a conductor touching both pieces joins them") {
+		mfem::Array<int> none(mesh.attributes.Max()), all(mesh.attributes.Max());
+		none = 0;
+		all = 1;
+		mfem::Array<int> ess_h1;
+		h1.GetEssentialTrueDofs(ess_bdr, ess_h1);
+		// Without conductors: every DOF off the walls, plus the top piece.
+		REQUIRE(projector.GaugeConstraint(none)->Width() == h1.GetVSize() - ess_h1.Size() + 1);
+		// One conductor filling the cube is grounded to both: no multiplier.
+		REQUIRE(projector.GaugeConstraint(all)->Width() == 0);
+	}
+}
+
+// A coupling column is the response to its terminal alone: a programmatic
+// source (here a uniform current) is background and stays out of L.
+TEST_CASE("3D coupling runs ignore the programmatic source",
+		  "[solvers][magnetostatic][3d][coupling]") {
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	const double clean = Inductance3D(spec, 16, 1)[0][0];
+
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(MakeAnnulusConfig(spec, true, 1), "ms3d_bg.h5"));
+	mfem::Vector z_hat(3);
+	z_hat = 0.0;
+	z_hat(2) = 1.0e6;
+	mfem::VectorConstantCoefficient background(z_hat);
+	solver.SetSourceCurrentDensity(&background);
+	REQUIRE(SolveInductance(solver, "ms3d_bg.h5")[0][0] == Catch::Approx(clean).epsilon(1e-12));
+}
+
 // A closed coil described by a cut must carry the same current as the same
 // coil described analytically: the conduction potential of a coil of
 // revolution is theta / (2 pi), so its direction is phi-hat and its

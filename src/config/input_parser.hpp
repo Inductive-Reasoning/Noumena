@@ -586,11 +586,11 @@ private:
                     continue;
                 }
                 else if (frequency.is_array()) {
-					for (const auto& f : frequency) {
+					for (size_t i = 0; i < frequency.size(); ++i) {
 						Scenario point_scenario = scenario;
-						point_scenario.Frequency = f.get<double>();
+						point_scenario.Frequency = frequency[i].get<double>();
 						scenarios.emplace_back(
-							SweepScenarioName(name, static_cast<int>(scenarios.size()), point_scenario.Frequency),
+							SweepScenarioName(name, static_cast<int>(i), point_scenario.Frequency),
 							std::move(point_scenario));
 					}
 					continue;

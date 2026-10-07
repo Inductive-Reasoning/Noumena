@@ -122,6 +122,7 @@ public:
 		a->Assemble();
 
 		fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
+		AddAxisTrueDofs(ess_tdof_list);
 
 		// Form the constrained system operator. The eliminated-column part
 		// (mat_e, used to build each scenario's RHS) is bound to A_op, which is
@@ -175,18 +176,7 @@ public:
 	//
 	// @param errors  Output: per-element error indicator (sized to NE).
 	void EstimateCurrentSolutionError(mfem::Vector& errors) override {
-		const int sdim = mesh.SpaceDimension();
-		std::unique_ptr<mfem::BilinearFormIntegrator> flux_integ(MakeStiffnessIntegrator());
-		mfem::FiniteElementSpace flux_fes(&mesh, fec.get(), sdim);
-		mfem::ZienkiewiczZhuEstimator estimator(*flux_integ, *A, flux_fes);
-		estimator.SetWithCoeff(false);    // field = grad(A) or B; energy applies nu
-		estimator.SetFluxAveraging(1);    // do not average across attribute interfaces
-		errors = estimator.GetLocalErrors();
-
-		// A zero/near-zero solution carries no energy and no meaningful relative
-		// error; leave the indicator unscaled rather than dividing by ~0.
-		const double energy = amr::FieldEnergy(*fespace, MakeStiffnessIntegrator(), *A);
-		if (energy > 0.0) { errors /= std::sqrt(energy); }
+		EstimateRelativeZZError({ A.get() }, [this] { return MakeStiffnessIntegrator(); }, errors);
 	}
 
 	// Peak flux density |B| over the current solution *A, sampled at element
@@ -380,16 +370,8 @@ private:
 		if (massive != massive_sources.end()) {
 			return (massive->second.load * *A) / massive->second.conductance;
 		}
-		mfem::Vector unit_density = BuildTerminalCurrentDensity(terminal_name, 1.0);
-		mfem::PWConstCoefficient unit_density_coeff(unit_density);
-
-		mfem::LinearForm winding_functional(fespace.get());
-		winding_functional.AddDomainIntegrator(
-			Geometry().NewDomainLFIntegrator(unit_density_coeff));
-		winding_functional.Assemble();
-
 		// The integrator carries the full geometric measure, so this is webers.
-		return winding_functional * *A;
+		return WindingFunctional(terminal_name) * *A;
 	}
 
 	// Stranded conductors' uniform source current density for a scenario.

@@ -32,6 +32,13 @@
  * projection of the source onto the complement of the gradients, i.e. the
  * discrete counterpart of J' = J - grad(psi) with div J' = 0.
  *
+ * psi vanishes on the essential (n x A = 0) boundary, but only up to a
+ * constant on each of its connected pieces: a psi that is 1 on one piece and
+ * 0 on the others has a gradient with zero tangential trace on every wall,
+ * which curl-curl annihilates as well. psi therefore lives in the reduced
+ * space P (every DOF off the essential boundary, plus one value per wall
+ * piece but the first), and the system solved is P^T K P.
+ *
  * The H1 system is solved by multigrid-preconditioned CG to a tight
  * tolerance; the hierarchy is built once per mesh and reused for every load.
  *
@@ -48,8 +55,9 @@ public:
 
 	/// @param nd       Nedelec space of the vector potential.
 	/// @param ess_bdr  Boundary attributes where A is essential (n x A given):
-	///                 psi vanishes there. With none, psi is fixed at one DOF
-	///                 to remove the constant from K's null space.
+	///                 psi is constant on each connected piece of it, and zero
+	///                 on the first. With none, psi is fixed at one DOF to
+	///                 remove the constant from K's null space.
 	DivergenceFreeProjector(mfem::FiniteElementSpace& nd, const mfem::Array<int>& ess_bdr)
 		: nd(nd), h1_fec(nd.GetMaxElementOrder(), nd.GetMesh()->Dimension()),
 		  h1(nd.GetMesh(), &h1_fec) {
@@ -66,16 +74,28 @@ public:
 		mass.Finalize();
 		M.reset(mass.LoseMat());
 
-		K.reset(mfem::RAP(*G, *M, *G));  // G^T M G
-
 		mfem::Array<int> marker(ess_bdr);
-		h1.GetEssentialTrueDofs(marker, fixed);
-		for (int i = 0; i < fixed.Size(); ++i) { essential.insert(fixed[i]); }
-		if (fixed.Size() == 0) { fixed.Append(0); }
-		for (int i = 0; i < fixed.Size(); ++i) {
-			K->EliminateRowCol(fixed[i], mfem::Operator::DIAG_ONE);
+		mfem::Array<int> ess_dofs;
+		h1.GetEssentialTrueDofs(marker, ess_dofs);
+		for (int d : ess_dofs) { essential.insert(d); }
+		wall_piece = WallPieces(marker, wall_pieces);
+
+		// The reduced space: one column per DOF off the essential boundary
+		// (all but the first if there is none) and one per wall piece but the
+		// first.
+		const int n_h1 = h1.GetVSize();
+		std::vector<int> column(n_h1, -1);
+		int columns = 0;
+		for (int d = 0; d < n_h1; ++d) {
+			if (essential.count(d) == 0 && (!essential.empty() || d > 0)) { column[d] = columns++; }
 		}
-		K->Finalize();
+		std::vector<int> piece_column(wall_pieces, -1);
+		for (int p = 1; p < wall_pieces; ++p) { piece_column[p] = columns++; }
+		for (int d : essential) { column[d] = piece_column[wall_piece[d]]; }
+		P = Columns(column, columns);
+
+		std::unique_ptr<mfem::SparseMatrix> GtMG(mfem::RAP(*G, *M, *G));
+		K.reset(mfem::RAP(*P, *GtMG, *P));  // P^T G^T M G P
 		amg = std::make_unique<AmgPreconditioner>(*K);
 	}
 
@@ -87,7 +107,6 @@ public:
 	double Project(mfem::Vector& b) const {
 		mfem::Vector rhs(G->Width());
 		G->MultTranspose(b, rhs);
-		for (int i = 0; i < fixed.Size(); ++i) { rhs(fixed[i]) = 0.0; }
 		const mfem::Vector psi = SolvePotential(rhs);
 
 		mfem::Vector grad_psi(G->Height()), correction(M->Height());
@@ -181,26 +200,52 @@ public:
 	/// is nonsingular and its solution satisfies C^T A = 0, div A = 0 weakly.
 	/// For a balanced load the multiplier is zero, so K A = b is unchanged.
 	///
-	/// P maps the multiplier space into H1: functions that vanish on the
-	/// essential boundary and are one constant on every conductor (domain
-	/// attributes of @p conducting). There the eddy-current term already
-	/// determines A, and charge conservation makes sigma A, not A,
-	/// divergence-free, so the constraint must leave A free: a conductor
-	/// part that touches no essential boundary gets a single multiplier
-	/// (the gradients that are zero on it remain undetermined), one that does
-	/// gets none. With no essential boundary at all one multiplier is
-	/// dropped, removing the constant. The rows at essential Nedelec DOFs are
-	/// included; see GaugeConstraintRows for how a solver uses them.
+	/// P maps the multiplier space into H1: functions that are constant on
+	/// each connected piece of the essential boundary (zero on the first) and
+	/// one constant on every conductor (domain attributes of @p conducting).
+	/// There the eddy-current term already determines A, and charge
+	/// conservation makes sigma A, not A, divergence-free, so the constraint
+	/// must leave A free: a conductor part that touches no essential boundary
+	/// gets a single multiplier (the gradients that are zero on it remain
+	/// undetermined), one that does shares the value of the wall pieces it
+	/// touches, which it joins into one. With no essential boundary at all one
+	/// multiplier is dropped, removing the constant. The rows at essential
+	/// Nedelec DOFs are included; see GaugeConstraintRows for how a solver uses
+	/// them.
 	std::unique_ptr<mfem::SparseMatrix> GaugeConstraint(const mfem::Array<int>& conducting) const {
 		const DofParts parts = ConnectedParts(conducting);
 		const int n_h1 = h1.GetVSize();
-		std::vector<int> column(n_h1, -1), part_column(parts.grounded.size(), -1);
-		int multipliers = 0;
-		for (int d = 0; d < n_h1; ++d) {
-			if (essential.count(d)) continue;
+
+		// Wall pieces joined through a grounded conductor share one value.
+		std::vector<int> group(wall_pieces);
+		for (int p = 0; p < wall_pieces; ++p) { group[p] = p; }
+		const auto find = [&](int p) {
+			while (group[p] != p) { p = group[p] = group[group[p]]; }
+			return p;
+		};
+		std::vector<int> part_piece(parts.grounded.size(), -1);
+		for (int d : essential) {
 			const int c = parts.part[d];
+			if (c < 0) continue;
+			const int p = find(wall_piece[d]);
+			if (part_piece[c] < 0) { part_piece[c] = p; }
+			else { group[find(part_piece[c])] = p; }
+		}
+
+		std::vector<int> column(n_h1, -1), part_column(parts.grounded.size(), -1);
+		std::vector<int> group_column(wall_pieces, -1);
+		int multipliers = 0;
+		const auto wall_column = [&](int piece) {
+			const int g = find(piece);
+			if (g == find(0)) { return -1; }  // the reference value, zero
+			if (group_column[g] < 0) { group_column[g] = multipliers++; }
+			return group_column[g];
+		};
+		for (int d = 0; d < n_h1; ++d) {
+			const int c = parts.part[d];
+			if (essential.count(d)) { column[d] = wall_column(wall_piece[d]); continue; }
 			if (c < 0) { column[d] = multipliers++; continue; }
-			if (parts.grounded[c]) continue;
+			if (parts.grounded[c]) { column[d] = wall_column(part_piece[c]); continue; }
 			if (part_column[c] < 0) { part_column[c] = multipliers++; }
 			column[d] = part_column[c];
 		}
@@ -209,20 +254,16 @@ public:
 			--multipliers;
 		}
 
-		mfem::SparseMatrix P(n_h1, multipliers);
-		for (int d = 0; d < n_h1; ++d) {
-			if (column[d] >= 0) { P.Set(d, column[d], 1.0); }
-		}
-		P.Finalize();
+		const std::unique_ptr<mfem::SparseMatrix> P_gauge = Columns(column, multipliers);
 		std::unique_ptr<mfem::SparseMatrix> MG(mfem::Mult(*M, *G));
-		return std::unique_ptr<mfem::SparseMatrix>(mfem::Mult(*MG, P));
+		return std::unique_ptr<mfem::SparseMatrix>(mfem::Mult(*MG, *P_gauge));
 	}
 
-	/// ||G^T b|| (excluding the fixed DOFs): zero for a balanced load.
+	/// ||P^T G^T b||: zero for a balanced load.
 	double GradientResidual(const mfem::Vector& b) const {
-		mfem::Vector r(G->Width());
-		G->MultTranspose(b, r);
-		for (int i = 0; i < fixed.Size(); ++i) { r(fixed[i]) = 0.0; }
+		mfem::Vector gtb(G->Width()), r(P->Width());
+		G->MultTranspose(b, gtb);
+		P->MultTranspose(gtb, r);
 		return r.Norml2();
 	}
 
@@ -267,11 +308,11 @@ private:
 		return parts;
 	}
 
-	// psi with K psi = rhs, psi = 0 at the fixed DOFs.
-	mfem::Vector SolvePotential(mfem::Vector rhs) const {
-		for (int i = 0; i < fixed.Size(); ++i) { rhs(fixed[i]) = 0.0; }
-		mfem::Vector psi(G->Width());
-		psi = 0.0;
+	// psi = P y with (P^T G^T M G P) y = P^T rhs.
+	mfem::Vector SolvePotential(const mfem::Vector& rhs) const {
+		mfem::Vector reduced(P->Width()), y(P->Width()), psi(G->Width());
+		P->MultTranspose(rhs, reduced);
+		y = 0.0;
 		mfem::CGSolver cg;
 		cg.SetOperator(*K);
 		cg.SetPreconditioner(*amg);
@@ -279,10 +320,48 @@ private:
 		cg.SetAbsTol(0.0);
 		cg.SetMaxIter(1000);
 		cg.SetPrintLevel(0);
-		cg.Mult(rhs, psi);
-		MFEM_VERIFY(cg.GetConverged() || rhs.Norml2() == 0.0,
+		cg.Mult(reduced, y);
+		MFEM_VERIFY(cg.GetConverged() || reduced.Norml2() == 0.0,
 			"Divergence-free projection did not converge.");
+		P->Mult(y, psi);
 		return psi;
+	}
+
+	// The connected pieces of the essential boundary, as a piece index by H1
+	// DOF (-1 off it); pieces that share a DOF, even at one vertex, are one.
+	std::vector<int> WallPieces(const mfem::Array<int>& marker, int& count) const {
+		const mfem::Mesh& mesh = *nd.GetMesh();
+		std::vector<int> parent(h1.GetVSize());
+		for (int d = 0; d < h1.GetVSize(); ++d) { parent[d] = d; }
+		const auto find = [&](int d) {
+			while (parent[d] != d) { d = parent[d] = parent[parent[d]]; }
+			return d;
+		};
+		mfem::Array<int> dofs;
+		for (int be = 0; be < mesh.GetNBE(); ++be) {
+			const int a = mesh.GetBdrAttribute(be);
+			if (a < 1 || a > marker.Size() || !marker[a - 1]) continue;
+			h1.GetBdrElementDofs(be, dofs);
+			for (int d : dofs) { parent[find(d)] = find(dofs[0]); }
+		}
+		std::vector<int> piece(h1.GetVSize(), -1), root_piece(h1.GetVSize(), -1);
+		count = 0;
+		for (int d : essential) {
+			const int r = find(d);
+			if (root_piece[r] < 0) { root_piece[r] = count++; }
+			piece[d] = root_piece[r];
+		}
+		return piece;
+	}
+
+	// The H1 x columns matrix with a one at (d, column[d]) where column[d] >= 0.
+	std::unique_ptr<mfem::SparseMatrix> Columns(const std::vector<int>& column, int columns) const {
+		auto matrix = std::make_unique<mfem::SparseMatrix>(static_cast<int>(column.size()), columns);
+		for (size_t d = 0; d < column.size(); ++d) {
+			if (column[d] >= 0) { matrix->Set(static_cast<int>(d), column[d], 1.0); }
+		}
+		matrix->Finalize();
+		return matrix;
 	}
 
 	mfem::FiniteElementSpace& nd;
@@ -290,8 +369,10 @@ private:
 	mfem::FiniteElementSpace h1;
 	std::unique_ptr<mfem::SparseMatrix> G;  // H1 -> Nedelec discrete gradient
 	std::unique_ptr<mfem::SparseMatrix> M;  // Nedelec mass
-	std::unique_ptr<mfem::SparseMatrix> K;  // G^T M G, constrained
-	mfem::Array<int> fixed;                 // H1 DOFs held at psi = 0
+	std::unique_ptr<mfem::SparseMatrix> P;  // reduced psi space -> H1
+	std::unique_ptr<mfem::SparseMatrix> K;  // P^T G^T M G P
 	std::set<int> essential;                // H1 DOFs on the essential boundary
+	std::vector<int> wall_piece;            // by H1 DOF: piece of the essential boundary, or -1
+	int wall_pieces = 0;
 	std::unique_ptr<AmgPreconditioner> amg;
 };

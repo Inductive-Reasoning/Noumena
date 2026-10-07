@@ -65,8 +65,8 @@ protected:
 			return;
 		}
 		Reporter().Warning("This build has no STRUMPACK (CMake option USE_STRUMPACK), so the "
-			"direct solve factors the real form of the complex system with Eigen's SparseLU, "
-			"which is 10 to 60 times slower and needs 5 to 10 times the memory.");
+			"direct solve factors the complex system with Eigen's SparseLU, which is much "
+			"slower and needs much more memory in 3D.");
 	}
 
 	void BuildReluctivity() {
@@ -375,6 +375,25 @@ protected:
 	// needs the axis tagged on its own.
 	mfem::Array<int> axis_boundary;
 
+	// The true DOFs where A_phi = 0 on the axis: those of the axis attribute
+	// and of every axis vertex (a domain meeting the axis at a point has no
+	// axis attribute). The solvers add them to their essential DOFs.
+	mfem::Array<int> AxisTrueDofs() const {
+		mfem::Array<int> tdofs;
+		if (!axis_geometry || !axis_geometry->TouchesAxis()) { return tdofs; }
+		fespace->GetEssentialTrueDofs(axis_boundary, tdofs);
+		tdofs.Append(axisym::AxisVertexDofs(*fespace, *axis_geometry));
+		tdofs.Sort();
+		tdofs.Unique();
+		return tdofs;
+	}
+
+	void AddAxisTrueDofs(mfem::Array<int>& tdofs) const {
+		tdofs.Append(AxisTrueDofs());
+		tdofs.Sort();
+		tdofs.Unique();
+	}
+
 	// Axis regularity, verification half: a nonzero Dirichlet value on the axis
 	// contradicts the A_phi = 0 constraint imposed above. The constraint would
 	// silently win, so the configuration is rejected instead. Requires the FE
@@ -385,8 +404,7 @@ protected:
 		MFEM_VERIFY(fespace,
 			"Magnetic axis boundary validation requires a finite element space.");
 
-		mfem::Array<int> axis_tdofs;
-		fespace->GetEssentialTrueDofs(axis_boundary, axis_tdofs);
+		const mfem::Array<int> axis_tdofs = AxisTrueDofs();
 		mfem::Array<int> is_axis_tdof(fespace->GetTrueVSize());
 		is_axis_tdof = 0;
 		for (int i = 0; i < axis_tdofs.Size(); ++i) {
@@ -437,12 +455,52 @@ protected:
 		const std::string& terminal_name, double current) const {
 		const Terminal& term = config.Terminals.at(terminal_name);
 		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-		const double area = CalculateRegionMeasure(group.AttributeIds);
+		return AttributeVector(group.AttributeIds,
+							   term.Turns * current / TerminalArea(terminal_name));
+	}
+
+	// A stranded terminal's winding functional, lambda_k(A) = integral of
+	// (N_k/area_k) A dV: the flux linkage of the field A with terminal k, the
+	// load of a unit current in it. It depends on the mesh only, so it is
+	// assembled once per mesh rather than per coupling-matrix entry.
+	const mfem::Vector& WindingFunctional(const std::string& terminal_name) const {
+		ForgetMeshCachesOnRefinement();
+		const auto cached = winding_functionals.find(terminal_name);
+		if (cached != winding_functionals.end()) { return cached->second; }
+		mfem::Vector unit_density = BuildTerminalCurrentDensity(terminal_name, 1.0);
+		mfem::PWConstCoefficient unit_density_coeff(unit_density);
+		mfem::LinearForm functional(fespace.get());
+		functional.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(unit_density_coeff));
+		functional.Assemble();
+		return winding_functionals.emplace(terminal_name, mfem::Vector(functional)).first->second;
+	}
+
+private:
+	// The cross-section of a stranded terminal, measured once per mesh.
+	double TerminalArea(const std::string& terminal_name) const {
+		ForgetMeshCachesOnRefinement();
+		const auto cached = terminal_areas.find(terminal_name);
+		if (cached != terminal_areas.end()) { return cached->second; }
+		const Terminal& term = config.Terminals.at(terminal_name);
+		const double area = CalculateRegionMeasure(
+			config.EntityGroups.at(term.EntityGroupName).AttributeIds);
 		MFEM_VERIFY(area > 0.0,
 			"Current terminal '" + terminal_name + "' has zero cross-section.");
-
-		return AttributeVector(group.AttributeIds, term.Turns * current / area);
+		return terminal_areas.emplace(terminal_name, area).first->second;
 	}
+
+	void ForgetMeshCachesOnRefinement() const {
+		if (cached_sequence == mesh.GetSequence()) { return; }
+		terminal_areas.clear();
+		winding_functionals.clear();
+		cached_sequence = mesh.GetSequence();
+	}
+
+	mutable std::map<std::string, double> terminal_areas;
+	mutable std::map<std::string, mfem::Vector> winding_functionals;
+	mutable long cached_sequence = -1;
+
+protected:
 
 	// A massive conductor carries its DC conduction distribution
 	// J = sigma w V, with the path w = 1 per unit length in the plane and

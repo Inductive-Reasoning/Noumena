@@ -78,6 +78,16 @@ set(MFEM_USE_EXCEPTIONS ON CACHE BOOL "Throw mfem::ErrorException on MFEM errors
 # MFEM's OpenMP backend, used once an "omp" Device is configured (see
 # parallel::Initialize). The deprecated MFEM_USE_LEGACY_OPENMP is not used:
 # it requires MFEM_THREAD_SAFE and gave wrong results here.
+# MFEM's own configure requires OpenMP once enabled, so a compiler without it
+# (Apple clang without libomp) is detected here and the build continues
+# without threads instead of failing inside MFEM.
+if(USE_OPENMP)
+    find_package(OpenMP)
+    if(NOT OpenMP_CXX_FOUND)
+        message(WARNING "USE_OPENMP: the compiler has no OpenMP support; building without threads.")
+        set(USE_OPENMP OFF)
+    endif()
+endif()
 set(MFEM_USE_OPENMP ${USE_OPENMP} CACHE BOOL "MFEM OpenMP backend" FORCE)
 
 # Automatically download and build MFEM
@@ -93,6 +103,11 @@ FetchContent_Declare(
 
 if(USE_MPI)
     include(${CMAKE_SOURCE_DIR}/cmake/ParallelTPLs.cmake)
+else()
+    # ParallelTPLs.cmake forces these into the cache; reset them so that
+    # reconfiguring an MPI build directory with USE_MPI=OFF builds MFEM serial.
+    set(MFEM_USE_MPI OFF CACHE BOOL "Build MFEM with MPI" FORCE)
+    set(MFEM_USE_METIS OFF CACHE BOOL "Enable METIS (multi-rank partitioning)" FORCE)
 endif()
 
 # This creates the 'mfem' target available for linking.
@@ -254,15 +269,10 @@ add_custom_target(build_info ALL
 add_dependencies(noumena build_info)
 target_include_directories(noumena PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
-# OpenMP support
+# OpenMP support (USE_OPENMP is switched off above if the compiler lacks it)
 if(USE_OPENMP)
-    find_package(OpenMP)
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(noumena PRIVATE OpenMP::OpenMP_CXX)
-        message(STATUS "OpenMP found and enabled. Use OMP_NUM_THREADS to control parallelism.")
-    else()
-        message(WARNING "OpenMP requested but not found. Building without OpenMP support.")
-    endif()
+    target_link_libraries(noumena PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP enabled. Use OMP_NUM_THREADS to control parallelism.")
 endif()
 
 # Documentation with Doxygen

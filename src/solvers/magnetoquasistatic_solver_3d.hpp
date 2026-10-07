@@ -84,11 +84,10 @@
  * @par Linear solvers
  *  - "direct": the gauged complex system factored once per frequency (see
  *    ComplexDirectSolver) and reused for every terminal column.
- *  - "iterative" (MPI/HYPRE build only): GMRES preconditioned block-
- *    diagonally, with hypre's AMS on K + omega M_sigma for both the real and
- *    the imaginary field block (the frequency-robust choice for
- *    [K, -omega M; omega M, K]) and the exact inverse of the port corner. The
- *    rank-N_ports border is left to GMRES.
+ *  - "iterative" (MPI/HYPRE build only): FGMRES preconditioned by PRESB on
+ *    the field blocks, with hypre's AMS on K + omega M_sigma, and the exact
+ *    inverse of the port corner (see MqsBlockPreconditioner). The
+ *    rank-N_ports border is left to FGMRES.
  */
 class MagnetoquasistaticSolver3D : public VectorPotentialSolver3D {
 public:
@@ -136,6 +135,9 @@ public:
 	}
 
 	void BuildOperators() override {
+#ifdef MFEM_USE_MPI
+		preconditioner.reset();  // refers to the space and matrices about to be replaced
+#endif
 		BuildSpaceAndConductors();
 		const int n = fespace->GetTrueVSize();
 
@@ -185,12 +187,9 @@ public:
 		*A = 0.0;
 		port_voltage.assign(conductances.size(), 0.0);
 
-		// Factors and preconditioners belong to the old mesh and frequency.
+		// Factors belong to the old mesh and frequency.
 		direct_solver.reset();
 		packed_matrix.reset();
-#ifdef MFEM_USE_MPI
-		preconditioner.reset();
-#endif
 		prepared_omega = 0.0;
 
 		// The direct path gauges the field block by a Lagrange multiplier,
@@ -481,16 +480,7 @@ private:
 	void SolveIteratively(const mfem::Vector& rhs, mfem::Vector& x) {
 #ifdef MFEM_USE_MPI
 		mfem::ConstrainedOperator system(&port_operator->Operator(), ess_packed_tdofs);
-		mfem::GMRESSolver gmres;
-		gmres.SetOperator(system);
-		gmres.SetPreconditioner(*preconditioner);
-		gmres.SetKDim(200);
-		gmres.SetRelTol(config.SolverTolerance);
-		gmres.SetAbsTol(0.0);
-		gmres.SetMaxIter(config.SolverMaxIter);
-		gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
-		gmres.Mult(rhs, x);
-		RequireConverged(gmres, "GMRES");
+		SolveNonsymmetricIteratively(system, *preconditioner, rhs, x, ess_packed_tdofs);
 #else
 		(void)rhs;
 		(void)x;

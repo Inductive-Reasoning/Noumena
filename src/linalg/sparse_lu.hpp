@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <memory>
 #include <type_traits>
@@ -163,15 +164,28 @@ public:
 		row_ptr = A.row_ptr;
 		col = A.col;
 		strumpack::ReturnCode status = strumpack::ReturnCode::SUCCESS;
+		const auto analyze = [&] {
+			solver = std::make_unique<strumpack::SparseSolver<T, int>>(/*verbose=*/false);
+			solver->set_csr_matrix(n, row_ptr.data(), col.data(), A.val.data());
+			return solver->reorder();
+		};
 		if (same_pattern) {
 			solver->update_matrix_values(n, row_ptr.data(), col.data(), A.val.data());
 		}
 		else {
-			solver = std::make_unique<strumpack::SparseSolver<T, int>>(/*verbose=*/false);
-			solver->set_csr_matrix(n, row_ptr.data(), col.data(), A.val.data());
-			status = solver->reorder();
+			status = analyze();
 		}
 		if (status == strumpack::ReturnCode::SUCCESS) { status = solver->factor(); }
+		// A refactorization keeps the first matrix's MC64 matching and
+		// scaling, which a saddle-point matrix (the gauge's zero block) relies
+		// on to pivot; values far from the first ones (another decade of
+		// frequency) could leave it poor. Check one solve, and analyze afresh
+		// if it is inaccurate.
+		if (same_pattern && status == strumpack::ReturnCode::SUCCESS &&
+			TestResidual(A) > kRefactorResidual) {
+			status = analyze();
+			if (status == strumpack::ReturnCode::SUCCESS) { status = solver->factor(); }
+		}
 		MFEM_VERIFY(status == strumpack::ReturnCode::SUCCESS,
 			"STRUMPACK factorization failed (return code " << static_cast<int>(status)
 			<< "): the system matrix is singular. A common cause is a region left "
@@ -215,6 +229,29 @@ public:
 	int Size() const { return n; }
 
 private:
+	// Relative residual above which a reused analysis is redone. A sound LU
+	// solve is accurate to round-off, many orders below this.
+	static constexpr double kRefactorResidual = 1e-8;
+
+#ifdef NOUMENA_STRUMPACK
+	// ||A x - b|| / ||b|| for the solve of b = A 1 with the current factors.
+	double TestResidual(const CsrMatrix<T>& A) const {
+		std::vector<T> b(n, T(0)), x(n, T(0));
+		for (int i = 0; i < n; ++i) {
+			for (int k = A.row_ptr[i]; k < A.row_ptr[i + 1]; ++k) { b[i] += A.val[k]; }
+		}
+		solver->solve(1, b.data(), n, x.data(), n);
+		double r2 = 0.0, b2 = 0.0;
+		for (int i = 0; i < n; ++i) {
+			T ax(0);
+			for (int k = A.row_ptr[i]; k < A.row_ptr[i + 1]; ++k) { ax += A.val[k] * x[A.col[k]]; }
+			r2 += std::norm(ax - b[i]);
+			b2 += std::norm(b[i]);
+		}
+		return b2 > 0.0 ? std::sqrt(r2 / b2) : 0.0;
+	}
+#endif
+
 	int n = 0;
 #ifdef NOUMENA_STRUMPACK
 	std::vector<int> row_ptr, col;  // pattern of the last factorization

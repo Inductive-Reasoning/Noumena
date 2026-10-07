@@ -53,6 +53,7 @@
 #include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <sstream>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -395,10 +396,12 @@ inline const HoLayout& GetHoLayout(mfem::Geometry::Type geom, int order) {
 // MSH export we write millions of doubles, so format into a small stack
 // buffer and write raw bytes through filebuf instead.
 //
-// 9 significant decimal digits is well past single-precision round-trip
-// (max_digits10 = 9) and matches what most visualization consumers parse;
-// drop the previous setprecision(16) which doubled the per-value byte count
-// for no visible benefit.
+// Doubles are written in their shortest form that reads back to the same
+// value (to_chars without a precision): exact for coordinates as well as
+// field values, so high-order nodes stay distinct on large models (a fixed 10
+// digits collapses a 1e-7 m lattice spacing at 1e3 m), and usually shorter
+// than a fixed 17 digits. Gmsh has no representation for NaN or infinity, so
+// a non-finite value is an error rather than a file readers reject.
 inline void AppendInt(std::string& s, long long v) {
     char buf[24];
     auto r = std::to_chars(buf, buf + sizeof(buf), v);
@@ -406,9 +409,12 @@ inline void AppendInt(std::string& s, long long v) {
 }
 
 inline void AppendDouble(std::string& s, double v) {
+    if (!std::isfinite(v)) {
+        throw std::runtime_error("gmsh_results: a non-finite value (NaN or infinity) "
+                                 "cannot be written to a Gmsh file");
+    }
     char buf[32];
-    auto r = std::to_chars(buf, buf + sizeof(buf), v,
-                           std::chars_format::scientific, 9);
+    auto r = std::to_chars(buf, buf + sizeof(buf), v);
     s.append(buf, r.ptr);
 }
 
@@ -941,7 +947,23 @@ inline void WriteMeshBlock(std::ostream& out, mfem::Mesh& mesh,
 // itself) links a view's nodal values to the basis that interpolates them.
 //
 // Each element topology gets two matrices per Gmsh's format: the coefficient
-// matrix then the exponent matrix.
+// matrix then the exponent matrix. A scheme is keyed by the element family
+// (Gmsh's TYPE_TRI = 3, TYPE_QUA = 4, TYPE_TET = 5, TYPE_HEX = 8), not by the
+// element type, which would name a different family (type 2, the 3-node
+// triangle, is family TYPE_LIN) or none at all for higher orders; Gmsh itself
+// writes a triangle scheme under 3.
+inline int GmshFamily(mfem::Geometry::Type geom) {
+    switch (geom) {
+        case mfem::Geometry::TRIANGLE:    return 3;
+        case mfem::Geometry::SQUARE:      return 4;
+        case mfem::Geometry::TETRAHEDRON: return 5;
+        case mfem::Geometry::CUBE:        return 8;
+        default:
+            throw std::runtime_error(std::string("gmsh_results: no Gmsh element family for a ")
+                                     + GeometryName(geom));
+    }
+}
+
 inline void WriteInterpolationScheme(std::ostream& out,
                                      const std::string& scheme_name,
                                      mfem::Mesh& mesh,
@@ -968,7 +990,7 @@ inline void WriteInterpolationScheme(std::ostream& out,
         const int n = static_cast<int>(scheme.coeffs.size());
         const int m = static_cast<int>(scheme.exponents.size());
 
-        AppendInt(s, layout.gmsh_type);
+        AppendInt(s, GmshFamily(g));
         s.append("\n2\n");  // two matrices follow: coefficients, then exponents
 
         AppendInt(s, n); s.push_back(' '); AppendInt(s, m); s.push_back('\n');
@@ -1184,6 +1206,17 @@ inline View MakeScalarCoefficientView(const std::string& name,
     return v;
 }
 
+/// The mesh-side part of a results file, which every scenario on one mesh
+/// shares (see WriteGmshResults).
+struct MeshExport {
+    const mfem::Mesh* mesh = nullptr;
+    long sequence = -1;
+    int order = 0;
+    MshVersion version = MshVersion::V2_2;
+    detail::ExportNodes nodes;
+    std::string block;  // $MeshFormat through $InterpolationScheme
+};
+
 /// Writes the mesh and all views to @p path in Gmsh MSH ASCII, using native
 /// Gmsh Lagrange elements of order @p order.
 ///
@@ -1195,11 +1228,18 @@ inline View MakeScalarCoefficientView(const std::string& name,
 /// @param views    Views to emit, in order.
 /// @param version  MSH format of the mesh sections. Defaults to 2.2, which is
 ///                 what the downstream C# consumer reads; 4.1 is opt-in.
+/// @param cache    Optional: the mesh-side part of the file (export nodes,
+///                 mesh block, interpolation scheme), which every scenario on
+///                 one mesh shares; rebuilt only when the mesh, its refinement
+///                 sequence, the order or the version changes.
+///
+/// Throws std::runtime_error if the file cannot be opened or written.
 inline void WriteGmshResults(const std::string& path,
                              mfem::Mesh& mesh,
                              int order,
                              const std::vector<View>& views,
-                             MshVersion version = MshVersion::V2_2) {
+                             MshVersion version = MshVersion::V2_2,
+                             MeshExport* cache = nullptr) {
     // std::ofstream / fopen will not create missing parent directories on
     // Windows or POSIX; opening "./foo/bar.msh" silently fails with ENOENT
     // when ./foo does not yet exist. Create the parent chain up front so a
@@ -1239,19 +1279,30 @@ inline void WriteGmshResults(const std::string& path,
     // (locale-independent, ~5-10x faster than operator<<). No stream-side
     // setprecision / scientific needed.
 
-    // Equispaced nodes so the DOF positions coincide with Gmsh's Lagrange
-    // node lattice; the resulting DOF indices double as shared node ids.
-    mfem::H1_FECollection fec(order, mesh.Dimension(),
-                              mfem::BasisType::ClosedUniform);
-    mfem::FiniteElementSpace fes(&mesh, &fec);
-    const detail::ExportNodes nodes = detail::BuildExportNodes(mesh, fes, order);
-
-    detail::WriteMeshBlock(out, mesh, nodes, version);
-
     // One scheme shared by every view: all views are sampled on the same node
     // layout at the same order, so they interpolate with the same basis.
     const std::string scheme_name = "MFEM_Lagrange_P" + std::to_string(order);
-    detail::WriteInterpolationScheme(out, scheme_name, mesh, order);
+    MeshExport local;
+    MeshExport& part = cache ? *cache : local;
+    if (part.mesh != &mesh || part.sequence != mesh.GetSequence() ||
+        part.order != order || part.version != version) {
+        // Equispaced nodes so the DOF positions coincide with Gmsh's Lagrange
+        // node lattice; the resulting DOF indices double as shared node ids.
+        mfem::H1_FECollection fec(order, mesh.Dimension(),
+                                  mfem::BasisType::ClosedUniform);
+        mfem::FiniteElementSpace fes(&mesh, &fec);
+        part.nodes = detail::BuildExportNodes(mesh, fes, order);
+        std::ostringstream block;
+        detail::WriteMeshBlock(block, mesh, part.nodes, version);
+        detail::WriteInterpolationScheme(block, scheme_name, mesh, order);
+        part.block = block.str();
+        part.mesh = &mesh;
+        part.sequence = mesh.GetSequence();
+        part.order = order;
+        part.version = version;
+    }
+    const detail::ExportNodes& nodes = part.nodes;
+    out.write(part.block.data(), static_cast<std::streamsize>(part.block.size()));
 
     for (const auto& v : views) {
         switch (v.kind) {
@@ -1262,6 +1313,11 @@ inline void WriteGmshResults(const std::string& path,
                 detail::WriteElementNodeData(out, mesh, nodes, v, scheme_name);
                 break;
         }
+    }
+    out.close();
+    if (out.fail()) {
+        throw std::runtime_error("WriteGmshResults: writing '" + path + "' failed: "
+                                 + std::strerror(errno));
     }
 }
 

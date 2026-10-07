@@ -51,6 +51,13 @@ public:
 					  std::ostream& os = std::cout,
 					  int precision = 6) const {
 		CheckDimensions(M);
+		// Restore the stream's format on return: os is usually std::cout.
+		const struct FormatGuard {
+			std::ostream& os;
+			std::ios_base::fmtflags flags;
+			std::streamsize precision;
+			~FormatGuard() { os.flags(flags); os.precision(precision); }
+		} guard{ os, os.flags(), os.precision() };
 
 		os << "\n=== " << title_ << " ===\n";
 		os << std::setw(kColWidth) << "";
@@ -94,6 +101,11 @@ public:
 			ofs << row_labels_[r];
 			for (int c = 0; c < M.Width(); ++c) { ofs << "," << M(r, c); }
 			ofs << "\n";
+		}
+		ofs.close();
+		if (ofs.fail()) {
+			StatusReporter::Global().Error("MatrixWriter: writing " + path.string() + " failed");
+			return false;
 		}
 
 		StatusReporter::Global().Diagnostic("Wrote " + path.string());

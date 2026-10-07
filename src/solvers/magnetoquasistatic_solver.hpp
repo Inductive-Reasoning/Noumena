@@ -51,7 +51,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	// frequency the current factors belong to.
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
 	std::unique_ptr<ComplexDirectSolver> direct_solver;
-	// GMRES preconditioner of the iterative path, for one frequency.
+	// Preconditioner of the iterative path, for one frequency.
 	std::unique_ptr<MqsBlockPreconditioner> preconditioner;
 	mfem::real_t preconditioned_omega = 0.0;
 	mfem::real_t factored_omega = 0.0;
@@ -282,6 +282,7 @@ public:
 			" true DOFs.");
 		neumann_rhs = AssembleNaturalBoundaryLoad();
 
+		preconditioner.reset();  // refers to the matrices about to be replaced
 		{
 			auto operation = Reporter().Start("complex bilinear form assembly");
 			// Setup Complex Billinear Form
@@ -329,6 +330,7 @@ public:
             port_conductances, omega);
 
         fespace->GetEssentialTrueDofs(ess_bdr, ess_mesh_tdofs);   // indices in [0, N_DOFs)
+        AddAxisTrueDofs(ess_mesh_tdofs);
 
         // Each scalar essential DOF constrains both its real and imaginary copy
         // in the packed [Re|Im] layout (half-size = N_DOFs + N_Ports).
@@ -341,7 +343,6 @@ public:
 		direct_solver.reset();
 		packed_matrix.reset();
 		factored_omega = 0.0;
-		preconditioner.reset();
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
@@ -481,19 +482,11 @@ public:
 			direct_solver->Mult(B_vec, X_vec);
 		}
 		else {
-			// GMRES preconditioned by AMG on K + omega M_sigma for both field
-			// blocks (see MqsBlockPreconditioner).
+			// FGMRES preconditioned by PRESB with AMG (see
+			// MqsBlockPreconditioner).
 			EnsurePreconditionerForActiveFrequency();
-			mfem::GMRESSolver gmres;
-			gmres.SetOperator(*A_op.Ptr());
-			gmres.SetPreconditioner(*preconditioner);
-			gmres.SetKDim(200);
-			gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
-			gmres.SetRelTol(config.SolverTolerance);
-			gmres.SetAbsTol(0.0);
-			gmres.SetMaxIter(config.SolverMaxIter);
-			gmres.Mult(B_vec, X_vec);
-			RequireConverged(gmres, "GMRES");
+			SolveNonsymmetricIteratively(*A_op.Ptr(), *preconditioner, B_vec, X_vec,
+										 ess_packed_tdofs);
 		}
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh
@@ -566,32 +559,10 @@ public:
     //
     // @param errors  Output: per-element error indicator (sized to NE).
     void EstimateCurrentSolutionError(mfem::Vector& errors) override {
-        const int sdim = mesh.SpaceDimension();
-        std::unique_ptr<mfem::BilinearFormIntegrator> flux_integ(MakeStiffnessIntegrator());
-        mfem::FiniteElementSpace flux_fes(&mesh, fec.get(), sdim);
-        mfem::ZienkiewiczZhuEstimator estimator_re(*flux_integ, A->real(), flux_fes);
-        estimator_re.SetWithCoeff(false);     // flux = nu * grad(A)
-        estimator_re.SetFluxAveraging(1);    // do not average across attribute interfaces
-
-        mfem::ZienkiewiczZhuEstimator estimator_im(*flux_integ, A->imag(), flux_fes);
-        estimator_im.SetWithCoeff(false);     // flux = nu * grad(A)
-        estimator_im.SetFluxAveraging(1);    // do not average across attribute interfaces
-
-        const mfem::Vector& errs_re = estimator_re.GetLocalErrors();
-        const mfem::Vector& errs_im = estimator_im.GetLocalErrors();
-        errors.SetSize(errs_re.Size());
-        for (int k = 0; k < errors.Size(); ++k) {
-            errors(k) = std::hypot(errs_re(k), errs_im(k));
-        }
-
-        // Energy of the phasor is the sum of the real and imaginary parts'
-        // energies (the cross term vanishes in the time average). A zero/near-
-        // zero solution carries no energy and no meaningful relative error;
-        // leave the indicator unscaled rather than dividing by ~0.
-        const double energy =
-            amr::FieldEnergy(*fespace, MakeStiffnessIntegrator(), A->real()) +
-            amr::FieldEnergy(*fespace, MakeStiffnessIntegrator(), A->imag());
-        if (energy > 0.0) { errors /= std::sqrt(energy); }
+        // The phasor's energy is the sum of its parts' (the cross term vanishes
+        // in the time average), and so is its squared indicator.
+        EstimateRelativeZZError({ &A->real(), &A->imag() },
+                                [this] { return MakeStiffnessIntegrator(); }, errors);
     }
 
     // Peak flux density |B| over the current solution *A, sampled at element
@@ -745,14 +716,7 @@ public:
 
     std::pair<double, double> ComputeStrandedFluxLinkage(
         const std::string& terminal_name) const {
-        mfem::Vector unit_density =
-            BuildTerminalCurrentDensity(terminal_name, 1.0);
-        mfem::PWConstCoefficient unit_density_coeff(unit_density);
-        mfem::LinearForm winding_functional(fespace.get());
-        winding_functional.AddDomainIntegrator(
-            Geometry().NewDomainLFIntegrator(unit_density_coeff));
-        winding_functional.Assemble();
-
+        const mfem::Vector& winding_functional = WindingFunctional(terminal_name);
         // The integrator carries the full geometric measure, so these are webers.
         return {
             winding_functional * A->real(),

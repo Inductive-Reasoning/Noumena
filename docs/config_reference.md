@@ -108,13 +108,13 @@ Chebyshev smoothing, which stays stable at every element order; threaded with
 OpenMP, set `OMP_NUM_THREADS` to control it). Its iteration count grows slowly,
 if at all, as the mesh is refined (13-14 for order-3 tetrahedra up to 389k
 unknowns, 23-63 for order-2 hexahedra up to 913k), and the multigrid
-hierarchy is built once per mesh and reused for every scenario. 2D MQS uses
-GMRES preconditioned block-diagonally by the same AMG on `K + ωM_σ` for the
-real and imaginary field blocks, with the exact inverse of the massive-port
-corner; the preconditioner is rebuilt at each frequency. 3D magnetostatics uses CG preconditioned by
+hierarchy is built once per mesh and reused for every scenario. MQS uses
+flexible GMRES preconditioned by PRESB, which needs two solves with
+`K + ωM_σ` per iteration (by the same AMG in 2D, by hypre's AMS in 3D, MPI/HYPRE
+build only), and by the exact inverse of the massive-port corner; the
+preconditioner is rebuilt at each frequency. 3D magnetostatics uses CG preconditioned by
 hypre's AMS (MPI/HYPRE build only), whose iteration count also stays roughly
-constant under refinement; 3D MQS uses GMRES preconditioned block-diagonally
-by AMS on `K + ωM_σ` (MPI/HYPRE build only). AMS smooths with hybrid
+constant under refinement. AMS smooths with hybrid
 Gauss-Seidel on one thread and with Chebyshev on several, where Gauss-Seidel
 loses strength; the iteration counts differ accordingly. The MQS `direct`
 solver (2D and 3D) factors the complex field block once per frequency with
@@ -123,11 +123,15 @@ STRUMPACK, a multifrontal LU with METIS ordering, when the build includes it
 ports are eliminated through their small dense Schur complement, so the
 sparse factorization never sees their dense rows and columns, and a frequency
 sweep reuses the ordering and redoes only the numerical factorization. Without it,
-it falls back to Eigen's sparse LU of the packed real form, which is 10 to 60
-times slower and larger, and says so at startup. In every iterative solver `solver_tolerance` is the
-relative residual the Krylov method monitors, which it measures through the
-preconditioner (CG in the preconditioner's norm, GMRES on the preconditioned
-residual), so the raw `||b - Ax|| / ||b||` can be larger. A solve that does not
+it falls back to Eigen's sparse LU of the complex system, which is much slower
+and larger in 3D, and says so at startup. In every iterative solver `solver_tolerance` is the
+relative residual the Krylov method monitors. For MQS (FGMRES) that is the true
+`||b - Ax|| / ||b||`, `b` without the rows that hold Dirichlet values, checked
+on the final solution; a residual that restarting no longer reduces is the
+round-off floor of the system, which can lie above a tight tolerance (7e-10
+against 1e-12 for a 2D two-port problem at 5 kHz), and is accepted and
+reported. CG measures it in the preconditioner's norm, so for the
+static problems the raw residual can be somewhat larger. A solve that does not
 reach it within `solver_max_iter` iterations stops the run with an error.
 
 `frequency` is **not** valid here. It belongs on each scenario; see

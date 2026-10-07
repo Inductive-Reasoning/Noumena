@@ -259,18 +259,7 @@ public:
 	//
 	// @param errors  Output: per-element error indicator (sized to NE).
 	void EstimateCurrentSolutionError(mfem::Vector& errors) override {
-		const int sdim = mesh.SpaceDimension();
-		std::unique_ptr<mfem::BilinearFormIntegrator> flux_integ(MakeStiffnessIntegrator());
-		mfem::FiniteElementSpace flux_fes(&mesh, fec.get(), sdim);
-		mfem::ZienkiewiczZhuEstimator estimator(*flux_integ, *x, flux_fes);
-		estimator.SetWithCoeff(false);    // field = grad(V); energy applies eps
-		estimator.SetFluxAveraging(1);    // do not average across attribute interfaces
-		errors = estimator.GetLocalErrors();
-
-		// A zero/near-zero solution carries no energy and no meaningful relative
-		// error; leave the indicator unscaled rather than dividing by ~0.
-		const double energy = amr::FieldEnergy(*fespace, MakeStiffnessIntegrator(), *x);
-		if (energy > 0.0) { errors /= std::sqrt(energy); }
+		EstimateRelativeZZError({ x.get() }, [this] { return MakeStiffnessIntegrator(); }, errors);
 	}
 
 	// Peak field magnitude |E| = |grad(V)| over the current solution *x, sampled

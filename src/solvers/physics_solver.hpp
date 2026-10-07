@@ -4,6 +4,7 @@
 #pragma once
 #include <cmath>
 #include <complex>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -42,6 +43,10 @@ protected:
     // solver, not to the shared plumbing.
     std::unique_ptr<mfem::FiniteElementCollection> fec;
     std::unique_ptr<mfem::FiniteElementSpace> fespace;
+    // The stiffness of the AMR energy norm (EstimateRelativeZZError), per mesh.
+    std::unique_ptr<mfem::BilinearForm> energy_form;
+    const mfem::FiniteElementSpace* energy_fes = nullptr;
+    long energy_sequence = -1;
     GeometryType geometry = GeometryType::Planar;
     mfem::Array<int> ess_bdr;
     mfem::Array<int> ess_tdof_list;
@@ -120,7 +125,8 @@ protected:
     // Called from Setup(); the result is refinement-invariant (attribute-keyed)
     // and is reused across every AMR pass.
     virtual void BuildEssentialBoundaryMarker() {
-        ess_bdr = boundary_conditions.DirichletMarker(mesh.bdr_attributes.Max());
+        ess_bdr = boundary_conditions.DirichletMarker(
+            mesh.bdr_attributes.Size() ? mesh.bdr_attributes.Max() : 0);
     }
 
     // Every connected piece of the mesh needs something that fixes the scalar
@@ -192,10 +198,11 @@ protected:
     // Solve an SPD system with preconditioned CG, used by the static solvers'
     // iterative path.
     //
-    // solver_tolerance is the RELATIVE residual ||b - A x|| / ||b||, the same
-    // meaning it has in the MQS GMRES path. (The mfem::PCG convenience function
-    // previously used here squares-roots its tolerance argument, so a
-    // configured 1e-12 used to mean 1e-6 for these solvers only.)
+    // solver_tolerance is the RELATIVE residual, measured as CG does in the
+    // preconditioner's norm (the MQS FGMRES path measures the true residual).
+    // The mfem::PCG convenience function previously used here square-roots its
+    // tolerance argument, so a configured 1e-12 used to mean 1e-6 for these
+    // solvers only.
     //
     void SolveSpdIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
                              const mfem::Vector& B, mfem::Vector& X) const {
@@ -210,22 +217,149 @@ protected:
         RequireConverged(cg, "CG");
     }
 
+    // Solve the time-harmonic (MQS) systems, which are not symmetric in their
+    // real form, with flexible GMRES from the initial guess in X (zero but for
+    // the essential values). The target is ||b - A x|| <= solver_tolerance
+    // ||b_free||, b_free being b without the @p essential rows: those hold the
+    // essential values themselves, are satisfied by the initial guess, and are
+    // not a load.
+    //
+    // Being right-preconditioned, FGMRES monitors the unpreconditioned
+    // residual; left-preconditioned GMRES monitors the preconditioned one,
+    // which does not bound the port quantities (with massive ports at 10-100
+    // kHz a coupling matrix solved to 1e-10 that way was off by up to 3e-4
+    // against the direct solve). Within a cycle FGMRES tracks the residual
+    // through its Arnoldi recurrence, which can fall below the true residual,
+    // so the true residual is computed when it stops. If that is above the
+    // target, the solve restarts from there, as long as each restart at least
+    // halves it. A residual that no longer falls is the round-off floor of the
+    // system, set by its conditioning, not by the tolerance: at the default
+    // 1e-12 the 2D impedance test's true residual stalls at 4e-12 at 50 Hz and
+    // at 6e-10 at 5 kHz, where the port rows are badly scaled, while the
+    // recurrence reports 1e-12; its impedances still match the direct solve
+    // to 1e-8. A stalled residual is accepted and reported, unless it is above
+    // kMqsStallLimit, far above any round-off floor seen.
+    //
+    // FGMRES keeps two vectors per iteration (the basis and the preconditioned
+    // basis), against GMRES's one, so it restarts after kMqsRestart iterations,
+    // holding its memory to that of 200-iteration GMRES. Restarting at 100
+    // rather than 200 also converged faster on the massive-port problems at
+    // high frequency (the 2D impedance test at 5 kHz, 127 against 227
+    // iterations; the two_loops example at 100 kHz, 160 against 262).
+    static constexpr int kMqsRestart = 100;
+    static constexpr double kMqsStallLimit = 1e-6;
+
+    void SolveNonsymmetricIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
+                                      const mfem::Vector& B, mfem::Vector& X,
+                                      const mfem::Array<int>& essential) const {
+        mfem::Vector b_free(B);
+        for (const int i : essential) { b_free(i) = 0.0; }
+        const double b_norm = b_free.Norml2();
+        if (b_norm == 0.0) {
+            X = B;  // the essential values, and zero elsewhere
+            return;
+        }
+        const double target = config.SolverTolerance * b_norm;
+        mfem::FGMRESSolver fgmres;
+        fgmres.SetOperator(A);
+        fgmres.SetPreconditioner(preconditioner);
+        fgmres.SetKDim(kMqsRestart);
+        fgmres.SetRelTol(0.0);
+        fgmres.SetAbsTol(target);
+        fgmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
+        mfem::Vector r(B.Size());
+        int iterations = 0;
+        double residual = std::numeric_limits<double>::infinity();
+        bool stalled = false;
+        while (iterations < config.SolverMaxIter) {
+            fgmres.SetMaxIter(config.SolverMaxIter - iterations);
+            fgmres.Mult(B, X);  // continues from X
+            iterations += fgmres.GetNumIterations();
+            A.Mult(X, r);
+            subtract(B, r, r);
+            const double previous = residual;
+            residual = r.Norml2();
+            if (residual <= target || !fgmres.GetConverged()) { break; }
+            if (residual > 0.5 * previous) {
+                stalled = true;
+                break;
+            }
+        }
+        const double relative = residual / b_norm;
+        const bool converged = residual <= target ||
+            (stalled && relative <= kMqsStallLimit);
+        ReportKrylov("FGMRES", converged, iterations, relative);
+        if (stalled && residual > target) {
+            std::ostringstream msg;
+            msg << std::scientific << std::setprecision(3)
+                << "FGMRES: the true relative residual stalls at " << relative
+                << " after " << iterations << " iterations, above solver_tolerance "
+                << config.SolverTolerance << ": the round-off floor of this system.";
+            Reporter().Diagnostic(msg.str());
+        }
+    }
+
+    // Recovery-based (Zienkiewicz-Zhu) error indicator of a scalar solution
+    // @p parts (one field, or a phasor's real and imaginary parts, combined
+    // in quadrature), divided by sqrt of its field energy Et = 1/2 u^T K u to
+    // make it a dimensionless RELATIVE error: the raw indicator has units of
+    // sqrt(energy) and scales with the excitation, so folding raw indicators
+    // across scenarios would let the most strongly driven one set the mesh.
+    // @p make_stiffness is the solve's stiffness integrator (the flux is
+    // grad u, the coefficient applied in the energy); K is assembled once per
+    // mesh. A zero solution carries no energy and no meaningful relative
+    // error, so its indicator is left unscaled.
+    void EstimateRelativeZZError(const std::vector<mfem::GridFunction*>& parts,
+                                 const std::function<mfem::BilinearFormIntegrator*()>& make_stiffness,
+                                 mfem::Vector& errors) {
+        const std::unique_ptr<mfem::BilinearFormIntegrator> flux_integ(make_stiffness());
+        mfem::FiniteElementSpace flux_fes(&mesh, fec.get(), mesh.SpaceDimension());
+        if (!energy_form || energy_fes != fespace.get() ||
+            energy_sequence != mesh.GetSequence()) {
+            energy_form = std::make_unique<mfem::BilinearForm>(fespace.get());
+            energy_form->AddDomainIntegrator(make_stiffness());
+            energy_form->Assemble();
+            energy_form->Finalize();
+            energy_fes = fespace.get();
+            energy_sequence = mesh.GetSequence();
+        }
+        errors.SetSize(mesh.GetNE());
+        errors = 0.0;
+        double energy = 0.0;
+        for (mfem::GridFunction* u : parts) {
+            mfem::ZienkiewiczZhuEstimator estimator(*flux_integ, *u, flux_fes);
+            estimator.SetWithCoeff(false);  // the flux is grad u; the energy applies the coefficient
+            estimator.SetFluxAveraging(1);  // do not average across attribute interfaces
+            const mfem::Vector& local = estimator.GetLocalErrors();
+            for (int k = 0; k < errors.Size(); ++k) { errors(k) = std::hypot(errors(k), local(k)); }
+            // Clamp the round-off of a nearly null solution's quadratic form.
+            energy += std::max(0.0, 0.5 * energy_form->InnerProduct(*u, *u));
+        }
+        if (energy > 0.0) { errors /= std::sqrt(energy); }
+    }
+
     // Report a finished Krylov solve. Non-convergence is an error: the last
     // iterate of a solve that missed solver_tolerance is not a result, and
     // passing it on as one (with a warning that is easily missed) would put
     // an unconverged field into every output and coupling matrix.
     void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name) const {
+        ReportKrylov(name, solver.GetConverged(), solver.GetNumIterations(),
+                     solver.GetFinalRelNorm());
+    }
+
+    void ReportKrylov(const std::string& name, bool converged, int iterations,
+                      double relative_residual) const {
         std::ostringstream msg;
         msg << std::scientific << std::setprecision(3);
-        if (!solver.GetConverged()) {
-            msg << name << " did not converge: relative residual " << solver.GetFinalRelNorm()
-                << " after " << solver.GetNumIterations() << " iterations, above "
+        if (!converged) {
+            msg << name << " did not converge: relative residual " << relative_residual
+                << " after " << iterations << " iterations, above "
                    "solver_tolerance " << config.SolverTolerance << ". Raise "
                    "solver_max_iter, loosen solver_tolerance, or use the direct solver.";
             throw std::runtime_error(msg.str());
         }
-        msg << name << " converged in " << solver.GetNumIterations()
-            << " iterations (relative residual " << solver.GetFinalRelNorm() << ").";
+        msg << name << " converged in " << iterations
+            << " iterations (relative residual " << relative_residual << ").";
         Reporter().Diagnostic(msg.str());
     }
 

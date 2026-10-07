@@ -34,34 +34,36 @@ generate_mesh() {
     # -2: generate 2D mesh
     # -format msh2: output in MSH2 ASCII format (compatible with MFEM)
     # -o: output file
-    echo "Running: gmsh -2 -format msh2 $geo_file -o ${mesh_file%.mesh}.msh"
-    gmsh -2 -format msh2 "$geo_file" -o "${mesh_file%.mesh}.msh"
+    # A .msh target (what the example's config reads) is Gmsh's output
+    # itself; a .mesh target is converted to MFEM format, or renamed if the
+    # converter is not available (MFEM reads either format).
+    local gmsh_file="${mesh_file%.*}.msh"
+    echo "Running: gmsh -2 -format msh2 $geo_file -o $gmsh_file"
+    gmsh -2 -format msh2 "$geo_file" -o "$gmsh_file"
 
-    # Convert to MFEM format if needed
-    # Check if MFEM's convert-mesh utility is available
-    if command -v convert-mesh &> /dev/null; then
-        echo "Converting to MFEM format..."
-        convert-mesh "${mesh_file%.mesh}.msh" "$mesh_file"
-        echo "Generated: $mesh_file"
-    else
-        echo "Note: convert-mesh not found. Keeping Gmsh .msh format."
-        echo "MFEM can read .msh files directly, or you can:"
-        echo "  1. Build MFEM and use: mfem/miniapps/tools/convert-mesh"
-        echo "  2. Rename .msh to .mesh (MFEM auto-detects format)"
-        mv "${mesh_file%.mesh}.msh" "$mesh_file"
-        echo "Generated: $mesh_file"
+    if [[ "$mesh_file" == *.mesh ]]; then
+        if command -v convert-mesh &> /dev/null; then
+            echo "Converting to MFEM format..."
+            convert-mesh "$gmsh_file" "$mesh_file"
+            rm -f "$gmsh_file"
+        else
+            echo "Note: convert-mesh not found. Keeping Gmsh .msh format."
+            echo "MFEM can read .msh files directly, or you can:"
+            echo "  1. Build MFEM and use: mfem/miniapps/tools/convert-mesh"
+            echo "  2. Rename .msh to .mesh (MFEM auto-detects format)"
+            mv "$gmsh_file" "$mesh_file"
+        fi
     fi
+    echo "Generated: $mesh_file"
 
     # Print mesh statistics
     if [ -f "$mesh_file" ]; then
         echo ""
         echo "Mesh statistics:"
         if [[ "$mesh_file" == *.msh ]]; then
-            # For .msh files, count elements
             num_elements=$(grep -A1 '\$Elements' "$mesh_file" | tail -1)
             echo "  Elements: $num_elements"
         else
-            # For .mesh files
             echo "  File size: $(du -h "$mesh_file" | cut -f1)"
         fi
     fi
@@ -87,7 +89,7 @@ generate_mesh \
 
 generate_mesh \
     "two_loops/case.geo" \
-    "two_loops/case.mesh" \
+    "two_loops/case.msh" \
     "Two Loops (Coupled Inductors)"
 
 echo ""

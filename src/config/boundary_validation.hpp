@@ -44,13 +44,12 @@ private:
         }
     }
 
-    /// Human-readable geometric description of where a DOF lives. In an H1 space
-    /// the first NV DOFs are vertex DOFs, the next NEdges*(order-1) are edge
-    /// interiors, then face/interior DOFs (located via a touching bdr element).
+    /// Human-readable geometric description of where a DOF lives: the mesh
+    /// vertex, edge or face that owns it, as the space numbers them (any
+    /// order, H1 or Nedelec), else near a boundary element that touches it.
     std::string DescribeDof(int dof, int fallback_be) const {
+        if (dof_owner.empty()) { BuildDofOwners(); }
         std::ostringstream oss;
-        const int NV = mesh.GetNV();
-        const int NE = mesh.GetNEdges();
         const int sdim = mesh.SpaceDimension();
         // "(x, y)" in 2D, "(x, y, z)" in 3D.
         auto point = [&](const double* p) {
@@ -58,33 +57,65 @@ private:
             for (int c = 1; c < sdim; ++c) oss << ", " << p[c];
             oss << ")";
         };
-        if (dof < NV) {
-            oss << "vertex " << dof << " at ";
-            point(mesh.GetVertex(dof));
-        } else if (dof < NV + NE) {
-            int edge_idx = dof - NV;
-            mfem::Array<int> ev;
-            mesh.GetEdgeVertices(edge_idx, ev);
-            const double* v0 = mesh.GetVertex(ev[0]);
-            const double* v1 = mesh.GetVertex(ev[1]);
-            double mid[3] = { 0.0, 0.0, 0.0 };
-            for (int c = 0; c < sdim; ++c) mid[c] = 0.5 * (v0[c] + v1[c]);
-            oss << "edge-interior on mesh edge " << edge_idx << " midpoint=";
-            point(mid);
-        } else if (fallback_be >= 0) {
-            mfem::Array<int> verts;
-            mesh.GetBdrElementVertices(fallback_be, verts);
-            double centroid[3] = { 0.0, 0.0, 0.0 };
+        auto centroid = [&](const mfem::Array<int>& verts) {
+            double c[3] = { 0.0, 0.0, 0.0 };
             for (int vi = 0; vi < verts.Size(); ++vi) {
                 const double* v = mesh.GetVertex(verts[vi]);
-                for (int c = 0; c < sdim; ++c) centroid[c] += v[c] / verts.Size();
+                for (int k = 0; k < sdim; ++k) c[k] += v[k] / verts.Size();
             }
-            oss << "face/interior near bdr-element centroid ";
-            point(centroid);
-        } else {
-            oss << "index " << dof;
+            point(c);
+        };
+        const auto [kind, index] = dof >= 0 && dof < static_cast<int>(dof_owner.size())
+            ? dof_owner[dof] : std::pair<Owner, int>{ Owner::None, -1 };
+        mfem::Array<int> verts;
+        switch (kind) {
+            case Owner::Vertex:
+                oss << "vertex " << index << " at ";
+                point(mesh.GetVertex(index));
+                break;
+            case Owner::Edge:
+                mesh.GetEdgeVertices(index, verts);
+                oss << "on mesh edge " << index << ", midpoint ";
+                centroid(verts);
+                break;
+            case Owner::Face:
+                mesh.GetFaceVertices(index, verts);
+                oss << "on mesh face " << index << ", centroid ";
+                centroid(verts);
+                break;
+            case Owner::None:
+                if (fallback_be >= 0) {
+                    mesh.GetBdrElementVertices(fallback_be, verts);
+                    oss << "near the centroid ";
+                    centroid(verts);
+                    oss << " of boundary element " << fallback_be;
+                } else {
+                    oss << "index " << dof;
+                }
+                break;
         }
         return oss.str();
+    }
+
+    enum class Owner { None, Vertex, Edge, Face };
+    mutable std::vector<std::pair<Owner, int>> dof_owner;  // by DOF, built on demand
+
+    void BuildDofOwners() const {
+        dof_owner.assign(fespace.GetVSize(), { Owner::None, -1 });
+        mfem::Array<int> dofs;
+        const auto claim = [&](Owner kind, int index) {
+            for (int d : dofs) {
+                if (d < 0) d = -1 - d;
+                if (d < static_cast<int>(dof_owner.size()) && dof_owner[d].first == Owner::None) {
+                    dof_owner[d] = { kind, index };
+                }
+            }
+        };
+        for (int v = 0; v < mesh.GetNV(); ++v) { fespace.GetVertexDofs(v, dofs); claim(Owner::Vertex, v); }
+        for (int e = 0; e < mesh.GetNEdges(); ++e) { fespace.GetEdgeInteriorDofs(e, dofs); claim(Owner::Edge, e); }
+        if (mesh.Dimension() == 3) {
+            for (int f = 0; f < mesh.GetNFaces(); ++f) { fespace.GetFaceInteriorDofs(f, dofs); claim(Owner::Face, f); }
+        }
     }
 
 public:

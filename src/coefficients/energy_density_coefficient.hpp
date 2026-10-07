@@ -21,7 +21,7 @@ public:
    EnergyDensityCoefficient(mfem::GridFunction &phi, mfem::Coefficient &eps) 
       : Phi(&phi), Eps(&eps) { }
 
-   double Eval(mfem::ElementTransformation &T, 
+   mfem::real_t Eval(mfem::ElementTransformation &T, 
                const mfem::IntegrationPoint &ip) override
    {
       // GetGradient() evaluates at T's CURRENT integration point, which it reads

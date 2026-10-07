@@ -10,14 +10,27 @@
 #include "mfem.hpp"
 #include "../linalg/complex_block_layout.hpp"
 
-// Block-diagonal preconditioner of the packed MQS system (see
-// MqsMassivePortOperator): P on each field block, real and imaginary, with
-// P ~ (K + omega M_sigma)^-1, and the exact inverse of each massive port's
-// corner [0, G/omega; -G/omega, 0]. For the real form [K, -omega M; omega M, K]
-// of K + j omega M this choice keeps the GMRES iteration count bounded
-// independently of omega and the mesh. P is built by @p make_inverse from
-// K + omega M_sigma with the essential rows and columns eliminated: AMG for
-// the scalar 2D field, AMS for the 3D Nedelec field.
+// Preconditioner of the packed MQS system (see MqsMassivePortOperator). Its
+// field part is PRESB (preconditioned square block; Axelsson, Neytcheva et
+// al.) for the real form [A, -B; B, A] of A + jB, here A = K and
+// B = omega M_sigma:
+//
+//     [ A   -B     ]   [ I   0 ] [ H  -B ] [ I  0 ]
+//     [ B   A + 2B ] = [ -I  I ] [ 0   H ] [ I  I ],    H = A + B,
+//
+// With exact solves with H the preconditioned eigenvalues lie in [1/2, 1]
+// for every omega. One application costs two solves with H and one product
+// with M_sigma, about the cost of the block-diagonal diag(H, H). Once
+// omega M_sigma is comparable to K, eddy-current problems need about half the
+// iterations (FGMRES, same tolerance: TEAM 7 at order 2, 66 against 153; the
+// 2D eddy_current example at 1-100 kHz, 81-122 against 171-317). With massive
+// ports at high frequency the port coupling, which this preconditioner leaves
+// to the Krylov solver, dominates and the gain is small (7-22%). Essential
+// rows pass through unchanged. H^-1 is approximated by @p make_inverse, built
+// from H with the essential rows and columns eliminated: AMG for the scalar 2D
+// field, AMS for the 3D Nedelec field. The ports get the exact inverse of
+// their corner [0, G/omega; -G/omega, 0]. M_sigma is held by reference and
+// must outlive the preconditioner.
 class MqsBlockPreconditioner : public mfem::Solver {
 public:
 	using InverseFactory = std::function<std::unique_ptr<mfem::Solver>(mfem::SparseMatrix&)>;
@@ -28,7 +41,9 @@ public:
 						   std::vector<mfem::real_t> conductances,
 						   const InverseFactory& make_inverse)
 		: mfem::Solver(layout.FullSize()), layout(layout), omega(omega),
-		  conductances(std::move(conductances)) {
+		  conductances(std::move(conductances)), M_sigma(M_sigma), essential(ess_tdofs),
+		  r(layout.NDofs()), w1(layout.NDofs()), w2(layout.NDofs()), masked(layout.NDofs()),
+		  Bw(layout.NDofs()) {
 		MFEM_VERIFY(static_cast<int>(this->conductances.size()) == layout.NPorts(),
 			"MqsBlockPreconditioner: one conductance per massive port is required.");
 		field.reset(mfem::Add(1.0, K, omega, M_sigma));
@@ -40,12 +55,22 @@ public:
 
 	void Mult(const mfem::Vector& x, mfem::Vector& y) const override {
 		const int n = layout.NDofs(), h = layout.HalfSize();
-		mfem::Vector r(n), z(n);
-		for (const int offset : { 0, h }) {
-			for (int i = 0; i < n; ++i) { r(i) = x(offset + i); }
-			z = 0.0;
-			inverse->Mult(r, z);
-			for (int i = 0; i < n; ++i) { y(offset + i) = z(i); }
+		// Solve P [y_re; y_im] = [f; g] through the factorization above:
+		// w2 = H^-1 (f + g), w1 = H^-1 (f + B w2), y_re = w1, y_im = w2 - w1.
+		for (int i = 0; i < n; ++i) { r(i) = x(i) + x(h + i); }
+		w2 = 0.0;
+		inverse->Mult(r, w2);
+		// B = omega M_sigma with the essential rows and columns removed.
+		masked = w2;
+		for (const int i : essential) { masked(i) = 0.0; }
+		M_sigma.Mult(masked, Bw);
+		for (const int i : essential) { Bw(i) = 0.0; }
+		for (int i = 0; i < n; ++i) { r(i) = x(i) + omega * Bw(i); }
+		w1 = 0.0;
+		inverse->Mult(r, w1);
+		for (int i = 0; i < n; ++i) {
+			y(i) = w1(i);
+			y(h + i) = w2(i) - w1(i);
 		}
 		for (int p = 0; p < layout.NPorts(); ++p) {
 			const double g = conductances[p] / omega;
@@ -60,6 +85,9 @@ private:
 	ComplexPortLayout layout;
 	double omega;
 	std::vector<mfem::real_t> conductances;
-	std::unique_ptr<mfem::SparseMatrix> field;  // may be referenced by the inverse
-	std::unique_ptr<mfem::Solver> inverse;
+	const mfem::SparseMatrix& M_sigma;          // B = omega M_sigma, held by reference
+	mfem::Array<int> essential;
+	std::unique_ptr<mfem::SparseMatrix> field;  // H, may be referenced by the inverse
+	std::unique_ptr<mfem::Solver> inverse;      // ~ H^-1
+	mutable mfem::Vector r, w1, w2, masked, Bw;  // workspace of Mult
 };

@@ -301,7 +301,8 @@ The curl-curl operator is singular: it annihilates every gradient.
   `A ← A − Gψ` with `(GᵀMG)ψ = GᵀMA`, which is the discrete Coulomb gauge.
 - `direct`: the factorization needs a nonsingular matrix, so the discrete
   Coulomb gauge is imposed by a Lagrange multiplier `p` in the matching H1
-  space (zero on the `n × A = 0` walls):
+  space (constant on each connected piece of the `n × A = 0` walls, zero on
+  the first):
 
   ```
   [ K    MG ] [ A ]   [ b ]
@@ -314,6 +315,14 @@ The curl-curl operator is singular: it annihilates every gradient.
   indefinite and factored by LU (STRUMPACK with MC64 matching, which pivots
   past the zero block). With no `n × A = 0` wall one multiplier is dropped,
   removing the constant.
+
+  `ψ` and `p` are zero on the walls only up to a constant on each connected
+  piece: when the `n × A = 0` boundary comes in separate pieces (two opposite
+  faces, or a cavity wall and the outer box), a potential that is 1 on one
+  piece and 0 on the others has a gradient with zero tangential trace on
+  every wall, which curl-curl annihilates too. Each piece but the first
+  therefore carries one unknown of its own, in the projection and in the
+  gauge; without it the gauged system would be singular.
 
 Every current terminal is a conductor with a direction field `w = −∇v`,
 from a unit conduction potential `v` (analytic `w = φ̂ / (Θr)` for
@@ -537,7 +546,8 @@ with the multiplier above, restricted so that the eddy-current equations are
 untouched: inside a conductor `jωσA` already determines `A`, and charge
 conservation makes `σA`, not `A`, divergence-free, so the multiplier is one
 constant on each conductor (one unknown for a conductor touching no
-`n × A = 0` wall, none for one that does). The gradients that vanish on every
+`n × A = 0` wall; one that does shares the value of the wall pieces it
+touches, joining them into one). The gradients that vanish on every
 conductor, the null space of `K + jωM_σ`, are then exactly the ones
 constrained.
 
@@ -558,9 +568,12 @@ do not include a study of the results' sensitivity to `β`.
 
 `direct` factors the complex field block `K + jωM_σ` once per frequency with STRUMPACK's
 multifrontal LU and takes the ports through the Schur complement `D − B_r F⁻¹ B_c` (without
-STRUMPACK, Eigen's sparse LU of the whole packed real form); `iterative` is GMRES with the
-block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
-exact inverse of the port corner.
+STRUMPACK, Eigen's sparse LU of the complex system); `iterative` is flexible GMRES,
+which stops on the true residual, preconditioned by PRESB,
+`[K, −ωM_σ; ωM_σ, K + 2ωM_σ]`, applied with two AMS solves with `K + ωM_σ`, plus
+the exact inverse of the port corner. With exact inner solves PRESB's
+preconditioned eigenvalues lie in `[1/2, 1]` at every frequency; on TEAM 7 it
+needs less than half the iterations of the block-diagonal `diag(K + ωM_σ, K + ωM_σ)`.
 
 Coupling rows: a massive terminal's `Z = V/I` from its solved voltage, a
 stranded terminal's `Z = jω λ` with `λ = b'·A`; `R = Re Z`, `L = Im Z / ω`.

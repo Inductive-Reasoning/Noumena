@@ -64,20 +64,22 @@ def main():
     positions = measured_positions(args.problem)
     if args.step:
         n = round(positions[-1] / args.step)
-        positions = [i * args.step for i in range(n + 1)]
+        # Rounded so that a position read back from dz.csv compares equal
+        # (3 * 0.1 is 0.30000000000000004, written and read back as 0.3).
+        positions = [round(i * args.step, 9) for i in range(n + 1)]
     out = HERE / f"results-{args.problem}"
     out.mkdir(exist_ok=True)
     table = out / "dz.csv"
     done = set()
     if table.exists():
         with open(table) as f:
-            done = {float(r["x_mm"]) for r in csv.DictReader(f)}
+            done = {round(float(r["x_mm"]), 9) for r in csv.DictReader(f)}
     else:
         table.write_text("x_mm,L0_H,R0_ohm,dL_uH,dR_ohm\n")
     scale = 2  # the model is half the coil
 
     for x_mm in positions:
-        if x_mm in done:
+        if round(x_mm, 9) in done:
             continue
         work = out / f"x{x_mm:g}"
         work.mkdir(exist_ok=True)

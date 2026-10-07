@@ -565,9 +565,11 @@ TEST_CASE("3D MQS reports a massive current that does not balance", "[solvers][m
 
 #ifdef MFEM_USE_MPI
 
-// Both linear solvers solve the same regularized system, so they must agree
-// to the iterative tolerance.
-TEST_CASE("3D MQS impedances agree between the GMRES and direct solvers",
+// The iterative solver is regularized (charge conservation off by at most
+// 1e-6 relative) and the direct solver gauged exactly. The regularization's
+// effect on these impedances is far below that bound, and with the solve at
+// the default 1e-12 tolerance the two agree to 1e-7.
+TEST_CASE("3D MQS impedances agree between the FGMRES and direct solvers",
 		  "[solvers][mqs][3d][coupling][ams]") {
 	const AnnulusSpec spec = EddyCurrentAnnulus();
 	const std::vector<double> f = { 2000.0 };
