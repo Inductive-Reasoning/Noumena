@@ -282,6 +282,7 @@ public:
 			" true DOFs.");
 		neumann_rhs = AssembleNaturalBoundaryLoad();
 
+		preconditioner.reset();  // refers to the matrices about to be replaced
 		{
 			auto operation = Reporter().Start("complex bilinear form assembly");
 			// Setup Complex Billinear Form
@@ -342,7 +343,6 @@ public:
 		direct_solver.reset();
 		packed_matrix.reset();
 		factored_omega = 0.0;
-		preconditioner.reset();
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
@@ -485,7 +485,8 @@ public:
 			// FGMRES preconditioned by PRESB with AMG (see
 			// MqsBlockPreconditioner).
 			EnsurePreconditionerForActiveFrequency();
-			SolveNonsymmetricIteratively(*A_op.Ptr(), *preconditioner, B_vec, X_vec);
+			SolveNonsymmetricIteratively(*A_op.Ptr(), *preconditioner, B_vec, X_vec,
+										 ess_packed_tdofs);
 		}
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh
