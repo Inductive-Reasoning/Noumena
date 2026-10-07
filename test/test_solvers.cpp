@@ -209,6 +209,59 @@ TEST_CASE("Boundary closures and voltage terminals have distinct ownership",
     fs::remove(mesh_file);
 }
 
+// A meridional domain may meet the axis at a single vertex (a cone or diamond
+// tip), which no boundary element lies on and no attribute tags. That is a
+// regular geometry; A_phi = 0 is imposed at the vertex itself.
+TEST_CASE("An axisymmetric domain touching the axis at a point is solved with A_phi = 0 there",
+          "[solvers][axisymmetric][axis][boundaries]") {
+    const std::string mesh_file = "test_axis_point_contact.mesh";
+    {
+        // Diamond with its left tip (vertex 0) on the axis; the right edges
+        // (attribute 2) are Dirichlet, the left ones (3) natural.
+        std::ofstream m(mesh_file);
+        m << "MFEM mesh v1.0\n\ndimension\n2\n\nelements\n4\n"
+             "1 2 0 1 4\n1 2 1 2 4\n1 2 2 3 4\n1 2 3 0 4\n\n"
+             "boundary\n4\n3 1 0 1\n2 1 1 2\n2 1 2 3\n3 1 3 0\n\n"
+             "vertices\n5\n2\n0 1\n1 0\n2 1\n1 2\n1 1\n";
+    }
+    json config = {
+        {"simulation", {{"physics_type", "magnetoquasistatics"}, {"mesh", mesh_file},
+                        {"order", 2}, {"geometry_type", "axisymmetric"},
+                        {"analysis_type", "field"}, {"linear_solver", "direct"}}},
+        {"entity_groups", json::array({
+            {{"name", "Domain"}, {"dim", 2}, {"attribute_ids", {1}}},
+            {{"name", "Right"}, {"dim", 1}, {"attribute_ids", {2}}}})},
+        {"regions", json::array({{{"entity_group", "Domain"}, {"material", "Air"}}})},
+        {"materials", json::array({{{"name", "Air"}, {"properties", {{"mu_r", 1.0}, {"sigma", 0.0}}}}})},
+        {"terminals", json::array({{{"name", "Coil"}, {"quantity", "current"},
+                                    {"conductor_type", "stranded"}, {"entity_group", "Domain"}}})},
+        {"boundary_conditions", json::array({{{"type", "dirichlet"}, {"entity_group", "Right"},
+                                              {"value", 0.0}}})},
+        {"scenarios", json::array({{{"name", "Drive"}, {"frequency", 60.0},
+                                    {"excitations", json::array({{{"terminal", "Coil"}, {"value", 1.0}}})}}})}
+    };
+
+    mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
+    mesh.UniformRefinement();
+    mesh.UniformRefinement();
+    MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
+    REQUIRE_NOTHROW(solver.Setup());
+    solver.Run();
+    const mfem::GridFunction& a = solver.GetSolutionReal();
+    mfem::Array<int> tip;
+    a.FESpace()->GetVertexDofs(0, tip);
+    REQUIRE(a.Normlinf() > 0.0);
+    REQUIRE(a(tip[0]) == 0.0);
+
+    config["simulation"]["physics_type"] = "magnetostatics";
+    config["scenarios"][0].erase("frequency");
+    mfem::Mesh static_mesh(mesh_file.c_str(), 1, 1);
+    MagnetostaticSolver magnetostatic(static_mesh, DecodeConfig(config));
+    REQUIRE_NOTHROW(magnetostatic.Setup());
+    REQUIRE_NOTHROW(magnetostatic.Run());
+    fs::remove(mesh_file);
+}
+
 TEST_CASE("Axisymmetric magnetic solvers enforce zero A_phi on the axis",
           "[solvers][axisymmetric][axis][boundaries]") {
     const std::string mesh_file = "test_magnetic_axis_boundary.mesh";
@@ -2344,6 +2397,16 @@ TEST_CASE("Mesh loader accepts a tetrahedral mesh and marks it for refinement",
     REQUIRE(mesh->CheckElementOrientation(false) == 0);
 
     fs::remove(mesh_file);
+}
+
+// MFEM aborts when asked to refine quadrilaterals conformingly; the
+// refinement must reject such a mesh with a catchable error first.
+TEST_CASE("Conforming AMR rejects a quadrilateral mesh", "[solvers][amr]") {
+    mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(2, 2, mfem::Element::QUADRILATERAL);
+    mfem::Array<int> marked;
+    marked.Append(0);
+    REQUIRE_THROWS_WITH(amr::RefineConforming(mesh, marked),
+        Catch::Matchers::ContainsSubstring("only supported for simplex"));
 }
 
 TEST_CASE("Electrostatic coupling ignores fixed Neumann background",

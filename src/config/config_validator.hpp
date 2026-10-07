@@ -522,8 +522,9 @@ private:
             return;
         }
 
-        const int max_dom = mesh ? mesh->attributes.Max() : 0;
-        const int max_bdr = mesh ? mesh->bdr_attributes.Max() : 0;
+        // Array::Max() of an empty array is undefined (asserted only in debug).
+        const int max_dom = mesh && mesh->attributes.Size() ? mesh->attributes.Max() : 0;
+        const int max_bdr = mesh && mesh->bdr_attributes.Size() ? mesh->bdr_attributes.Max() : 0;
 
         // The role of a group (boundary vs. domain) is derived by comparing its
         // entity dimension to the mesh dimension, so a reference dimension is
@@ -631,7 +632,13 @@ private:
             }
             for (const auto& group : config["entity_groups"]) {
                 if (group.value("name", std::string{}) != name) continue;
-                for (int attribute : group["attribute_ids"]) attributes.insert(attribute);
+                // A group without valid attribute_ids is reported by
+                // ValidateEntityGroups; it contributes no attributes here.
+                if (group.contains("attribute_ids") && group["attribute_ids"].is_array()) {
+                    for (const auto& attribute : group["attribute_ids"]) {
+                        if (attribute.is_number_integer()) attributes.insert(attribute.get<int>());
+                    }
+                }
                 break;
             }
             return attributes;
@@ -691,9 +698,10 @@ private:
 
             if (!reg.contains("current_constraint")) continue;
             const std::string constraint = reg["current_constraint"];
+            if (constraint == "none") continue;
             if (constraint != "open") {
                 AddError(prefix + ".current_constraint",
-                    "Invalid current constraint '" + constraint + "'. Must be 'open'");
+                    "Invalid current constraint '" + constraint + "'. Must be 'none' or 'open'");
                 continue;
             }
             if (PhysicsType(config) != "magnetoquasistatics") {
@@ -1008,7 +1016,9 @@ private:
         std::string type = PhysicsType(config);
 
         // Magnetic simulations need at least one current terminal to excite the field.
-        if ((type == "magnetostatics" || type == "magnetoquasistatics") && !config.contains("terminals")) {
+        const bool no_terminals = !config.contains("terminals") ||
+            (config["terminals"].is_array() && config["terminals"].empty());
+        if ((type == "magnetostatics" || type == "magnetoquasistatics") && no_terminals) {
             AddError("terminals", "Magnetic simulations require at least one terminal");
             return;
         }
@@ -1215,6 +1225,7 @@ private:
                 continue;
             }
 
+            std::set<std::string> driven;
             for (size_t j = 0; j < sc["excitations"].size(); ++j) {
                 const auto& d = sc["excitations"][j];
                 std::string dprefix = prefix + ".excitations[" + std::to_string(j) + "]";
@@ -1223,11 +1234,18 @@ private:
                     AddError(dprefix + ".terminal", "Missing required field 'terminal'");
                     continue;
                 }
+                if (!d.contains("value")) {
+                    AddError(dprefix + ".value", "Missing required field 'value'");
+                }
 
                 std::string tname = d["terminal"];
                 if (terminal_names.find(tname) == terminal_names.end()) {
                     AddError(dprefix + ".terminal", "Unknown terminal '" + tname +
                             "'. No terminal with that name is declared");
+                }
+                if (!driven.insert(tname).second) {
+                    AddError(dprefix + ".terminal", "Terminal '" + tname +
+                            "' is excited more than once in this scenario");
                 }
 
                 if (d.contains("phase") && d["phase"].is_number()) {

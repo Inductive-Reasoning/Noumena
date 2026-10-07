@@ -79,7 +79,7 @@ public:
 									std::shared_ptr<const MqsVectorElectricField> field)
 		: sigma(sigma), field(std::move(field)) {}
 
-	double Eval(mfem::ElementTransformation& T, const mfem::IntegrationPoint& ip) override {
+	mfem::real_t Eval(mfem::ElementTransformation& T, const mfem::IntegrationPoint& ip) override {
 		T.SetIntPoint(&ip);
 		const double s = sigma.Eval(T, ip);
 		if (s <= 0.0) { return 0.0; }

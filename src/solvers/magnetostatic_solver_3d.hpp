@@ -192,17 +192,22 @@ private:
 	std::vector<mfem::Vector> terminal_loads;  // projected 1 A loads, terminal order
 	std::unique_ptr<mfem::DenseMatrix> L;      // inductance matrix (coupling runs)
 
+	// A coupling column is the response to its terminal alone: the
+	// programmatic source and tangential boundary data are background, left
+	// out as in the 2D solvers' coupling runs, or every column of L would
+	// carry the same background flux linkage.
 	void ImprintScenario(const Scenario& scenario) {
+		const bool background = config.AnalysisType != AnalysisType::CouplingMatrix;
 		*A = 0.0;
-		if (boundary_value) {
+		if (background && boundary_value) {
 			A->ProjectBdrCoefficientTangent(*boundary_value, ess_bdr);
 		}
 		b = std::make_unique<mfem::LinearForm>(fespace.get());
-		if (source) {
+		if (background && source) {
 			b->AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(*source));
 		}
 		b->Assemble();
-		if (source) { projector->Project(*b); }
+		if (background && source) { projector->Project(*b); }
 
 		for (size_t k = 0; k < conductors.size(); ++k) {
 			const double current = ExcitationFor(scenario, conductors[k].Name).real();

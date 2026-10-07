@@ -4,6 +4,7 @@
 #pragma once
 #include <cmath>
 #include <complex>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -42,6 +43,10 @@ protected:
     // solver, not to the shared plumbing.
     std::unique_ptr<mfem::FiniteElementCollection> fec;
     std::unique_ptr<mfem::FiniteElementSpace> fespace;
+    // The stiffness of the AMR energy norm (EstimateRelativeZZError), per mesh.
+    std::unique_ptr<mfem::BilinearForm> energy_form;
+    const mfem::FiniteElementSpace* energy_fes = nullptr;
+    long energy_sequence = -1;
     GeometryType geometry = GeometryType::Planar;
     mfem::Array<int> ess_bdr;
     mfem::Array<int> ess_tdof_list;
@@ -120,7 +125,8 @@ protected:
     // Called from Setup(); the result is refinement-invariant (attribute-keyed)
     // and is reused across every AMR pass.
     virtual void BuildEssentialBoundaryMarker() {
-        ess_bdr = boundary_conditions.DirichletMarker(mesh.bdr_attributes.Max());
+        ess_bdr = boundary_conditions.DirichletMarker(
+            mesh.bdr_attributes.Size() ? mesh.bdr_attributes.Max() : 0);
     }
 
     // Every connected piece of the mesh needs something that fixes the scalar
@@ -291,6 +297,45 @@ protected:
                 << config.SolverTolerance << ": the round-off floor of this system.";
             Reporter().Diagnostic(msg.str());
         }
+    }
+
+    // Recovery-based (Zienkiewicz-Zhu) error indicator of a scalar solution
+    // @p parts (one field, or a phasor's real and imaginary parts, combined
+    // in quadrature), divided by sqrt of its field energy Et = 1/2 u^T K u to
+    // make it a dimensionless RELATIVE error: the raw indicator has units of
+    // sqrt(energy) and scales with the excitation, so folding raw indicators
+    // across scenarios would let the most strongly driven one set the mesh.
+    // @p make_stiffness is the solve's stiffness integrator (the flux is
+    // grad u, the coefficient applied in the energy); K is assembled once per
+    // mesh. A zero solution carries no energy and no meaningful relative
+    // error, so its indicator is left unscaled.
+    void EstimateRelativeZZError(const std::vector<mfem::GridFunction*>& parts,
+                                 const std::function<mfem::BilinearFormIntegrator*()>& make_stiffness,
+                                 mfem::Vector& errors) {
+        const std::unique_ptr<mfem::BilinearFormIntegrator> flux_integ(make_stiffness());
+        mfem::FiniteElementSpace flux_fes(&mesh, fec.get(), mesh.SpaceDimension());
+        if (!energy_form || energy_fes != fespace.get() ||
+            energy_sequence != mesh.GetSequence()) {
+            energy_form = std::make_unique<mfem::BilinearForm>(fespace.get());
+            energy_form->AddDomainIntegrator(make_stiffness());
+            energy_form->Assemble();
+            energy_form->Finalize();
+            energy_fes = fespace.get();
+            energy_sequence = mesh.GetSequence();
+        }
+        errors.SetSize(mesh.GetNE());
+        errors = 0.0;
+        double energy = 0.0;
+        for (mfem::GridFunction* u : parts) {
+            mfem::ZienkiewiczZhuEstimator estimator(*flux_integ, *u, flux_fes);
+            estimator.SetWithCoeff(false);  // the flux is grad u; the energy applies the coefficient
+            estimator.SetFluxAveraging(1);  // do not average across attribute interfaces
+            const mfem::Vector& local = estimator.GetLocalErrors();
+            for (int k = 0; k < errors.Size(); ++k) { errors(k) = std::hypot(errors(k), local(k)); }
+            // Clamp the round-off of a nearly null solution's quadratic form.
+            energy += std::max(0.0, 0.5 * energy_form->InnerProduct(*u, *u));
+        }
+        if (energy > 0.0) { errors /= std::sqrt(energy); }
     }
 
     // Report a finished Krylov solve. Non-convergence is an error: the last

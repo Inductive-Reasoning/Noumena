@@ -14,6 +14,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -43,6 +44,7 @@ class ProbeSampler {
 public:
 	ProbeSampler(mfem::Mesh& mesh, const ProblemConfig& config) : mesh_(mesh) {
 		const std::vector<Box> boxes = ElementBoxes();
+		const BoxGrid grid(boxes, mesh_.SpaceDimension());
 		for (const Probe& probe : config.Output.Probes) {
 			std::set<int> attributes;
 			if (!probe.EntityGroupName.empty()) {
@@ -54,7 +56,7 @@ public:
 			}
 			Located located{ &probe, {} };
 			for (const std::vector<double>& point : probe.Points) {
-				located.At.push_back(Locate(probe, point, attributes, boxes));
+				located.At.push_back(Locate(probe, point, attributes, boxes, grid));
 			}
 			probes_.push_back(std::move(located));
 		}
@@ -103,6 +105,8 @@ public:
 				}
 				out << "\n";
 			}
+			out.close();
+			MFEM_VERIFY(!out.fail(), "Writing probe file " << path.string() << " failed");
 		}
 	}
 
@@ -117,6 +121,68 @@ private:
 	};
 	struct Box {
 		mfem::Vector Low, High;
+	};
+
+	// A uniform grid over the element boxes, about one element per cell, so a
+	// point is tested only against the boxes overlapping its cell instead of
+	// every element of the mesh.
+	struct BoxGrid {
+		int dim = 0;
+		int n[3] = { 1, 1, 1 };
+		double low[3] = { 0.0, 0.0, 0.0 }, size[3] = { 1.0, 1.0, 1.0 };
+		std::vector<std::vector<int>> cells;
+
+		BoxGrid(const std::vector<Box>& boxes, int dim) : dim(dim) {
+			if (boxes.empty()) { cells.resize(1); return; }
+			double high[3] = { 0.0, 0.0, 0.0 };
+			for (int c = 0; c < dim; ++c) {
+				low[c] = std::numeric_limits<double>::max();
+				high[c] = std::numeric_limits<double>::lowest();
+				for (const Box& box : boxes) {
+					low[c] = std::min(low[c], box.Low(c));
+					high[c] = std::max(high[c], box.High(c));
+				}
+			}
+			const int per_axis = std::max(1, static_cast<int>(
+				std::round(std::pow(static_cast<double>(boxes.size()), 1.0 / dim))));
+			for (int c = 0; c < dim; ++c) {
+				n[c] = per_axis;
+				size[c] = std::max(high[c] - low[c], std::numeric_limits<double>::min()) / n[c];
+			}
+			cells.resize(static_cast<size_t>(n[0]) * n[1] * n[2]);
+			for (size_t e = 0; e < boxes.size(); ++e) {
+				int from[3] = { 0, 0, 0 }, to[3] = { 0, 0, 0 };
+				for (int c = 0; c < dim; ++c) {
+					from[c] = Clamp(c, boxes[e].Low(c));
+					to[c] = Clamp(c, boxes[e].High(c));
+				}
+				for (int i = from[0]; i <= to[0]; ++i)
+					for (int j = from[1]; j <= to[1]; ++j)
+						for (int k = from[2]; k <= to[2]; ++k)
+							cells[Index(i, j, k)].push_back(static_cast<int>(e));
+			}
+		}
+
+		/// The elements whose boxes may hold @p x (none outside the grid).
+		const std::vector<int>& Candidates(const mfem::Vector& x) const {
+			static const std::vector<int> none;
+			int at[3] = { 0, 0, 0 };
+			for (int c = 0; c < dim; ++c) {
+				const double t = (x(c) - low[c]) / size[c];
+				if (t < 0.0 || t > n[c]) { return none; }
+				at[c] = Clamp(c, x(c));
+			}
+			return cells[Index(at[0], at[1], at[2])];
+		}
+
+	private:
+		int Clamp(int c, double v) const {
+			const int i = static_cast<int>(std::floor((v - low[c]) / size[c]));
+			return std::min(std::max(i, 0), n[c] - 1);
+		}
+		size_t Index(int i, int j, int k) const {
+			return (static_cast<size_t>(k) * n[1] + j) * n[0] + i;
+		}
 	};
 
 	mfem::Mesh& mesh_;
@@ -153,29 +219,35 @@ private:
 	}
 
 	Location Locate(const ::Probe& probe, const std::vector<double>& point,
-					const std::set<int>& attributes, const std::vector<Box>& boxes) const {
+					const std::set<int>& attributes, const std::vector<Box>& boxes,
+					const BoxGrid& grid) const {
 		const int dim = mesh_.SpaceDimension();
 		MFEM_VERIFY(static_cast<int>(point.size()) == dim,
 			"Probe '" << probe.Name << "' has a point with " << point.size()
 			<< " coordinates in a mesh of space dimension " << dim << ".");
 		mfem::Vector x(dim);
 		for (int c = 0; c < dim; ++c) { x(c) = point[c]; }
-		// First the elements whose box holds the point, then, since a box can
-		// miss part of a curved element, all the others.
-		for (const bool in_box_pass : { true, false }) {
-			for (int e = 0; e < mesh_.GetNE(); ++e) {
-				if (!attributes.empty() && !attributes.count(mesh_.GetAttribute(e))) continue;
-				bool inside_box = true;
-				for (int c = 0; c < dim && inside_box; ++c) {
-					inside_box = x(c) >= boxes[e].Low(c) && x(c) <= boxes[e].High(c);
-				}
-				if (inside_box != in_box_pass) continue;
-				mfem::InverseElementTransformation inverse(mesh_.GetElementTransformation(e));
-				Location location{ e, {} };
-				if (inverse.Transform(x, location.Point) == mfem::InverseElementTransformation::Inside) {
-					return location;
-				}
+		const auto in_box = [&](int e) {
+			for (int c = 0; c < dim; ++c) {
+				if (x(c) < boxes[e].Low(c) || x(c) > boxes[e].High(c)) { return false; }
 			}
+			return true;
+		};
+		const auto contains = [&](int e, Location& location) {
+			if (!attributes.empty() && !attributes.count(mesh_.GetAttribute(e))) { return false; }
+			mfem::InverseElementTransformation inverse(mesh_.GetElementTransformation(e));
+			location = { e, {} };
+			return inverse.Transform(x, location.Point) == mfem::InverseElementTransformation::Inside;
+		};
+		// First the elements whose box holds the point (found through the
+		// grid), then, since a box can miss part of a curved element, all the
+		// others.
+		Location location;
+		for (const int e : grid.Candidates(x)) {
+			if (in_box(e) && contains(e, location)) { return location; }
+		}
+		for (int e = 0; e < mesh_.GetNE(); ++e) {
+			if (!in_box(e) && contains(e, location)) { return location; }
 		}
 		std::ostringstream where;
 		for (int c = 0; c < dim; ++c) { where << (c ? ", " : "") << point[c]; }

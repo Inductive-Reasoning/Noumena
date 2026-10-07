@@ -188,8 +188,15 @@ TEST_CASE("ConfigValidator validates open-current MQS regions",
 		json config = ValidMqsConfig();
 		config["materials"][0]["properties"]["sigma"] = 1.0e6;
 		config["regions"][0]["current_constraint"] = "open";
-		config["terminals"] = json::array();
-		config["scenarios"][0]["excitations"] = json::array();
+		// The drive is a stranded coil beside the open region.
+		config["entity_groups"].push_back({{"name", "Coil"}, {"dim", 2}, {"attribute_ids", {2}}});
+		config["materials"].push_back({{"name", "Air"}, {"properties", {{"mu_r", 1.0}, {"sigma", 0.0}}}});
+		config["regions"].push_back({{"entity_group", "Coil"}, {"material", "Air"}});
+		config["terminals"] = json::array({
+			{{"name", "Coil"}, {"quantity", "current"}, {"conductor_type", "stranded"},
+			 {"entity_group", "Coil"}}
+		});
+		config["scenarios"][0]["excitations"] = json::array({{{"terminal", "Coil"}, {"value", 1.0}}});
 
 		ConfigValidator validator;
 		REQUIRE(validator.Validate(config));
@@ -580,6 +587,51 @@ TEST_CASE("ConfigValidator rejects duplicate names", "[config_validator]") {
 		ConfigValidator validator;
 		REQUIRE_FALSE(validator.Validate(config));
 		REQUIRE(HasError(validator, "scenarios[1].name"));
+	}
+}
+
+TEST_CASE("ConfigValidator reports malformed groups, terminals and excitations",
+		  "[config_validator]") {
+	SECTION("a group without attribute_ids is an error, not a crash") {
+		json config = ValidMqsConfig();
+		config["entity_groups"][0].erase("attribute_ids");
+		config["terminals"][0]["conductor_type"] = "massive";
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "entity_groups[0].attribute_ids"));
+	}
+
+	SECTION("current_constraint 'none' is the documented default") {
+		json config = ValidConfig();
+		config["regions"][0]["current_constraint"] = "none";
+		ConfigValidator validator;
+		REQUIRE(validator.Validate(config));
+	}
+
+	SECTION("a magnetic run with an empty terminal list") {
+		json config = ValidMqsConfig();
+		config["terminals"] = json::array();
+		config["scenarios"][0]["excitations"] = json::array();
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "terminals"));
+	}
+
+	SECTION("an excitation without a value") {
+		json config = ValidConfig();
+		config["scenarios"][0]["excitations"][0].erase("value");
+		config["scenarios"][0]["excitations"][0]["amplitude"] = 1.0;  // a typo
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "scenarios[0].excitations[0].value"));
+	}
+
+	SECTION("a terminal excited twice in one scenario") {
+		json config = ValidConfig();
+		config["scenarios"][0]["excitations"].push_back({{"terminal", "Drive"}, {"value", 2.0}});
+		ConfigValidator validator;
+		REQUIRE_FALSE(validator.Validate(config));
+		REQUIRE(HasError(validator, "scenarios[0].excitations[1].terminal"));
 	}
 }
 

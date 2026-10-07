@@ -137,7 +137,7 @@ public:
 	 *       with MFEM_USE_SINGLE, this signature must become mfem::real_t or it
 	 *       will silently stop overriding Coefficient::Eval.
 	 */
-	double Eval(mfem::ElementTransformation& T,
+	mfem::real_t Eval(mfem::ElementTransformation& T,
 				const mfem::IntegrationPoint& ip) override {
 		T.SetIntPoint(&ip);
 
