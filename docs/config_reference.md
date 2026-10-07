@@ -126,7 +126,11 @@ sweep reuses the ordering and redoes only the numerical factorization. Without i
 it falls back to Eigen's sparse LU of the complex system, which is much slower
 and larger in 3D, and says so at startup. In every iterative solver `solver_tolerance` is the
 relative residual the Krylov method monitors. For MQS (FGMRES) that is the true
-`||b - Ax|| / ||b||`; CG measures it in the preconditioner's norm, so for the
+`||b - Ax|| / ||b||`, `b` without the rows that hold Dirichlet values, checked
+on the final solution; a residual that restarting no longer reduces is the
+round-off floor of the system, which can lie above a tight tolerance (7e-10
+against 1e-12 for a 2D two-port problem at 5 kHz), and is accepted and
+reported. CG measures it in the preconditioner's norm, so for the
 static problems the raw residual can be somewhat larger. A solve that does not
 reach it within `solver_max_iter` iterations stops the run with an error.
 

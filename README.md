@@ -135,11 +135,12 @@ mingw32-make -j
 ## STRUMPACK
 
 The MQS solvers' `direct` linear solver factors the complex system with
-[STRUMPACK](https://github.com/pghysels/STRUMPACK), 10 to 60 times faster and
-with 5 to 10 times less memory than the fallback, Eigen's LU of the packed
-real form (measured on 2D and 3D MQS systems of 31k to 66k unknowns; a 66k
-3D system factors in about a second instead of 75 s). It is on by default
-(`USE_STRUMPACK`) and needs:
+[STRUMPACK](https://github.com/pghysels/STRUMPACK). Against an LU of the
+packed real form it was 10 to 60 times faster with 5 to 10 times less memory
+(2D and 3D MQS systems of 31k to 66k unknowns; a 66k 3D system factors in
+about a second instead of 75 s). Without it the solvers fall back to Eigen's
+sparse LU of the complex system, which works but is much slower and larger in
+3D. It is on by default (`USE_STRUMPACK`) and needs:
 
 - a Fortran compiler: gfortran, LLVM Flang or Intel ifx;
 - BLAS and LAPACK (OpenBLAS, MKL, ...);

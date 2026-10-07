@@ -4301,8 +4301,9 @@ TEST_CASE("MQS frequency sweep reuses the direct factorization's ordering exactl
 // K + omega M_sigma and the exact port-corner inverse (MqsBlockPreconditioner).
 // It must reproduce the direct solve, with two massive ports and a passive
 // shield, over two decades of frequency, within a bounded number of
-// iterations: it takes 26 at 50 Hz and 228 at 5 kHz to a true relative
-// residual of 1e-12, where unpreconditioned GMRES does not converge in 5000.
+// iterations: 29-32 at 50 Hz and 143-154 at 5 kHz, where unpreconditioned
+// GMRES does not converge in 5000. At the 1e-12 tolerance the true residual
+// stalls at its round-off floor, 4e-12 at 50 Hz and 7e-10 at 5 kHz.
 TEST_CASE("2D MQS impedances agree between the preconditioned FGMRES and direct solvers",
           "[solvers][mqs][coupling][linear_solver][amg]") {
     const std::string mesh_file = "test_mqs_gmres_2d.mesh";
