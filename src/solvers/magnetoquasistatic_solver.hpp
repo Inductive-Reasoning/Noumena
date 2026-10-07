@@ -558,32 +558,10 @@ public:
     //
     // @param errors  Output: per-element error indicator (sized to NE).
     void EstimateCurrentSolutionError(mfem::Vector& errors) override {
-        const int sdim = mesh.SpaceDimension();
-        std::unique_ptr<mfem::BilinearFormIntegrator> flux_integ(MakeStiffnessIntegrator());
-        mfem::FiniteElementSpace flux_fes(&mesh, fec.get(), sdim);
-        mfem::ZienkiewiczZhuEstimator estimator_re(*flux_integ, A->real(), flux_fes);
-        estimator_re.SetWithCoeff(false);     // flux = nu * grad(A)
-        estimator_re.SetFluxAveraging(1);    // do not average across attribute interfaces
-
-        mfem::ZienkiewiczZhuEstimator estimator_im(*flux_integ, A->imag(), flux_fes);
-        estimator_im.SetWithCoeff(false);     // flux = nu * grad(A)
-        estimator_im.SetFluxAveraging(1);    // do not average across attribute interfaces
-
-        const mfem::Vector& errs_re = estimator_re.GetLocalErrors();
-        const mfem::Vector& errs_im = estimator_im.GetLocalErrors();
-        errors.SetSize(errs_re.Size());
-        for (int k = 0; k < errors.Size(); ++k) {
-            errors(k) = std::hypot(errs_re(k), errs_im(k));
-        }
-
-        // Energy of the phasor is the sum of the real and imaginary parts'
-        // energies (the cross term vanishes in the time average). A zero/near-
-        // zero solution carries no energy and no meaningful relative error;
-        // leave the indicator unscaled rather than dividing by ~0.
-        const double energy =
-            amr::FieldEnergy(*fespace, MakeStiffnessIntegrator(), A->real()) +
-            amr::FieldEnergy(*fespace, MakeStiffnessIntegrator(), A->imag());
-        if (energy > 0.0) { errors /= std::sqrt(energy); }
+        // The phasor's energy is the sum of its parts' (the cross term vanishes
+        // in the time average), and so is its squared indicator.
+        EstimateRelativeZZError({ &A->real(), &A->imag() },
+                                [this] { return MakeStiffnessIntegrator(); }, errors);
     }
 
     // Peak flux density |B| over the current solution *A, sampled at element
@@ -737,14 +715,7 @@ public:
 
     std::pair<double, double> ComputeStrandedFluxLinkage(
         const std::string& terminal_name) const {
-        mfem::Vector unit_density =
-            BuildTerminalCurrentDensity(terminal_name, 1.0);
-        mfem::PWConstCoefficient unit_density_coeff(unit_density);
-        mfem::LinearForm winding_functional(fespace.get());
-        winding_functional.AddDomainIntegrator(
-            Geometry().NewDomainLFIntegrator(unit_density_coeff));
-        winding_functional.Assemble();
-
+        const mfem::Vector& winding_functional = WindingFunctional(terminal_name);
         // The integrator carries the full geometric measure, so these are webers.
         return {
             winding_functional * A->real(),

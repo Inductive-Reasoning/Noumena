@@ -455,12 +455,52 @@ protected:
 		const std::string& terminal_name, double current) const {
 		const Terminal& term = config.Terminals.at(terminal_name);
 		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-		const double area = CalculateRegionMeasure(group.AttributeIds);
+		return AttributeVector(group.AttributeIds,
+							   term.Turns * current / TerminalArea(terminal_name));
+	}
+
+	// A stranded terminal's winding functional, lambda_k(A) = integral of
+	// (N_k/area_k) A dV: the flux linkage of the field A with terminal k, the
+	// load of a unit current in it. It depends on the mesh only, so it is
+	// assembled once per mesh rather than per coupling-matrix entry.
+	const mfem::Vector& WindingFunctional(const std::string& terminal_name) const {
+		ForgetMeshCachesOnRefinement();
+		const auto cached = winding_functionals.find(terminal_name);
+		if (cached != winding_functionals.end()) { return cached->second; }
+		mfem::Vector unit_density = BuildTerminalCurrentDensity(terminal_name, 1.0);
+		mfem::PWConstCoefficient unit_density_coeff(unit_density);
+		mfem::LinearForm functional(fespace.get());
+		functional.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(unit_density_coeff));
+		functional.Assemble();
+		return winding_functionals.emplace(terminal_name, mfem::Vector(functional)).first->second;
+	}
+
+private:
+	// The cross-section of a stranded terminal, measured once per mesh.
+	double TerminalArea(const std::string& terminal_name) const {
+		ForgetMeshCachesOnRefinement();
+		const auto cached = terminal_areas.find(terminal_name);
+		if (cached != terminal_areas.end()) { return cached->second; }
+		const Terminal& term = config.Terminals.at(terminal_name);
+		const double area = CalculateRegionMeasure(
+			config.EntityGroups.at(term.EntityGroupName).AttributeIds);
 		MFEM_VERIFY(area > 0.0,
 			"Current terminal '" + terminal_name + "' has zero cross-section.");
-
-		return AttributeVector(group.AttributeIds, term.Turns * current / area);
+		return terminal_areas.emplace(terminal_name, area).first->second;
 	}
+
+	void ForgetMeshCachesOnRefinement() const {
+		if (cached_sequence == mesh.GetSequence()) { return; }
+		terminal_areas.clear();
+		winding_functionals.clear();
+		cached_sequence = mesh.GetSequence();
+	}
+
+	mutable std::map<std::string, double> terminal_areas;
+	mutable std::map<std::string, mfem::Vector> winding_functionals;
+	mutable long cached_sequence = -1;
+
+protected:
 
 	// A massive conductor carries its DC conduction distribution
 	// J = sigma w V, with the path w = 1 per unit length in the plane and
