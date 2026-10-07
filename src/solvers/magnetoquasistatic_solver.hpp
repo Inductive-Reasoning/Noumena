@@ -484,7 +484,8 @@ public:
 			// FGMRES preconditioned by PRESB with AMG (see
 			// MqsBlockPreconditioner).
 			EnsurePreconditionerForActiveFrequency();
-			SolveNonsymmetricIteratively(*A_op.Ptr(), *preconditioner, B_vec, X_vec);
+			SolveNonsymmetricIteratively(*A_op.Ptr(), *preconditioner, B_vec, X_vec,
+										 ess_packed_tdofs);
 		}
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh

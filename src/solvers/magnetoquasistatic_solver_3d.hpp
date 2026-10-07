@@ -480,7 +480,7 @@ private:
 	void SolveIteratively(const mfem::Vector& rhs, mfem::Vector& x) {
 #ifdef MFEM_USE_MPI
 		mfem::ConstrainedOperator system(&port_operator->Operator(), ess_packed_tdofs);
-		SolveNonsymmetricIteratively(system, *preconditioner, rhs, x);
+		SolveNonsymmetricIteratively(system, *preconditioner, rhs, x, ess_packed_tdofs);
 #else
 		(void)rhs;
 		(void)x;

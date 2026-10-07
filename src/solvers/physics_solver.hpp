@@ -213,12 +213,26 @@ protected:
 
     // Solve the time-harmonic (MQS) systems, which are not symmetric in their
     // real form, with flexible GMRES from the initial guess in X (zero but for
-    // the essential values). Being right-preconditioned, it monitors the
-    // unpreconditioned residual, and it stops once ||b - A x|| <=
-    // solver_tolerance ||b||. Left-preconditioned GMRES stops on the
-    // preconditioned residual instead, which does not bound the port
-    // quantities: with massive ports at 10-100 kHz a coupling matrix solved to
-    // 1e-10 that way was off by up to 3e-4 against the direct solve.
+    // the essential values). The target is ||b - A x|| <= solver_tolerance
+    // ||b_free||, b_free being b without the @p essential rows: those hold the
+    // essential values themselves, are satisfied by the initial guess, and are
+    // not a load.
+    //
+    // Being right-preconditioned, FGMRES monitors the unpreconditioned
+    // residual; left-preconditioned GMRES monitors the preconditioned one,
+    // which does not bound the port quantities (with massive ports at 10-100
+    // kHz a coupling matrix solved to 1e-10 that way was off by up to 3e-4
+    // against the direct solve). Within a cycle FGMRES tracks the residual
+    // through its Arnoldi recurrence, which can fall below the true residual,
+    // so the true residual is computed when it stops. If that is above the
+    // target, the solve restarts from there, as long as each restart at least
+    // halves it. A residual that no longer falls is the round-off floor of the
+    // system, set by its conditioning, not by the tolerance: at the default
+    // 1e-12 the 2D impedance test's true residual stalls at 4e-12 at 50 Hz and
+    // at 6e-10 at 5 kHz, where the port rows are badly scaled, while the
+    // recurrence reports 1e-12; its impedances still match the direct solve
+    // to 1e-8. A stalled residual is accepted and reported, unless it is above
+    // kMqsStallLimit, far above any round-off floor seen.
     //
     // FGMRES keeps two vectors per iteration (the basis and the preconditioned
     // basis), against GMRES's one, so it restarts after kMqsRestart iterations,
@@ -227,47 +241,80 @@ protected:
     // high frequency (the 2D impedance test at 5 kHz, 127 against 227
     // iterations; the two_loops example at 100 kHz, 160 against 262).
     static constexpr int kMqsRestart = 100;
+    static constexpr double kMqsStallLimit = 1e-6;
 
     void SolveNonsymmetricIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
-                                      const mfem::Vector& B, mfem::Vector& X) const {
-        const double b_norm = B.Norml2();
+                                      const mfem::Vector& B, mfem::Vector& X,
+                                      const mfem::Array<int>& essential) const {
+        mfem::Vector b_free(B);
+        for (const int i : essential) { b_free(i) = 0.0; }
+        const double b_norm = b_free.Norml2();
         if (b_norm == 0.0) {
-            X = 0.0;
+            X = B;  // the essential values, and zero elsewhere
             return;
         }
+        const double target = config.SolverTolerance * b_norm;
         mfem::FGMRESSolver fgmres;
         fgmres.SetOperator(A);
         fgmres.SetPreconditioner(preconditioner);
         fgmres.SetKDim(kMqsRestart);
         fgmres.SetRelTol(0.0);
-        fgmres.SetAbsTol(config.SolverTolerance * b_norm);
-        fgmres.SetMaxIter(config.SolverMaxIter);
+        fgmres.SetAbsTol(target);
         fgmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
-        fgmres.Mult(B, X);
-        RequireConverged(fgmres, "FGMRES", b_norm);
+        mfem::Vector r(B.Size());
+        int iterations = 0;
+        double residual = std::numeric_limits<double>::infinity();
+        bool stalled = false;
+        while (iterations < config.SolverMaxIter) {
+            fgmres.SetMaxIter(config.SolverMaxIter - iterations);
+            fgmres.Mult(B, X);  // continues from X
+            iterations += fgmres.GetNumIterations();
+            A.Mult(X, r);
+            subtract(B, r, r);
+            const double previous = residual;
+            residual = r.Norml2();
+            if (residual <= target || !fgmres.GetConverged()) { break; }
+            if (residual > 0.5 * previous) {
+                stalled = true;
+                break;
+            }
+        }
+        const double relative = residual / b_norm;
+        const bool converged = residual <= target ||
+            (stalled && relative <= kMqsStallLimit);
+        ReportKrylov("FGMRES", converged, iterations, relative);
+        if (stalled && residual > target) {
+            std::ostringstream msg;
+            msg << std::scientific << std::setprecision(3)
+                << "FGMRES: the true relative residual stalls at " << relative
+                << " after " << iterations << " iterations, above solver_tolerance "
+                << config.SolverTolerance << ": the round-off floor of this system.";
+            Reporter().Diagnostic(msg.str());
+        }
     }
 
     // Report a finished Krylov solve. Non-convergence is an error: the last
     // iterate of a solve that missed solver_tolerance is not a result, and
     // passing it on as one (with a warning that is easily missed) would put
     // an unconverged field into every output and coupling matrix.
-    // @p reference_norm, when given, is the norm the residual is relative to
-    // (||b||); otherwise it is relative to the initial residual.
-    void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name,
-                          double reference_norm = 0.0) const {
-        const double relative = reference_norm > 0.0
-            ? solver.GetFinalNorm() / reference_norm : solver.GetFinalRelNorm();
+    void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name) const {
+        ReportKrylov(name, solver.GetConverged(), solver.GetNumIterations(),
+                     solver.GetFinalRelNorm());
+    }
+
+    void ReportKrylov(const std::string& name, bool converged, int iterations,
+                      double relative_residual) const {
         std::ostringstream msg;
         msg << std::scientific << std::setprecision(3);
-        if (!solver.GetConverged()) {
-            msg << name << " did not converge: relative residual " << relative
-                << " after " << solver.GetNumIterations() << " iterations, above "
+        if (!converged) {
+            msg << name << " did not converge: relative residual " << relative_residual
+                << " after " << iterations << " iterations, above "
                    "solver_tolerance " << config.SolverTolerance << ". Raise "
                    "solver_max_iter, loosen solver_tolerance, or use the direct solver.";
             throw std::runtime_error(msg.str());
         }
-        msg << name << " converged in " << solver.GetNumIterations()
-            << " iterations (relative residual " << relative << ").";
+        msg << name << " converged in " << iterations
+            << " iterations (relative residual " << relative_residual << ").";
         Reporter().Diagnostic(msg.str());
     }
 
