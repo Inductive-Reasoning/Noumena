@@ -329,6 +329,7 @@ public:
             port_conductances, omega);
 
         fespace->GetEssentialTrueDofs(ess_bdr, ess_mesh_tdofs);   // indices in [0, N_DOFs)
+        AddAxisTrueDofs(ess_mesh_tdofs);
 
         // Each scalar essential DOF constrains both its real and imaginary copy
         // in the packed [Re|Im] layout (half-size = N_DOFs + N_Ports).

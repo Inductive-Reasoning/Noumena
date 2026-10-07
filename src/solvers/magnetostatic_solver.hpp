@@ -122,6 +122,7 @@ public:
 		a->Assemble();
 
 		fespace->GetEssentialTrueDofs(ess_bdr, ess_tdof_list);
+		AddAxisTrueDofs(ess_tdof_list);
 
 		// Form the constrained system operator. The eliminated-column part
 		// (mat_e, used to build each scenario's RHS) is bound to A_op, which is

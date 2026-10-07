@@ -375,6 +375,25 @@ protected:
 	// needs the axis tagged on its own.
 	mfem::Array<int> axis_boundary;
 
+	// The true DOFs where A_phi = 0 on the axis: those of the axis attribute
+	// and of every axis vertex (a domain meeting the axis at a point has no
+	// axis attribute). The solvers add them to their essential DOFs.
+	mfem::Array<int> AxisTrueDofs() const {
+		mfem::Array<int> tdofs;
+		if (!axis_geometry || !axis_geometry->TouchesAxis()) { return tdofs; }
+		fespace->GetEssentialTrueDofs(axis_boundary, tdofs);
+		tdofs.Append(axisym::AxisVertexDofs(*fespace, *axis_geometry));
+		tdofs.Sort();
+		tdofs.Unique();
+		return tdofs;
+	}
+
+	void AddAxisTrueDofs(mfem::Array<int>& tdofs) const {
+		tdofs.Append(AxisTrueDofs());
+		tdofs.Sort();
+		tdofs.Unique();
+	}
+
 	// Axis regularity, verification half: a nonzero Dirichlet value on the axis
 	// contradicts the A_phi = 0 constraint imposed above. The constraint would
 	// silently win, so the configuration is rejected instead. Requires the FE
@@ -385,8 +404,7 @@ protected:
 		MFEM_VERIFY(fespace,
 			"Magnetic axis boundary validation requires a finite element space.");
 
-		mfem::Array<int> axis_tdofs;
-		fespace->GetEssentialTrueDofs(axis_boundary, axis_tdofs);
+		const mfem::Array<int> axis_tdofs = AxisTrueDofs();
 		mfem::Array<int> is_axis_tdof(fespace->GetTrueVSize());
 		is_axis_tdof = 0;
 		for (int i = 0; i < axis_tdofs.Size(); ++i) {

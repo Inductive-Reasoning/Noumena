@@ -513,6 +513,24 @@ TEST_CASE("A n x A = 0 boundary in separate pieces is projected and gauged",
 	}
 }
 
+// A coupling column is the response to its terminal alone: a programmatic
+// source (here a uniform current) is background and stays out of L.
+TEST_CASE("3D coupling runs ignore the programmatic source",
+		  "[solvers][magnetostatic][3d][coupling]") {
+	AnnulusSpec spec;
+	spec.conductors = { { 0.04, 0.06, 0.04, 0.06 } };
+	const double clean = Inductance3D(spec, 16, 1)[0][0];
+
+	mfem::Mesh mesh = MakeAnnulus3D(spec, 16);
+	MagnetostaticSolver3D solver(mesh, DecodeConfig(MakeAnnulusConfig(spec, true, 1), "ms3d_bg.h5"));
+	mfem::Vector z_hat(3);
+	z_hat = 0.0;
+	z_hat(2) = 1.0e6;
+	mfem::VectorConstantCoefficient background(z_hat);
+	solver.SetSourceCurrentDensity(&background);
+	REQUIRE(SolveInductance(solver, "ms3d_bg.h5")[0][0] == Catch::Approx(clean).epsilon(1e-12));
+}
+
 // A closed coil described by a cut must carry the same current as the same
 // coil described analytically: the conduction potential of a coil of
 // revolution is theta / (2 pi), so its direction is phi-hat and its

@@ -28,8 +28,10 @@ namespace axisym {
  * all-zero marker when the domain does not reach the axis.
  *
  * Aborts when an attribute is only PARTLY on the axis, or when the domain
- * reaches the axis with no attribute dedicated to it: in both cases applying
- * A_phi = 0 would constrain boundaries the user did not intend.
+ * runs along the axis with no attribute dedicated to it: in both cases
+ * applying A_phi = 0 would constrain boundaries the user did not intend. A
+ * domain that meets the axis only at isolated vertices (a cone tip) needs no
+ * attribute: AxisVertexDofs constrains those vertices directly.
  */
 inline mfem::Array<int> FindAxisBoundaryMarker(mfem::Mesh &mesh,
 											   const AxisGeometry &geometry)
@@ -98,12 +100,46 @@ inline mfem::Array<int> FindAxisBoundaryMarker(mfem::Mesh &mesh,
 	  }
    }
 
-   MFEM_VERIFY(found_axis,
-			   "The axisymmetric domain reaches r = 0 but no boundary attribute "
-			   "lies entirely on the symmetry axis. Tag the axis as its own "
-			   "boundary attribute so A_phi = 0 can be enforced there.");
+   if (!found_axis)
+   {
+	  mfem::Array<int> vertices;
+	  for (int edge = 0; edge < mesh.GetNEdges(); ++edge)
+	  {
+		 mesh.GetEdgeVertices(edge, vertices);
+		 MFEM_VERIFY(!(geometry.IsOnAxisGeometry(mesh.GetVertex(vertices[0])[0]) &&
+					   geometry.IsOnAxisGeometry(mesh.GetVertex(vertices[1])[0])),
+					 "The axisymmetric domain runs along r = 0 but no boundary "
+					 "attribute lies entirely on the symmetry axis. Tag the axis "
+					 "as its own boundary attribute so A_phi = 0 can be enforced "
+					 "there.");
+	  }
+   }
 
    return axis_boundary;
+}
+
+/**
+ * @brief The DOFs of the mesh vertices on the symmetry axis.
+ *
+ * A_phi = 0 on r = 0 holds at every axis vertex, including one where the
+ * domain meets the axis at a single point and no boundary element lies on
+ * it. (The A_phi/r term of the curl-curl energy stays finite there, so
+ * nothing else pins the value.) Along a tagged axis these DOFs are already
+ * among the axis attribute's.
+ */
+inline mfem::Array<int> AxisVertexDofs(const mfem::FiniteElementSpace &fes,
+									   const AxisGeometry &geometry)
+{
+   mfem::Array<int> axis_dofs, dofs;
+   if (!geometry.TouchesAxis()) { return axis_dofs; }
+   const mfem::Mesh &mesh = *fes.GetMesh();
+   for (int v = 0; v < mesh.GetNV(); ++v)
+   {
+	  if (!geometry.IsOnAxisGeometry(mesh.GetVertex(v)[0])) { continue; }
+	  fes.GetVertexDofs(v, dofs);
+	  axis_dofs.Append(dofs);
+   }
+   return axis_dofs;
 }
 
 } // namespace axisym

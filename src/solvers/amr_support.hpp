@@ -104,6 +104,18 @@ namespace amr {
 	inline void RefineConforming(mfem::Mesh& mesh, const mfem::Array<int>& marked) {
 		if (marked.Size() == 0) { return; }
 
+		// MFEM cannot refine quadrilaterals or hexahedra conformingly: it
+		// aborts inside GeneralRefinement, so reject them first.
+		for (int e = 0; e < mesh.GetNE(); ++e) {
+			const mfem::Geometry::Type geometry = mesh.GetElementBaseGeometry(e);
+			if (geometry != mfem::Geometry::TRIANGLE && geometry != mfem::Geometry::TETRAHEDRON) {
+				throw std::runtime_error(
+					"AMR: conforming refinement is only supported for simplex "
+					"(triangular or tetrahedral) meshes, and this mesh has other "
+					"elements. Re-mesh with simplices or disable AMR.");
+			}
+		}
+
 		mesh.GeneralRefinement(marked, /*nonconforming=*/0);
 
 		// Hard requirement: the exported mesh must be free of hanging nodes. If MFEM
