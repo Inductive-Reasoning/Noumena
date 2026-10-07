@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "config/input_parser.hpp"
@@ -181,6 +182,21 @@ TEST_CASE("InputParser decodes typed Dirichlet and Neumann boundaries",
 
 TEST_CASE("InputParser expands MQS frequency sweeps", "[input_parser][mqs]") {
     json source = CanonicalConfig();
+
+    SECTION("an array sweep numbers its own points from 1") {
+        source["scenarios"] = json::array({
+            {{"name", "Base"}, {"frequency", 50.0},
+             {"excitations", json::array({{{"terminal", "Coil"}, {"value", 1.0}}})}},
+            {{"name", "Sweep"}, {"frequency", {100.0, 200.0}},
+             {"excitations", json::array({{{"terminal", "Coil"}, {"value", 1.0}}})}}
+        });
+        const auto scenarios = InputParser(source).GetProblemConfig().Scenarios;
+        REQUIRE(scenarios.size() == 3);
+        std::vector<std::string> names;
+        for (const auto& [name, scenario] : scenarios) { names.push_back(name); }
+        REQUIRE(std::find(names.begin(), names.end(), "Sweep_f1_100Hz") != names.end());
+        REQUIRE(std::find(names.begin(), names.end(), "Sweep_f2_200Hz") != names.end());
+    }
 
     SECTION("linear spacing is inclusive and preserves excitations") {
         source["scenarios"] = json::array({{

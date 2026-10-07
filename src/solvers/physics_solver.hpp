@@ -120,7 +120,8 @@ protected:
     // Called from Setup(); the result is refinement-invariant (attribute-keyed)
     // and is reused across every AMR pass.
     virtual void BuildEssentialBoundaryMarker() {
-        ess_bdr = boundary_conditions.DirichletMarker(mesh.bdr_attributes.Max());
+        ess_bdr = boundary_conditions.DirichletMarker(
+            mesh.bdr_attributes.Size() ? mesh.bdr_attributes.Max() : 0);
     }
 
     // Every connected piece of the mesh needs something that fixes the scalar
