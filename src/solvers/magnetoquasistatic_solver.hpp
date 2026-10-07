@@ -51,7 +51,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	// frequency the current factors belong to.
 	std::unique_ptr<mfem::SparseMatrix> packed_matrix;
 	std::unique_ptr<ComplexDirectSolver> direct_solver;
-	// GMRES preconditioner of the iterative path, for one frequency.
+	// Preconditioner of the iterative path, for one frequency.
 	std::unique_ptr<MqsBlockPreconditioner> preconditioner;
 	mfem::real_t preconditioned_omega = 0.0;
 	mfem::real_t factored_omega = 0.0;
@@ -481,19 +481,10 @@ public:
 			direct_solver->Mult(B_vec, X_vec);
 		}
 		else {
-			// GMRES preconditioned by AMG on K + omega M_sigma for both field
-			// blocks (see MqsBlockPreconditioner).
+			// FGMRES preconditioned by PRESB with AMG (see
+			// MqsBlockPreconditioner).
 			EnsurePreconditionerForActiveFrequency();
-			mfem::GMRESSolver gmres;
-			gmres.SetOperator(*A_op.Ptr());
-			gmres.SetPreconditioner(*preconditioner);
-			gmres.SetKDim(200);
-			gmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
-			gmres.SetRelTol(config.SolverTolerance);
-			gmres.SetAbsTol(0.0);
-			gmres.SetMaxIter(config.SolverMaxIter);
-			gmres.Mult(B_vec, X_vec);
-			RequireConverged(gmres, "GMRES");
+			SolveNonsymmetricIteratively(*A_op.Ptr(), *preconditioner, B_vec, X_vec);
 		}
 
 		// X_vec is laid out [Re_Mesh, Re_Port, Im_Mesh, Im_Port]; copy the mesh

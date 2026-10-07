@@ -192,10 +192,11 @@ protected:
     // Solve an SPD system with preconditioned CG, used by the static solvers'
     // iterative path.
     //
-    // solver_tolerance is the RELATIVE residual ||b - A x|| / ||b||, the same
-    // meaning it has in the MQS GMRES path. (The mfem::PCG convenience function
-    // previously used here squares-roots its tolerance argument, so a
-    // configured 1e-12 used to mean 1e-6 for these solvers only.)
+    // solver_tolerance is the RELATIVE residual, measured as CG does in the
+    // preconditioner's norm (the MQS FGMRES path measures the true residual).
+    // The mfem::PCG convenience function previously used here square-roots its
+    // tolerance argument, so a configured 1e-12 used to mean 1e-6 for these
+    // solvers only.
     //
     void SolveSpdIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
                              const mfem::Vector& B, mfem::Vector& X) const {
@@ -208,6 +209,27 @@ protected:
         cg.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
         cg.Mult(B, X);
         RequireConverged(cg, "CG");
+    }
+
+    // Solve the time-harmonic (MQS) systems, which are not symmetric in their
+    // real form, with flexible GMRES. Being right-preconditioned, it stops on
+    // the true relative residual ||b - A x|| / ||b||. Left-preconditioned
+    // GMRES stops on the preconditioned residual instead, which does not
+    // bound the port quantities: with massive ports at 10-100 kHz a coupling
+    // matrix solved to 1e-10 that way was off by up to 3e-4 against the direct
+    // solve.
+    void SolveNonsymmetricIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
+                                      const mfem::Vector& B, mfem::Vector& X) const {
+        mfem::FGMRESSolver fgmres;
+        fgmres.SetOperator(A);
+        fgmres.SetPreconditioner(preconditioner);
+        fgmres.SetKDim(200);
+        fgmres.SetRelTol(config.SolverTolerance);
+        fgmres.SetAbsTol(0.0);
+        fgmres.SetMaxIter(config.SolverMaxIter);
+        fgmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
+        fgmres.Mult(B, X);
+        RequireConverged(fgmres, "FGMRES");
     }
 
     // Report a finished Krylov solve. Non-convergence is an error: the last
