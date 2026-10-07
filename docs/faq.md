@@ -46,7 +46,7 @@ used by common commercial AC/DC and eddy-current tools.
 
 ## What units does the mesh use?
 
-**Metres.** The whole project is SI and there is no length-scale key in the
+**Meters.** The whole project is SI and there is no length-scale key in the
 schema.
 
 This matters because the constants the mesh is multiplied against are

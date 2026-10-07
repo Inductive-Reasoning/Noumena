@@ -1,19 +1,19 @@
 # Mathematical Formulation
 
-This document describes the mathematical formulation for the three physics types supported by Noumena: Electrostatics, Magnetostatics, and Magnetoquasistatics, all in the axisymmetric coordinate system.
+This document describes the mathematical formulation for the three physics types supported by Noumena: Electrostatics, Magnetostatics, and Magnetoquasistatics.
 
-## Coordinate System
+## Axisymmetric Coordinate System
 
-We use cylindrical coordinates `(r, z, φ)` where:
-- `r` is the radial distance from the axis of symmetry
-- `z` is the axial coordinate
-- `φ` is the azimuthal angle
+We use cylindrical coordinates (r, z, $\phi$) where:
+- r is the radial distance from the axis of symmetry
+- z is the axial coordinate
+- $\phi$ is the azimuthal angle
 
-For axisymmetric problems, all field quantities are independent of `φ` (`∂/∂φ = 0`).
+For axisymmetric problems, all field quantities are independent of $\phi$ ($\partial / \partial\phi = 0$).
 
-`r` and `z` are **metres**. The formulation is SI throughout: material
-properties are per-metre (`ε₀` in F/m, `μ₀` in H/m) and the measure below uses
-`r` as a physical length, so the unit of the mesh is part of the formulation
+Note: r and z are **meters**. The formulation is SI throughout: material
+properties are per-meter ($\epsilon_0$ in F/m, $\mu_0$ in H/m) and the measure below uses
+r as a physical length, so the unit of the mesh is part of the formulation
 rather than a presentation choice. See
 [Units](config_reference.md#units).
 
@@ -21,12 +21,12 @@ rather than a presentation choice. See
 
 The geometry modes differ only in the measure applied during assembly, and
 that difference propagates directly into the units of every extracted quantity.
-The full convention, including which `2*pi` factors are *not* part of the
+The full convention, including which $2\pi$ factors are *not* part of the
 measure, is given under "Integration Measure Convention" below.
 
-- **Axisymmetric.** Revolving the meridional `(r, z)` domain through the full
-  azimuthal angle gives the volume element `dV = 2*pi*r dr dz`, and the
-  meridional boundary element `2*pi*r ds`. Every axisymmetric integrator applies
+- **Axisymmetric.** Revolving the meridional (r, z) domain through the full
+  azimuthal angle gives the volume element $dV = 2\pi r dr dz$, and the
+  meridional boundary element $2\pi r ds$. Every axisymmetric integrator applies
   this measure, so energies, charges, and flux linkages are absolute quantities
   for the complete revolved body. Coupling matrices are therefore in farads,
   henries, and ohms.
@@ -40,7 +40,7 @@ measure, is given under "Integration Measure Convention" below.
   effects are negligible, which is the assumption the planar model already
   makes).
 
-- **3D (`geometry_type: 3d`).** Assembly integrates over the true volume of a
+- **3D.** Assembly integrates over the true volume of a
   3D mesh, so extracted quantities are absolute (F, H, Ohm). Electrostatics
   keeps its scalar potential; the magnetic formulations above are
   scalar-potential 2D reductions, so 3D magnetics uses separate solvers in a
