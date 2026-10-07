@@ -4301,7 +4301,7 @@ TEST_CASE("MQS frequency sweep reuses the direct factorization's ordering exactl
 // K + omega M_sigma and the exact port-corner inverse (MqsBlockPreconditioner).
 // It must reproduce the direct solve, with two massive ports and a passive
 // shield, over two decades of frequency, within a bounded number of
-// iterations: it takes 26 at 50 Hz and 228 at 5 kHz to a true relative
+// iterations: it takes 26 at 50 Hz and 127 at 5 kHz to a true relative
 // residual of 1e-12, where unpreconditioned GMRES does not converge in 5000.
 TEST_CASE("2D MQS impedances agree between the preconditioned FGMRES and direct solvers",
           "[solvers][mqs][coupling][linear_solver][amg]") {

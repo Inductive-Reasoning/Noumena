@@ -135,6 +135,9 @@ public:
 	}
 
 	void BuildOperators() override {
+#ifdef MFEM_USE_MPI
+		preconditioner.reset();  // refers to the space and matrices about to be replaced
+#endif
 		BuildSpaceAndConductors();
 		const int n = fespace->GetTrueVSize();
 
@@ -184,12 +187,9 @@ public:
 		*A = 0.0;
 		port_voltage.assign(conductances.size(), 0.0);
 
-		// Factors and preconditioners belong to the old mesh and frequency.
+		// Factors belong to the old mesh and frequency.
 		direct_solver.reset();
 		packed_matrix.reset();
-#ifdef MFEM_USE_MPI
-		preconditioner.reset();
-#endif
 		prepared_omega = 0.0;
 
 		// The direct path gauges the field block by a Lagrange multiplier,

@@ -212,42 +212,62 @@ protected:
     }
 
     // Solve the time-harmonic (MQS) systems, which are not symmetric in their
-    // real form, with flexible GMRES. Being right-preconditioned, it stops on
-    // the true relative residual ||b - A x|| / ||b||. Left-preconditioned
-    // GMRES stops on the preconditioned residual instead, which does not
-    // bound the port quantities: with massive ports at 10-100 kHz a coupling
-    // matrix solved to 1e-10 that way was off by up to 3e-4 against the direct
-    // solve.
+    // real form, with flexible GMRES from the initial guess in X (zero but for
+    // the essential values). Being right-preconditioned, it monitors the
+    // unpreconditioned residual, and it stops once ||b - A x|| <=
+    // solver_tolerance ||b||. Left-preconditioned GMRES stops on the
+    // preconditioned residual instead, which does not bound the port
+    // quantities: with massive ports at 10-100 kHz a coupling matrix solved to
+    // 1e-10 that way was off by up to 3e-4 against the direct solve.
+    //
+    // FGMRES keeps two vectors per iteration (the basis and the preconditioned
+    // basis), against GMRES's one, so it restarts after kMqsRestart iterations,
+    // holding its memory to that of 200-iteration GMRES. Restarting at 100
+    // rather than 200 also converged faster on the massive-port problems at
+    // high frequency (the 2D impedance test at 5 kHz, 127 against 227
+    // iterations; the two_loops example at 100 kHz, 160 against 262).
+    static constexpr int kMqsRestart = 100;
+
     void SolveNonsymmetricIteratively(const mfem::Operator& A, mfem::Solver& preconditioner,
                                       const mfem::Vector& B, mfem::Vector& X) const {
+        const double b_norm = B.Norml2();
+        if (b_norm == 0.0) {
+            X = 0.0;
+            return;
+        }
         mfem::FGMRESSolver fgmres;
         fgmres.SetOperator(A);
         fgmres.SetPreconditioner(preconditioner);
-        fgmres.SetKDim(200);
-        fgmres.SetRelTol(config.SolverTolerance);
-        fgmres.SetAbsTol(0.0);
+        fgmres.SetKDim(kMqsRestart);
+        fgmres.SetRelTol(0.0);
+        fgmres.SetAbsTol(config.SolverTolerance * b_norm);
         fgmres.SetMaxIter(config.SolverMaxIter);
         fgmres.SetPrintLevel(Reporter().SolverPrintLevel(config.SolverPrintLevel));
         fgmres.Mult(B, X);
-        RequireConverged(fgmres, "FGMRES");
+        RequireConverged(fgmres, "FGMRES", b_norm);
     }
 
     // Report a finished Krylov solve. Non-convergence is an error: the last
     // iterate of a solve that missed solver_tolerance is not a result, and
     // passing it on as one (with a warning that is easily missed) would put
     // an unconverged field into every output and coupling matrix.
-    void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name) const {
+    // @p reference_norm, when given, is the norm the residual is relative to
+    // (||b||); otherwise it is relative to the initial residual.
+    void RequireConverged(const mfem::IterativeSolver& solver, const std::string& name,
+                          double reference_norm = 0.0) const {
+        const double relative = reference_norm > 0.0
+            ? solver.GetFinalNorm() / reference_norm : solver.GetFinalRelNorm();
         std::ostringstream msg;
         msg << std::scientific << std::setprecision(3);
         if (!solver.GetConverged()) {
-            msg << name << " did not converge: relative residual " << solver.GetFinalRelNorm()
+            msg << name << " did not converge: relative residual " << relative
                 << " after " << solver.GetNumIterations() << " iterations, above "
                    "solver_tolerance " << config.SolverTolerance << ". Raise "
                    "solver_max_iter, loosen solver_tolerance, or use the direct solver.";
             throw std::runtime_error(msg.str());
         }
         msg << name << " converged in " << solver.GetNumIterations()
-            << " iterations (relative residual " << solver.GetFinalRelNorm() << ").";
+            << " iterations (relative residual " << relative << ").";
         Reporter().Diagnostic(msg.str());
     }
 

@@ -282,6 +282,7 @@ public:
 			" true DOFs.");
 		neumann_rhs = AssembleNaturalBoundaryLoad();
 
+		preconditioner.reset();  // refers to the matrices about to be replaced
 		{
 			auto operation = Reporter().Start("complex bilinear form assembly");
 			// Setup Complex Billinear Form
@@ -341,7 +342,6 @@ public:
 		direct_solver.reset();
 		packed_matrix.reset();
 		factored_omega = 0.0;
-		preconditioner.reset();
 	}
 
 	mfem::BilinearFormIntegrator* MakeMassIntegrator() {
