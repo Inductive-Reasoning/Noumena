@@ -558,9 +558,12 @@ do not include a study of the results' sensitivity to `β`.
 
 `direct` factors the complex field block `K + jωM_σ` once per frequency with STRUMPACK's
 multifrontal LU and takes the ports through the Schur complement `D − B_r F⁻¹ B_c` (without
-STRUMPACK, Eigen's sparse LU of the whole packed real form); `iterative` is GMRES with the
-block-diagonal preconditioner `diag(P, P)`, `P ≈ (K + ωM_σ)⁻¹` by AMS, plus the
-exact inverse of the port corner.
+STRUMPACK, Eigen's sparse LU of the complex system); `iterative` is flexible GMRES,
+which stops on the true residual, preconditioned by PRESB,
+`[K, −ωM_σ; ωM_σ, K + 2ωM_σ]`, applied with two AMS solves with `K + ωM_σ`, plus
+the exact inverse of the port corner. With exact inner solves PRESB's
+preconditioned eigenvalues lie in `[1/2, 1]` at every frequency; on TEAM 7 it
+needs less than half the iterations of the block-diagonal `diag(K + ωM_σ, K + ωM_σ)`.
 
 Coupling rows: a massive terminal's `Z = V/I` from its solved voltage, a
 stranded terminal's `Z = jω λ` with `λ = b'·A`; `R = Re Z`, `L = Im Z / ω`.

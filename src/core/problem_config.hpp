@@ -25,7 +25,7 @@ enum class AnalysisType { Field, CouplingMatrix };
 enum class Quantity { Voltage, Current };
 
 // How the assembled linear system is solved.
-//   Iterative - preconditioned Krylov (PCG/GMRES). Lowest memory; cost scales
+//   Iterative - preconditioned Krylov (PCG/FGMRES). Lowest memory; cost scales
 //               with the preconditioner's convergence rate.
 //   Direct    - sparse factorization. Costs more memory, but a CouplingMatrix
 //               run amortizes one factorization over every terminal's RHS and

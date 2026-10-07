@@ -65,8 +65,8 @@ protected:
 			return;
 		}
 		Reporter().Warning("This build has no STRUMPACK (CMake option USE_STRUMPACK), so the "
-			"direct solve factors the real form of the complex system with Eigen's SparseLU, "
-			"which is 10 to 60 times slower and needs 5 to 10 times the memory.");
+			"direct solve factors the complex system with Eigen's SparseLU, which is much "
+			"slower and needs much more memory in 3D.");
 	}
 
 	void BuildReluctivity() {

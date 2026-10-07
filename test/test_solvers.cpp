@@ -2798,7 +2798,7 @@ TEST_CASE("An iterative solve that does not converge stops the run",
         fs::remove(mesh_file);
     }
 
-    SECTION("GMRES on axisymmetric MQS") {
+    SECTION("FGMRES on axisymmetric MQS") {
         const std::string mesh_file = "test_unconverged_loop.mesh";
         CreateCurrentLoopMesh(mesh_file);
         json config = MakeCurrentLoopConfig("magnetoquasistatics", mesh_file, 5.8e7);
@@ -2813,7 +2813,7 @@ TEST_CASE("An iterative solve that does not converge stops the run",
         mfem::Mesh mesh(mesh_file.c_str(), 1, 1);
         MagnetoquasistaticSolver solver(mesh, DecodeConfig(config));
         solver.Setup();
-        REQUIRE_THROWS_WITH(solver.Run(), ContainsSubstring("GMRES did not converge"));
+        REQUIRE_THROWS_WITH(solver.Run(), ContainsSubstring("FGMRES did not converge"));
         fs::remove(mesh_file);
     }
 }
@@ -4297,13 +4297,13 @@ TEST_CASE("MQS frequency sweep reuses the direct factorization's ordering exactl
     fs::remove(mesh_file);
 }
 
-// The 2D MQS iterative solver is GMRES preconditioned by AMG on
-// K + omega M_sigma for each field block and the exact port-corner inverse
-// (MqsBlockPreconditioner). It must reproduce the direct solve, with two
-// massive ports and a passive shield, over two decades of frequency, within a
-// bounded number of iterations: it takes 38 at 50 Hz and 130 at 5 kHz to the
-// 1e-12 tolerance, where unpreconditioned GMRES does not converge in 5000.
-TEST_CASE("2D MQS impedances agree between the preconditioned GMRES and direct solvers",
+// The 2D MQS iterative solver is FGMRES preconditioned by PRESB with AMG on
+// K + omega M_sigma and the exact port-corner inverse (MqsBlockPreconditioner).
+// It must reproduce the direct solve, with two massive ports and a passive
+// shield, over two decades of frequency, within a bounded number of
+// iterations: it takes 26 at 50 Hz and 228 at 5 kHz to a true relative
+// residual of 1e-12, where unpreconditioned GMRES does not converge in 5000.
+TEST_CASE("2D MQS impedances agree between the preconditioned FGMRES and direct solvers",
           "[solvers][mqs][coupling][linear_solver][amg]") {
     const std::string mesh_file = "test_mqs_gmres_2d.mesh";
     const std::string matrix_file = "test_mqs_gmres_2d.h5";
