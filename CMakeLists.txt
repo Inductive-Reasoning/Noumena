@@ -225,31 +225,60 @@ if(USE_STRUMPACK)
     include(${CMAKE_SOURCE_DIR}/cmake/Strumpack.cmake)
 endif()
 
-# Links STRUMPACK into a target, and tells its code so, when the build has it.
-function(noumena_link_strumpack target)
-    if(NOUMENA_HAVE_STRUMPACK)
-        target_link_libraries(${target} PRIVATE STRUMPACK::strumpack)
-        target_compile_definitions(${target} PRIVATE NOUMENA_STRUMPACK)
-    endif()
-endfunction()
-
-add_executable(noumena src/main.cpp)
-noumena_link_strumpack(noumena)
-target_link_libraries(noumena PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
+# The solvers, configuration and writers, compiled once and linked by both
+# the executable and the tests, which then compile only their own code.
+add_library(noumena_core STATIC
+    src/axisym/axisymmetric_curl_curl_integrator.cpp
+    src/axisym/axisymmetric_diffusion_integrator.cpp
+    src/axisym/radial_quadrature.cpp
+    src/coefficients/conductor_path.cpp
+    src/config/boundary_validation.cpp
+    src/config/config_validator.cpp
+    src/config/input_parser.cpp
+    src/io/gmsh_results_writer.cpp
+    src/io/hdf5_results_writer.cpp
+    src/io/probe_sampler.cpp
+    src/io/solver_field_writer.cpp
+    src/io/status_reporter.cpp
+    src/linalg/complex_direct_solver.cpp
+    src/solvers/divergence_free_projector.cpp
+    src/solvers/electrostatic_solver.cpp
+    src/solvers/magnetic_solver.cpp
+    src/solvers/magnetoquasistatic_solver.cpp
+    src/solvers/magnetoquasistatic_solver_3d.cpp
+    src/solvers/magnetostatic_solver.cpp
+    src/solvers/magnetostatic_solver_3d.cpp
+    src/solvers/mqs_massive_port_operator.cpp
+    src/solvers/physics_solver.cpp
+    src/solvers/vector_potential_solver_3d.cpp
+)
+target_link_libraries(noumena_core PUBLIC mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static)
 if(USE_MPI)
-    target_link_libraries(noumena PRIVATE MPI::MPI_CXX)
+    target_link_libraries(noumena_core PUBLIC MPI::MPI_CXX)
 endif()
-
-# main.cpp instantiates every solver and writer through heavily templated MFEM
-# and nlohmann/json code, which exceeds the default COFF section limit (65279)
-# and fails with C1128. /bigobj raises it; it has no runtime cost.
-if(MSVC)
-    target_compile_options(noumena PRIVATE /bigobj)
+if(USE_OPENMP)
+    target_link_libraries(noumena_core PUBLIC OpenMP::OpenMP_CXX)
 endif()
-
+# STRUMPACK, when the build has it. NOUMENA_STRUMPACK is public: it changes
+# class layouts in the headers, which every user must see alike.
+if(NOUMENA_HAVE_STRUMPACK)
+    target_link_libraries(noumena_core PUBLIC STRUMPACK::strumpack)
+    target_compile_definitions(noumena_core PUBLIC NOUMENA_STRUMPACK)
+endif()
 # Project headers are included by bare name ("physics_solver.hpp"), so that
 # neither src/ nor test/ depends on the relative path between them.
-target_include_directories(noumena PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(noumena_core PUBLIC ${CMAKE_SOURCE_DIR}/src)
+
+add_executable(noumena src/main.cpp)
+target_link_libraries(noumena PRIVATE noumena_core)
+
+# Heavily templated MFEM and nlohmann/json code can exceed MSVC's default COFF
+# section limit (65279) in one translation unit, which fails with C1128.
+# /bigobj raises it; it has no runtime cost.
+if(MSVC)
+    target_compile_options(noumena_core PRIVATE /bigobj)
+    target_compile_options(noumena PRIVATE /bigobj)
+endif()
 
 # Build identity banner: regenerate build_info.hpp on every build so a stale
 # executable is obvious at runtime. GenerateBuildInfo.cmake uses configure_file,
@@ -269,9 +298,9 @@ add_custom_target(build_info ALL
 add_dependencies(noumena build_info)
 target_include_directories(noumena PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
-# OpenMP support (USE_OPENMP is switched off above if the compiler lacks it)
+# OpenMP (linked through noumena_core; USE_OPENMP is switched off above if
+# the compiler lacks it)
 if(USE_OPENMP)
-    target_link_libraries(noumena PRIVATE OpenMP::OpenMP_CXX)
     message(STATUS "OpenMP enabled. Use OMP_NUM_THREADS to control parallelism.")
 endif()
 
@@ -329,16 +358,7 @@ if(BUILD_TESTING)
 
     # The test runner supplies its own main (test_main.cpp) so an MPI build
     # can initialize MPI and HYPRE around the Catch2 session.
-    target_link_libraries(mfem_tests PRIVATE mfem eigen_headers amgcl_headers nlohmann_json::nlohmann_json HighFive::HighFive hdf5-static Catch2::Catch2)
-    noumena_link_strumpack(mfem_tests)
-    if(USE_MPI)
-        target_link_libraries(mfem_tests PRIVATE MPI::MPI_CXX)
-    endif()
-    # Tests run the same threaded solver paths as the executable.
-    if(USE_OPENMP AND OpenMP_CXX_FOUND)
-        target_link_libraries(mfem_tests PRIVATE OpenMP::OpenMP_CXX)
-    endif()
-    target_include_directories(mfem_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(mfem_tests PRIVATE noumena_core Catch2::Catch2)
     # Committed test inputs (meshes and the Gmsh scripts that generate them).
     target_compile_definitions(mfem_tests PRIVATE
         NOUMENA_TEST_DATA="${CMAKE_SOURCE_DIR}/test/data"
@@ -350,8 +370,7 @@ if(BUILD_TESTING)
         target_compile_definitions(mfem_tests PRIVATE NOUMENA_GMSH="${GMSH_EXECUTABLE}")
     endif()
 
-    # Same COFF section limit as noumena: the solver test translation
-    # units instantiate the full solver/writer stack.
+    # Same COFF section limit as noumena.
     if(MSVC)
         target_compile_options(mfem_tests PRIVATE /bigobj)
     endif()

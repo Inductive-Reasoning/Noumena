@@ -68,113 +68,32 @@ public:
 
 	/// Magnetic energy W = 1/2 integral(nu |curl A|^2) [J] of the current
 	/// solution.
-	double MagneticEnergy() const {
-		mfem::BilinearForm k(fespace.get());
-		k.AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
-		k.Assemble();
-		k.Finalize();
-		return 0.5 * k.InnerProduct(*A, *A);
-	}
+	double MagneticEnergy() const;
 
 	/// Flux linkage lambda_k [Wb] of every terminal for the current solution,
 	/// in config.Terminals (name) order.
-	std::vector<double> FluxLinkages() const {
-		std::vector<double> lambda;
-		for (const auto& load : terminal_loads) { lambda.push_back(load * *A); }
-		return lambda;
-	}
+	std::vector<double> FluxLinkages() const;
 
 	/// The projected unit-current load of each terminal, in config.Terminals
 	/// order (exposed for verification).
 	const std::vector<mfem::Vector>& TerminalLoads() const { return terminal_loads; }
 
-	void Setup() override {
-		InitializeVectorPotential();
-		BuildOperators();
-		ValidateVectorPotentialBoundaries();
-	}
+	void Setup() override;
 
-	void BuildOperators() override {
-		BuildSpaceAndConductors();
-		A = std::make_unique<mfem::GridFunction>(fespace.get());
-		*A = 0.0;
+	void BuildOperators() override;
 
-		const bool direct = config.LinearSolver == LinearSolverType::Direct;
-		a = std::make_unique<mfem::BilinearForm>(fespace.get());
-		a->AddDomainIntegrator(new mfem::CurlCurlIntegrator(*nu_coeff));
-		a->Assemble();
-		a->FormSystemMatrix(ess_tdof_list, A_op);
-
-		auto* matrix = dynamic_cast<mfem::SparseMatrix*>(A_op.Ptr());
-		MFEM_VERIFY(matrix, "Expected a SparseMatrix operator from FormSystemMatrix.");
-		direct_solver.reset();
-#ifdef MFEM_USE_MPI
-		ams.reset();
-#endif
-		if (direct) {
-			WarnOnLargeDirectSolve(fespace->GetTrueVSize());
-			auto operation = Reporter().Start("sparse direct factorization");
-			const auto gauge = projector->GaugeConstraint(mfem::Array<int>());
-			direct_solver = std::make_unique<GaugedDirectSolver>(*matrix, *gauge, ess_tdof_list);
-		}
-		else {
-#ifdef MFEM_USE_MPI
-			auto operation = Reporter().Start("AMS preconditioner setup");
-			ams = std::make_unique<SerialAmsPreconditioner>(*matrix, *fespace, /*singular=*/true);
-#endif
-		}
-
-		terminal_loads.clear();
-		for (const TerminalConductor& c : conductors) {
-			terminal_loads.push_back(ProjectedUnitCurrentLoad(c));
-		}
-	}
-
-	void RunOnCurrentMesh() override {
-		const bool coupling = config.AnalysisType == AnalysisType::CouplingMatrix;
-		const int n = static_cast<int>(config.Terminals.size());
-		if (coupling) {
-			L = std::make_unique<mfem::DenseMatrix>(n, n);
-			*L = 0.0;
-		}
-		int column = 0;
-		for (const auto& [name, scenario] : BuildSolveScenarios()) {
-			auto operation = Reporter().Start("scenario '" + name + "'");
-			ImprintScenario(scenario);
-			SolveSystem();
-			if (coupling) {
-				const std::vector<double> lambda = FluxLinkages();
-				for (int row = 0; row < n; ++row) { (*L)(row, column) = lambda[row]; }
-				++column;
-			}
-			SaveScenario(name, scenario,
-				coupling ? scenario.Excitations.front().TerminalName : "");
-		}
-	}
+	void RunOnCurrentMesh() override;
 
 	// Post-solve fields: the potential A (a vector Nedelec field) and the flux
 	// density B = curl A, evaluated exactly from the element basis.
-	FieldExportSet CollectExportFields() const override {
-		FieldExportSet fields;
-		fields.AddPrimary("A", *A);
-		fields.AddVector("B", std::make_unique<mfem::CurlGridFunctionCoefficient>(A.get()));
-		return fields;
-	}
+	FieldExportSet CollectExportFields() const override;
 
 	double ComputePeakFieldMagnitude() const override {
 		return A ? PeakCurlMagnitude({ A.get() }) : 0.0;
 	}
 
 protected:
-	void SaveAnalysisResults() override {
-		if (config.AnalysisType != AnalysisType::CouplingMatrix) return;
-		if (!L) {
-			Reporter().Warning("WriteCouplingMatrix: coupling matrix not computed.");
-			return;
-		}
-		SaveCouplingMatrix(*L, "Inductance Matrix " + CouplingUnitLabel("H"),
-			"Inductance", "H");
-	}
+	void SaveAnalysisResults() override;
 
 private:
 	std::unique_ptr<mfem::GridFunction> A;
@@ -196,38 +115,7 @@ private:
 	// programmatic source and tangential boundary data are background, left
 	// out as in the 2D solvers' coupling runs, or every column of L would
 	// carry the same background flux linkage.
-	void ImprintScenario(const Scenario& scenario) {
-		const bool background = config.AnalysisType != AnalysisType::CouplingMatrix;
-		*A = 0.0;
-		if (background && boundary_value) {
-			A->ProjectBdrCoefficientTangent(*boundary_value, ess_bdr);
-		}
-		b = std::make_unique<mfem::LinearForm>(fespace.get());
-		if (background && source) {
-			b->AddDomainIntegrator(new mfem::VectorFEDomainLFIntegrator(*source));
-		}
-		b->Assemble();
-		if (background && source) { projector->Project(*b); }
+	void ImprintScenario(const Scenario& scenario);
 
-		for (size_t k = 0; k < conductors.size(); ++k) {
-			const double current = ExcitationFor(scenario, conductors[k].Name).real();
-			if (current != 0.0) { b->Add(current, terminal_loads[k]); }
-		}
-	}
-
-	void SolveSystem() {
-		auto operation = Reporter().Start("linear system solve");
-		mfem::Vector X, B;
-		a->FormLinearSystem(ess_tdof_list, *A, *b, A_op, X, B);
-		if (direct_solver) {
-			direct_solver->Mult(B, X);
-			a->RecoverFEMSolution(X, *b, *A);
-			return;
-		}
-#ifdef MFEM_USE_MPI
-		SolveSpdIteratively(*A_op, *ams, B, X);
-		a->RecoverFEMSolution(X, *b, *A);
-		projector->RemoveGradient(*A);
-#endif
-	}
+	void SolveSystem();
 };

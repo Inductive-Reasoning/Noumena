@@ -16,9 +16,9 @@ namespace build_info {
 constexpr const char* kVersion = "@PROJECT_VERSION@";
 constexpr const char* kCommit = "@GIT_COMMIT@@GIT_DIRTY@";
 
-// __DATE__/__TIME__ record when the including translation unit was compiled.
-// Every other source file in this project is a header pulled into main.cpp,
-// so this is an accurate stamp for the executable as a whole.
+// __DATE__/__TIME__ record when the including translation unit, main.cpp, was
+// compiled. Changes to the library alone relink the executable without
+// recompiling main.cpp; the commit and its -dirty marker identify the sources.
 constexpr const char* kBuildDate = __DATE__ " " __TIME__;
 
 inline std::string Describe() {
