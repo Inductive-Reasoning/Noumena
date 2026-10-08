@@ -60,14 +60,7 @@ protected:
 
 	// The time-harmonic direct solve is fast only with STRUMPACK; say so when
 	// this build falls back to Eigen. See ComplexDirectSolver.
-	void WarnOnSlowComplexDirectSolve() const {
-		if (ComplexDirectSolver::kUsesStrumpack || config.LinearSolver != LinearSolverType::Direct) {
-			return;
-		}
-		Reporter().Warning("This build has no STRUMPACK (CMake option USE_STRUMPACK), so the "
-			"direct solve factors the complex system with Eigen's SparseLU, which is much "
-			"slower and needs much more memory in 3D.");
-	}
+	void WarnOnSlowComplexDirectSolve() const;
 
 	void BuildReluctivity() {
 		nu_coeff = MaterialCoefficient(1.0 / Constants::MU_0, Reluctivity);
@@ -85,42 +78,13 @@ protected:
 	// sigma is the wire's conductivity; it matters for the winding's own
 	// resistance and in-strand losses, which are not modelled, not for the
 	// field.
-	void BuildConductivity() {
-		sigma_coeff = MaterialCoefficient(0.0, Conductivity);
-		for (const auto& [name, term] : config.Terminals) {
-			if (term.Conductor != ConductorType::Stranded) continue;
-			bool conducts = false;
-			for (int attr : config.EntityGroups.at(term.EntityGroupName).AttributeIds) {
-				if (attr < 1 || attr > sigma_coeff->GetNConst()) continue;
-				conducts |= (*sigma_coeff)(attr) > 0.0;
-				(*sigma_coeff)(attr) = 0.0;
-			}
-			if (conducts) {
-				Reporter().Diagnostic("Stranded conductor '" + name + "': its material "
-					"conductivity is the wire's and does not enter the field solve, "
-					"which imposes the winding current without eddy currents.");
-			}
-		}
-	}
+	void BuildConductivity();
 
 	// A massive conductor's current is sigma E, so every attribute of it must
 	// conduct: sigma = 0 there would carry no current and make its conductance
 	// meaningless.
 	void ValidateMassiveConductivity(const std::string& name,
-									 const std::vector<int>& attributes) const {
-		for (int attr : attributes) {
-			const Material* material = MaterialForAttr(attr);
-			MFEM_VERIFY(material != nullptr,
-				"Massive conductor '" + name + "' contains domain attribute " +
-				std::to_string(attr) + " without an assigned material.");
-			MFEM_VERIFY(material->Conductivity > 0.0,
-				"Massive conductor '" + name + "' contains domain attribute " +
-				std::to_string(attr) + " with non-positive conductivity " +
-				std::to_string(material->Conductivity) +
-				". Assign a material with a positive 'sigma' or make it a "
-				"stranded conductor.");
-		}
-	}
+									 const std::vector<int>& attributes) const;
 
 	// Integrate a loss density over every region that can dissipate, one
 	// entry per reporting owner.
@@ -140,59 +104,20 @@ protected:
 	// integrate that attribute twice. Terminals win because they are the more
 	// specific description of the same metal; conductive attributes no
 	// terminal or region claims report individually.
-	std::vector<RegionLoss> IntegrateRegionLosses(mfem::Coefficient& density) const {
-		std::vector<RegionLoss> losses;
-		for (const auto& [name, attrs] : ConductingGroups()) {
-			losses.push_back({ name, IntegrateOverAttributes(density, attrs) });
-		}
-		return losses;
-	}
+	std::vector<RegionLoss> IntegrateRegionLosses(mfem::Coefficient& density) const;
 
 	// The conducting attributes (field-solve sigma > 0), grouped by the name
 	// they report under: a massive terminal, else a region, else
 	// "attribute N". See IntegrateRegionLosses for why each attribute has
 	// exactly one owner.
-	std::map<std::string, std::set<int>> ConductingGroups() const {
-		std::map<int, std::string> owner;
-		for (const Region& region : config.Regions) {
-			const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
-			for (int attr : group.AttributeIds) { owner[attr] = region.EntityGroupName; }
-		}
-		for (const auto& [name, term] : config.Terminals) {
-			if (term.Conductor != ConductorType::Massive) continue;
-			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-			for (int attr : group.AttributeIds) { owner[attr] = name; }
-		}
-
-		std::map<std::string, std::set<int>> groups;
-		for (int attr = 1; attr <= mesh.attributes.Max(); ++attr) {
-			if (attr > sigma_coeff->GetNConst() || (*sigma_coeff)(attr) <= 0.0) continue;
-			const auto named = owner.find(attr);
-			groups[named != owner.end() ? named->second
-									   : "attribute " + std::to_string(attr)].insert(attr);
-		}
-		return groups;
-	}
+	std::map<std::string, std::set<int>> ConductingGroups() const;
 
 	// Print per-region and total dissipation.
 	//
 	// Reported only for field scenarios. Coupling runs drive synthetic unit
 	// currents one terminal at a time, so the loss of any single such column
 	// is not the loss of a physically realised operating point.
-	void ReportRegionLosses(const std::vector<RegionLoss>& losses) const {
-		if (losses.empty()) { return; }
-		std::ostringstream out;
-		out << "Time-averaged Joule loss " << CouplingUnitLabel("W")
-			<< " (peak-phasor convention):\n";
-		out << std::scientific << std::setprecision(6);
-		double total = 0.0;
-		for (const RegionLoss& loss : losses) {
-			out << "  " << loss.Name << ": " << loss.Power << "\n";
-			total += loss.Power;
-		}
-		out << "  total: " << total;
-		Reporter().Status(out.str());
-	}
+	void ReportRegionLosses(const std::vector<RegionLoss>& losses) const;
 
 	/// Resistance and inductance matrices at one frequency of an MQS
 	/// coupling run.
@@ -202,33 +127,7 @@ protected:
 	};
 
 	// Write and print an MQS coupling sweep: one R and one L per frequency.
-	void WriteImpedanceSeries(const std::vector<ImpedancePoint>& points) const {
-		if (points.empty()) {
-			Reporter().Warning("WriteCouplingMatrix: MQS coupling matrices not computed.");
-			return;
-		}
-		std::vector<double> frequencies;
-		std::vector<const mfem::DenseMatrix*> resistance, inductance;
-		for (const ImpedancePoint& point : points) {
-			frequencies.push_back(point.Frequency);
-			resistance.push_back(&point.Resistance);
-			inductance.push_back(&point.Inductance);
-		}
-		if (auto writer = CreateCouplingWriter()) {
-			writer->WriteFrequencies(frequencies);
-			writer->WriteMatrixSeries("Inductance", inductance, CouplingUnits("H"));
-			writer->WriteMatrixSeries("Resistance", resistance, CouplingUnits("Ohm"));
-		}
-		for (const ImpedancePoint& point : points) {
-			std::ostringstream at;
-			at << " at " << std::setprecision(std::numeric_limits<double>::max_digits10)
-			   << point.Frequency << " Hz ";
-			PrintCouplingMatrix(point.Inductance,
-				"Inductance Matrix" + at.str() + CouplingUnitLabel("H"));
-			PrintCouplingMatrix(point.Resistance,
-				"Resistance Matrix" + at.str() + CouplingUnitLabel("Ohm"));
-		}
-	}
+	void WriteImpedanceSeries(const std::vector<ImpedancePoint>& points) const;
 
 private:
 	// Element-wise integral of @p density over the given attributes, with the
@@ -236,26 +135,7 @@ private:
 	// density quadratic in the solution and, in axisymmetry, for the 1/r of a
 	// massive conductor's drive field V / (2 pi r) (radial_quadrature.hpp).
 	double IntegrateOverAttributes(mfem::Coefficient& density,
-								   const std::set<int>& attrs) const {
-		double total = 0.0;
-		mfem::Vector pos;
-		for (int e = 0; e < mesh.GetNE(); ++e) {
-			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-			mfem::ElementTransformation& T = *mesh.GetElementTransformation(e);
-			const mfem::FiniteElement& fe = *fespace->GetFE(e);
-			const int order = 2 * fe.GetOrder() + T.OrderW() + 2;
-			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-				? axisym::RadialRule(fe.GetGeomType(), order, T, axis_geometry->tolerance)
-				: mfem::IntRules.Get(fe.GetGeomType(), order);
-			for (int q = 0; q < ir.GetNPoints(); ++q) {
-				const mfem::IntegrationPoint& ip = ir.IntPoint(q);
-				T.SetIntPoint(&ip);
-				T.Transform(ip, pos);
-				total += density.Eval(T, ip) * ip.weight * T.Weight() * Geometry().Measure(pos);
-			}
-		}
-		return total;
-	}
+								   const std::set<int>& attrs) const;
 };
 
 /**
@@ -286,13 +166,7 @@ protected:
 	// the separate 3D solver classes. Running this class on a 3D mesh would
 	// assemble a scalar Laplacian and report it as a magnetic field, so it is
 	// rejected outright.
-	void InitializeMagneticGeometry() {
-		MFEM_VERIFY(config.GeometryType != GeometryType::Cartesian3D,
-			"This " + std::string(ToString(config.PhysicsType)) + " solver is "
-			"the 2D scalar-potential formulation; geometry_type '3d' needs the "
-			"vector (H(curl)) formulation of the 3D solver classes.");
-		InitializeGeometry();
-	}
+	void InitializeMagneticGeometry();
 
 	// Validate the axisymmetric mesh as (r,z) input, keep the resulting radial
 	// extent, then add what only an A_phi formulation cares about: whether the
@@ -303,18 +177,7 @@ protected:
 	// component of a vector field that must vanish on the axis to stay
 	// single-valued; a scalar potential carries no such constraint, so an
 	// electrostatic run has no use for either report.
-	void ValidateMagneticAxisymmetricGeometry() {
-		axis_geometry = ValidateAxisymmetricGeometry();
-		if (!axis_geometry) { return; }
-
-		Reporter().Diagnostic(
-			axis_geometry->TouchesAxis()
-				? "Axisymmetric domain touches the symmetry axis: "
-				  "axis regularity A_phi = 0 will be enforced."
-				: "Axisymmetric domain is annular: no axis condition required.");
-
-		WarnOnUnderResolvedRadialQuadrature();
-	}
+	void ValidateMagneticAxisymmetricGeometry();
 
 	// The 1/r integrands (curl-curl, a massive conductor's conductance and
 	// drive-field loss) are integrated by a geometry-aware rule whose order is
@@ -327,49 +190,13 @@ protected:
 	// silent, so report it once. The electrostatic r-weighted diffusion
 	// integrand is polynomial and is integrated exactly, so no equivalent
 	// concern exists there.
-	void WarnOnUnderResolvedRadialQuadrature() {
-		int worst_element = -1;
-		double worst_ratio = std::numeric_limits<double>::max();
-
-		for (int e = 0; e < mesh.GetNE(); ++e) {
-			const double ratio = axisym::RadialResolution(
-				*mesh.GetElementTransformation(e), axis_geometry->tolerance);
-			if (ratio < worst_ratio) {
-				worst_ratio = ratio;
-				worst_element = e;
-			}
-		}
-
-		if (worst_element < 0 || worst_ratio >= axisym::kResolvedRadiusRatio) {
-			return;
-		}
-
-		std::ostringstream msg;
-		msg << std::setprecision(3)
-			<< "Element " << worst_element << " has radial ratio " << worst_ratio
-			<< ", below the ratio " << axisym::kResolvedRadiusRatio
-			<< " at which the 1/r quadrature reaches its accuracy target. The "
-			   "capped rule integrates such elements approximately; refine "
-			   "radially near the axis, or avoid slivers touching it, if "
-			   "near-axis accuracy matters.";
-		Reporter().Warning(msg.str());
-	}
+	void WarnOnUnderResolvedRadialQuadrature();
 
 	// Axis regularity, imposition half: A_phi = 0 on r = 0. The dedicated axis
 	// boundary attribute joins the prescribed Dirichlet conditions in ess_bdr, so
 	// the ordering (merge before BuildOperators() reads ess_bdr) is structural
 	// rather than a convention the caller has to remember.
-	void BuildEssentialBoundaryMarker() override {
-		PhysicsSolver::BuildEssentialBoundaryMarker();
-
-		if (!axis_geometry) { return; }
-
-		axis_boundary = axisym::FindAxisBoundaryMarker(mesh, *axis_geometry);
-
-		MFEM_VERIFY(ess_bdr.Size() == axis_boundary.Size(),
-			"Axis boundary marker does not match the mesh boundary attributes.");
-		MergeMarker(ess_bdr, axis_boundary);
-	}
+	void BuildEssentialBoundaryMarker() override;
 
 	// Boundary attributes lying entirely on r = 0; only an A_phi formulation
 	// needs the axis tagged on its own.
@@ -378,69 +205,21 @@ protected:
 	// The true DOFs where A_phi = 0 on the axis: those of the axis attribute
 	// and of every axis vertex (a domain meeting the axis at a point has no
 	// axis attribute). The solvers add them to their essential DOFs.
-	mfem::Array<int> AxisTrueDofs() const {
-		mfem::Array<int> tdofs;
-		if (!axis_geometry || !axis_geometry->TouchesAxis()) { return tdofs; }
-		fespace->GetEssentialTrueDofs(axis_boundary, tdofs);
-		tdofs.Append(axisym::AxisVertexDofs(*fespace, *axis_geometry));
-		tdofs.Sort();
-		tdofs.Unique();
-		return tdofs;
-	}
+	mfem::Array<int> AxisTrueDofs() const;
 
-	void AddAxisTrueDofs(mfem::Array<int>& tdofs) const {
-		tdofs.Append(AxisTrueDofs());
-		tdofs.Sort();
-		tdofs.Unique();
-	}
+	void AddAxisTrueDofs(mfem::Array<int>& tdofs) const;
 
 	// Axis regularity, verification half: a nonzero Dirichlet value on the axis
 	// contradicts the A_phi = 0 constraint imposed above. The constraint would
 	// silently win, so the configuration is rejected instead. Requires the FE
 	// space, so call after BuildOperators().
-	void ValidateMagneticAxisBoundaryValues() const {
-		if (!axis_geometry || !axis_geometry->TouchesAxis()) return;
-
-		MFEM_VERIFY(fespace,
-			"Magnetic axis boundary validation requires a finite element space.");
-
-		const mfem::Array<int> axis_tdofs = AxisTrueDofs();
-		mfem::Array<int> is_axis_tdof(fespace->GetTrueVSize());
-		is_axis_tdof = 0;
-		for (int i = 0; i < axis_tdofs.Size(); ++i) {
-			is_axis_tdof[axis_tdofs[i]] = 1;
-		}
-
-		for (const auto& bc : boundary_conditions) {
-			if (!bc.IsNonzeroDirichlet()) continue;
-
-			mfem::Array<int> marker(bc.Marker);
-			mfem::Array<int> boundary_tdofs;
-			fespace->GetEssentialTrueDofs(marker, boundary_tdofs);
-			for (int i = 0; i < boundary_tdofs.Size(); ++i) {
-				const int tdof = boundary_tdofs[i];
-				MFEM_VERIFY(!is_axis_tdof[tdof],
-					"Boundary group '" + bc.Condition.EntityGroupName +
-					"' assigns a nonzero Dirichlet value at true DOF " +
-					std::to_string(tdof) + " on the magnetic symmetry axis. "
-					"Axis regularity requires A_phi = 0 at r = 0.");
-			}
-		}
-	}
+	void ValidateMagneticAxisBoundaryValues() const;
 
 	// Stiffness term: axisymmetric curl-curl (nu * curl A * curl A, carrying the
 	// 1/r factor) or planar diffusion (nu * grad A * grad A). A fresh instance is
 	// returned each call so the solve's bilinear form and the AMR error estimator
 	// can own separate copies.
-	mfem::BilinearFormIntegrator* MakeStiffnessIntegrator() const {
-		if (geometry == GeometryType::Axisymmetric) {
-			return new AxisymmetricCurlCurlIntegrator(
-				*nu_coeff, axis_geometry->tolerance);
-		}
-		else {
-			return new mfem::DiffusionIntegrator(*nu_coeff);
-		}
-	}
+	mfem::BilinearFormIntegrator* MakeStiffnessIntegrator() const;
 
 	// Uniform current density N I/area over the terminal's domain attributes,
 	// for a winding of N turns each carrying I, laid out per mesh attribute
@@ -452,49 +231,19 @@ protected:
 	// measure is not a cross-section, and the current would have to be given a
 	// direction as well as a magnitude; this scalar form does not generalize.
 	mfem::Vector BuildTerminalCurrentDensity(
-		const std::string& terminal_name, double current) const {
-		const Terminal& term = config.Terminals.at(terminal_name);
-		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
-		return AttributeVector(group.AttributeIds,
-							   term.Turns * current / TerminalArea(terminal_name));
-	}
+		const std::string& terminal_name, double current) const;
 
 	// A stranded terminal's winding functional, lambda_k(A) = integral of
 	// (N_k/area_k) A dV: the flux linkage of the field A with terminal k, the
 	// load of a unit current in it. It depends on the mesh only, so it is
 	// assembled once per mesh rather than per coupling-matrix entry.
-	const mfem::Vector& WindingFunctional(const std::string& terminal_name) const {
-		ForgetMeshCachesOnRefinement();
-		const auto cached = winding_functionals.find(terminal_name);
-		if (cached != winding_functionals.end()) { return cached->second; }
-		mfem::Vector unit_density = BuildTerminalCurrentDensity(terminal_name, 1.0);
-		mfem::PWConstCoefficient unit_density_coeff(unit_density);
-		mfem::LinearForm functional(fespace.get());
-		functional.AddDomainIntegrator(Geometry().NewDomainLFIntegrator(unit_density_coeff));
-		functional.Assemble();
-		return winding_functionals.emplace(terminal_name, mfem::Vector(functional)).first->second;
-	}
+	const mfem::Vector& WindingFunctional(const std::string& terminal_name) const;
 
 private:
 	// The cross-section of a stranded terminal, measured once per mesh.
-	double TerminalArea(const std::string& terminal_name) const {
-		ForgetMeshCachesOnRefinement();
-		const auto cached = terminal_areas.find(terminal_name);
-		if (cached != terminal_areas.end()) { return cached->second; }
-		const Terminal& term = config.Terminals.at(terminal_name);
-		const double area = CalculateRegionMeasure(
-			config.EntityGroups.at(term.EntityGroupName).AttributeIds);
-		MFEM_VERIFY(area > 0.0,
-			"Current terminal '" + terminal_name + "' has zero cross-section.");
-		return terminal_areas.emplace(terminal_name, area).first->second;
-	}
+	double TerminalArea(const std::string& terminal_name) const;
 
-	void ForgetMeshCachesOnRefinement() const {
-		if (cached_sequence == mesh.GetSequence()) { return; }
-		terminal_areas.clear();
-		winding_functionals.clear();
-		cached_sequence = mesh.GetSequence();
-	}
+	void ForgetMeshCachesOnRefinement() const;
 
 	mutable std::map<std::string, double> terminal_areas;
 	mutable std::map<std::string, mfem::Vector> winding_functionals;
@@ -515,14 +264,7 @@ protected:
 	// Assembly is restricted to the conductor's elements, so its cost is
 	// proportional to the conductor rather than to the mesh.
 	mfem::Vector MassiveConductorLoad(const std::string& name,
-									  const std::vector<int>& attributes) const {
-		mfem::Array<int> marker =
-			DomainMarkerFromAttrs(attributes, "massive conductor '" + name + "'");
-		mfem::LinearForm load(fespace.get());
-		load.AddDomainIntegrator(new mfem::DomainLFIntegrator(*sigma_coeff), marker);
-		load.Assemble();
-		return mfem::Vector(load);
-	}
+									  const std::vector<int>& attributes) const;
 
 	// DC conductance G of a massive conductor: the integral of sigma over its
 	// elements in the plane, of sigma/(2 pi r) around the axis, where the rule
@@ -530,49 +272,13 @@ protected:
 	// (radial_quadrature.hpp). A rule of fixed order cannot: a ring's
 	// conductance sigma h ln(b/a) / (2 pi) grows without bound as a -> 0.
 	double MassiveConductance(const std::string& name,
-							  const std::vector<int>& attributes) const {
-		const std::set<int> attrs(attributes.begin(), attributes.end());
-		AxisymmetricConductanceCoeff axisymmetric(*sigma_coeff);
-		mfem::Coefficient& integrand = geometry == GeometryType::Axisymmetric
-			? static_cast<mfem::Coefficient&>(axisymmetric) : *sigma_coeff;
-		double G = 0.0;
-		for (int e = 0; e < mesh.GetNE(); ++e) {
-			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-			mfem::ElementTransformation* T = mesh.GetElementTransformation(e);
-			const mfem::Geometry::Type shape = mesh.GetElementBaseGeometry(e);
-			const int order = 2 * config.Order + T->OrderW() + 2;
-			const mfem::IntegrationRule& ir = geometry == GeometryType::Axisymmetric
-				? axisym::RadialRule(shape, order, *T, axis_geometry->tolerance)
-				: mfem::IntRules.Get(shape, order);
-			for (int i = 0; i < ir.GetNPoints(); ++i) {
-				const mfem::IntegrationPoint& ip = ir.IntPoint(i);
-				T->SetIntPoint(&ip);
-				G += ip.weight * T->Weight() * integrand.Eval(*T, ip);
-			}
-		}
-		MFEM_VERIFY(G > 0.0, "Massive conductor '" + name + "' has zero conductance.");
-		return G;
-	}
+							  const std::vector<int>& attributes) const;
 
 	// A massive conductor needs a positive conductivity throughout and, around
 	// the axis, must not reach it: its conductance integral sigma/(2 pi r)
 	// diverges there.
 	void ValidateMassiveConductor(const std::string& name,
-								  const std::vector<int>& attributes) const {
-		ValidateMassiveConductivity(name, attributes);
-		if (geometry != GeometryType::Axisymmetric) { return; }
-		const std::set<int> attrs(attributes.begin(), attributes.end());
-		mfem::Vector pos(mesh.SpaceDimension());
-		for (int e = 0; e < mesh.GetNE(); ++e) {
-			if (!attrs.count(mesh.GetAttribute(e))) { continue; }
-			double min_radius = 0.0, radial_width = 0.0;
-			axisym::RadialExtent(*mesh.GetElementTransformation(e), min_radius, radial_width);
-			MFEM_VERIFY(min_radius > axis_geometry->tolerance,
-				"Massive conductor '" + name + "' touches the symmetry axis. Its DC "
-				"conductance integral sigma/(2*pi*r) is divergent; model it as a "
-				"stranded conductor or move it off the axis.");
-		}
-	}
+								  const std::vector<int>& attributes) const;
 
 	// Real and imaginary parts of the scenario source current density, summed
 	// over the terminals @p include accepts. Current enters the model only
@@ -584,19 +290,5 @@ protected:
 	void BuildCurrentDensity(
 		const Scenario& sc,
 		const std::function<bool(const Terminal&)>& include,
-		mfem::Vector& j_re, mfem::Vector& j_im) const {
-		j_re.SetSize(mesh.attributes.Max());
-		j_im.SetSize(mesh.attributes.Max());
-		j_re = 0.0;
-		j_im = 0.0;
-
-		for (const auto& [term_name, term] : config.Terminals) {
-			if (term.DriveQuantity != Quantity::Current) continue;
-			if (!include(term)) continue;
-
-			const std::complex<double> I = ExcitationFor(sc, term_name);
-			if (I.real() != 0.0) { j_re += BuildTerminalCurrentDensity(term_name, I.real()); }
-			if (I.imag() != 0.0) { j_im += BuildTerminalCurrentDensity(term_name, I.imag()); }
-		}
-	}
+		mfem::Vector& j_re, mfem::Vector& j_im) const;
 };

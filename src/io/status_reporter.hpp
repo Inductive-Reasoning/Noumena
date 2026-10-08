@@ -35,20 +35,9 @@ private:
 		explicit MessageBuffer(StatusReporter& reporter) : reporter_(reporter) {}
 
 	protected:
-		int overflow(int ch) override {
-			if (ch == traits_type::eof()) {
-				return traits_type::not_eof(ch);
-			}
-			Append(static_cast<char>(ch));
-			return ch;
-		}
+		int overflow(int ch) override;
 
-		std::streamsize xsputn(const char* data, std::streamsize size) override {
-			for (std::streamsize i = 0; i < size; ++i) {
-				Append(data[i]);
-			}
-			return size;
-		}
+		std::streamsize xsputn(const char* data, std::streamsize size) override;
 
 		int sync() override {
 			FlushLine();
@@ -56,21 +45,9 @@ private:
 		}
 
 	private:
-		void Append(char ch) {
-			if (ch == '\n') {
-				FlushLine();
-			}
-			else if (ch != '\r') {
-				line_ += ch;
-			}
-		}
+		void Append(char ch);
 
-		void FlushLine() {
-			if (!line_.empty()) {
-				reporter_.SolverMessage(line_);
-				line_.clear();
-			}
-		}
+		void FlushLine();
 
 		StatusReporter& reporter_;
 		std::string line_;
@@ -93,14 +70,7 @@ public:
 		Operation(Operation&&) = delete;
 		Operation& operator=(Operation&&) = delete;
 
-		~Operation() noexcept {
-			const double seconds =
-				std::chrono::duration<double>(Clock::now() - start_).count();
-			reporter_.Write(std::uncaught_exceptions() > exception_count_
-								? "Failed"
-								: "Completed",
-							name_, seconds);
-		}
+		~Operation() noexcept;
 
 	private:
 		using Clock = std::chrono::steady_clock;
@@ -123,15 +93,7 @@ public:
 		return reporter;
 	}
 
-	static Verbosity VerbosityFromInt(int value) {
-		switch (value) {
-			case 0: return Verbosity::Status;
-			case 1: return Verbosity::Solver;
-			case 2: return Verbosity::Diagnostics;
-			default:
-				throw std::invalid_argument("verbosity must be 0, 1, or 2");
-		}
-	}
+	static Verbosity VerbosityFromInt(int value);
 
 	void SetVerbosity(Verbosity verbosity) { verbosity_ = verbosity; }
 	Verbosity GetVerbosity() const { return verbosity_; }
@@ -159,11 +121,7 @@ public:
 		WriteMessage("status", message);
 	}
 
-	void Diagnostic(const std::string& message) {
-		if (DiagnosticsEnabled()) {
-			WriteMessage("diagnostic", message);
-		}
-	}
+	void Diagnostic(const std::string& message);
 
 	void Warning(const std::string& message) {
 		WriteMessage("warning", message, true);
@@ -185,60 +143,11 @@ private:
 	}
 
 	void WriteMessage(const char* level, const std::string& message,
-		bool use_error_output = false) {
-		if (IsMachineReadable()) {
-			WriteJson({
-				{"event", "message"},
-				{"level", level},
-				{"message", message}
-			});
-		}
-		else {
-			std::ostream& stream = use_error_output ? error_output_ : output_;
-			stream << message << '\n' << std::flush;
-		}
-	}
+		bool use_error_output = false);
 
-	void Write(const char* state, const std::string& name) noexcept {
-		try {
-			if (IsMachineReadable()) {
-				WriteJson({
-					{"event", "operation"},
-					{"state", state == std::string("Starting") ? "started" : state},
-					{"name", name}
-				});
-			}
-			else {
-				output_ << state << ' ' << name << "...\n" << std::flush;
-			}
-		}
-		catch (...) {
-		}
-	}
+	void Write(const char* state, const std::string& name) noexcept;
 
-	void Write(const char* state, const std::string& name, double seconds) noexcept {
-		try {
-			if (IsMachineReadable()) {
-				std::string machine_state = state;
-				machine_state[0] = static_cast<char>(std::tolower(
-					static_cast<unsigned char>(machine_state[0])));
-				WriteJson({
-					{"event", "operation"},
-					{"state", machine_state},
-					{"name", name},
-					{"elapsed_seconds", seconds}
-				});
-			}
-			else {
-				std::ostringstream elapsed;
-				elapsed << std::fixed << std::setprecision(3) << seconds;
-				output_ << state << ' ' << name << " in " << elapsed.str() << " s\n"
-					<< std::flush;
-			}
-		}
-		catch (...) {
-		}
-	}
+	void Write(const char* state, const std::string& name, double seconds) noexcept;
 
 	std::ostream& output_;
 	std::ostream& error_output_;
