@@ -1,0 +1,177 @@
+# Builds the noumena executable for Linux and Windows and packages it with
+# the shared libraries it needs. Version tags (v*) publish both packages as a
+# GitHub release; a manual run or a pull request that changes the build only
+# uploads them as workflow artifacts.
+#
+# Both are serial (non-MPI) builds with OpenMP and STRUMPACK. Windows builds
+# with MSYS2's UCRT64 GCC toolchain because STRUMPACK needs a Fortran
+# compiler, which MSVC lacks.
+
+name: Release builds
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONFIGURE_FLAGS: >-
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+    -DBUILD_TESTING=OFF
+    -DUSE_MPI=OFF
+    -DNOUMENA_BUNDLE_RUNTIME=ON
+
+jobs:
+  linux:
+    # The oldest supported runner, so the package's glibc requirement (2.35)
+    # is as low as possible.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gfortran libopenblas-dev libmetis-dev ninja-build
+
+      - name: Configure
+        run: cmake -S . -B build $CONFIGURE_FLAGS -DCMAKE_INSTALL_PREFIX="$PWD/stage"
+
+      - name: Build
+        run: cmake --build build --target noumena
+
+      - name: Install
+        run: |
+          cmake --install build --component noumena
+          # The licenses of the bundled system libraries, from their packages.
+          for lib in stage/lib/*; do
+            pkg=$(dpkg -S "$(readlink -f "/lib/x86_64-linux-gnu/$(basename "$lib")")" | cut -d: -f1)
+            mkdir -p "stage/share/licenses/$pkg"
+            cp "/usr/share/doc/$pkg/copyright" "stage/share/licenses/$pkg/"
+          done
+          find stage -type f
+
+      - name: Smoke test
+        run: |
+          ldd stage/bin/noumena
+          stage/bin/noumena --version
+          mkdir smoke
+          cp examples/simple_capacitor/{config.json,capacitor.mesh} smoke/
+          cp examples/current_loop/{config_mqs_lowfreq.json,loop.mesh} smoke/
+          cd smoke
+          ../stage/bin/noumena config.json --output-directory es
+          ../stage/bin/noumena config_mqs_lowfreq.json --output-directory mqs
+
+      - name: Package
+        run: |
+          name="noumena-${GITHUB_REF_NAME//\//-}-linux-x86_64"
+          mv stage "$name"
+          tar czf "$name.tar.gz" "$name"
+          echo "PACKAGE=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # Keep LF line endings so the build's git status reports a clean tree.
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+
+      - uses: actions/checkout@v5
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gcc-fortran
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-openblas
+            mingw-w64-ucrt-x86_64-metis
+
+      - name: Configure
+        run: cmake -S . -B build $CONFIGURE_FLAGS -DCMAKE_INSTALL_PREFIX="$PWD/stage"
+
+      - name: Build
+        run: cmake --build build --target noumena
+
+      - name: Install
+        run: |
+          cmake --install build --component noumena
+          # The licenses of the bundled DLLs, from their MSYS2 packages.
+          for dll in stage/bin/*.dll; do
+            pkg=$(pacman -Qqo "/ucrt64/bin/$(basename "$dll")")
+            for f in $(pacman -Qlq "$pkg" | grep '/share/licenses/.*[^/]$'); do
+              mkdir -p "stage/share/licenses/$pkg"
+              cp "$f" "stage/share/licenses/$pkg/"
+            done
+          done
+          find stage -type f
+
+      # Outside MSYS2, with only the system directories on PATH, so the run
+      # fails if any DLL the executable needs was not bundled.
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $exe = "$PWD\stage\bin\noumena.exe"
+          & $exe --version; if ($LASTEXITCODE) { exit 1 }
+          New-Item -ItemType Directory smoke | Out-Null
+          Copy-Item examples/simple_capacitor/config.json, examples/simple_capacitor/capacitor.mesh smoke
+          Copy-Item examples/current_loop/config_mqs_lowfreq.json, examples/current_loop/loop.mesh smoke
+          Set-Location smoke
+          & $exe config.json --output-directory es; if ($LASTEXITCODE) { exit 1 }
+          & $exe config_mqs_lowfreq.json --output-directory mqs; if ($LASTEXITCODE) { exit 1 }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "noumena-$($env:GITHUB_REF_NAME -replace '/','-')-windows-x86_64"
+          Rename-Item stage $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          "PACKAGE=$name.zip" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*
+          generate_release_notes: true

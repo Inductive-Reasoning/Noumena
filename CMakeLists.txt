@@ -194,6 +194,9 @@ function(configure_hdf5)
     set(HDF5_ENABLE_Z_LIB_SUPPORT OFF)
     set(HDF5_ENABLE_SZIP_SUPPORT OFF)
     set(HDF5_NO_PACKAGES ON)
+    # The _Float16 datatype is unused here, and HDF5's -std=c99 build of it
+    # fails with MinGW GCC (FLT16_MAX undeclared).
+    set(HDF5_ENABLE_NONSTANDARD_FEATURE_FLOAT16 OFF)
     FetchContent_Declare(
         hdf5
         GIT_REPOSITORY https://github.com/HDFGroup/hdf5.git
@@ -273,6 +276,88 @@ target_include_directories(noumena PRIVATE ${CMAKE_BINARY_DIR}/generated)
 if(USE_OPENMP)
     target_link_libraries(noumena PRIVATE OpenMP::OpenMP_CXX)
     message(STATUS "OpenMP enabled. Use OMP_NUM_THREADS to control parallelism.")
+endif()
+
+# Installation. "cmake --install <build> --component noumena" installs the
+# executable alone; the fetched dependencies have install rules of their own,
+# which a plain "cmake --install" would run too.
+#
+# NOUMENA_BUNDLE_RUNTIME also copies the shared libraries the executable
+# loads (BLAS, METIS, the Fortran and OpenMP runtimes, ...) into the install
+# tree, so it runs on a machine without them: the release packages. On Linux
+# they go in lib/, found through the executable's RPATH; the C runtime and
+# libstdc++/libgcc_s are left to the system, whose versions are backward
+# compatible. On Windows they go in bin/, beside the executable, searched for
+# next to the compiler (where MSYS2 keeps them); the system DLLs are left out.
+option(NOUMENA_BUNDLE_RUNTIME "Install the executable's shared library dependencies with it" OFF)
+include(GNUInstallDirs)
+install(TARGETS noumena RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT noumena)
+install(FILES LICENSE README.md DESTINATION . COMPONENT noumena)
+# The licenses of the libraries compiled into the executable, which their
+# binary redistribution requires. STRUMPACK's source is present only when it
+# was built here rather than taken from STRUMPACK_ROOT.
+function(noumena_install_licenses name)
+    install(FILES ${ARGN} DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/${name}
+            COMPONENT noumena)
+endfunction()
+noumena_install_licenses(mfem ${mfem_SOURCE_DIR}/LICENSE ${mfem_SOURCE_DIR}/NOTICE)
+noumena_install_licenses(eigen ${eigen_SOURCE_DIR}/COPYING.MPL2)
+noumena_install_licenses(amgcl ${amgcl_SOURCE_DIR}/LICENSE.md)
+noumena_install_licenses(nlohmann_json ${nlohmann_json_SOURCE_DIR}/LICENSE.MIT)
+FetchContent_GetProperties(hdf5)  # populated inside configure_hdf5()
+noumena_install_licenses(hdf5 ${hdf5_SOURCE_DIR}/COPYING ${hdf5_SOURCE_DIR}/COPYING_LBNL_HDF5)
+noumena_install_licenses(highfive ${highfive_SOURCE_DIR}/LICENSE)
+if(NOUMENA_HAVE_STRUMPACK AND EXISTS "${FETCHCONTENT_BASE_DIR}/strumpack-src/LICENSE")
+    noumena_install_licenses(strumpack ${FETCHCONTENT_BASE_DIR}/strumpack-src/LICENSE)
+endif()
+if(NOUMENA_BUNDLE_RUNTIME)
+    if(WIN32)
+        set(_bundle_dest "${CMAKE_INSTALL_BINDIR}")
+        get_filename_component(_bundle_search "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    else()
+        set(_bundle_dest "${CMAKE_INSTALL_LIBDIR}")
+        set(_bundle_search "")
+        set_target_properties(noumena PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+        # An RPATH rather than a RUNPATH: it also applies to the bundled
+        # libraries' own dependencies (libgfortran's libquadmath, ...).
+        target_link_options(noumena PRIVATE "LINKER:--disable-new-dtags")
+    endif()
+    # MinGW executables are read with the toolchain's objdump; CMake would
+    # otherwise look for MSVC's dumpbin.
+    set(_bundle_tool "")
+    if(WIN32 AND NOT MSVC)
+        set(_bundle_tool "
+            set(CMAKE_GET_RUNTIME_DEPENDENCIES_PLATFORM windows+pe)
+            set(CMAKE_GET_RUNTIME_DEPENDENCIES_TOOL objdump)
+            set(CMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND \"${CMAKE_OBJDUMP}\")")
+    endif()
+    # Each library is installed under the name the executable asks for (its
+    # soname), with the content of the file that name resolves to: on Linux
+    # that name is often a symlink (into /etc/alternatives, for BLAS).
+    install(CODE "${_bundle_tool}
+        if(POLICY CMP0207)  # match the exclusions against '/'-separated paths
+            cmake_policy(SET CMP0207 NEW)
+        endif()
+        file(GET_RUNTIME_DEPENDENCIES
+            EXECUTABLES \"$<TARGET_FILE:noumena>\"
+            RESOLVED_DEPENDENCIES_VAR _deps
+            UNRESOLVED_DEPENDENCIES_VAR _missing
+            DIRECTORIES \"${_bundle_search}\"
+            PRE_EXCLUDE_REGEXES
+                \"^api-ms-\" \"^ext-ms-\"
+                \"^(ld-linux.*|libc|libm|libdl|libpthread|librt|libstdc\\\\+\\\\+|libgcc_s)\\\\.so\"
+            POST_EXCLUDE_REGEXES \"[Ss]ystem32/\" \"[Ww]indows/\")
+        if(_missing)
+            message(FATAL_ERROR \"Unresolved runtime dependencies: \${_missing}\")
+        endif()
+        foreach(_dep IN LISTS _deps)
+            get_filename_component(_name \"\${_dep}\" NAME)
+            get_filename_component(_real \"\${_dep}\" REALPATH)
+            file(INSTALL \"\${_real}\"
+                DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${_bundle_dest}\"
+                RENAME \"\${_name}\")
+        endforeach()
+        " COMPONENT noumena)
 endif()
 
 # Documentation with Doxygen
