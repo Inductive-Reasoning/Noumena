@@ -55,6 +55,20 @@ Coupling matrices use HDF5 instead of CSV; field output formats are unchanged.
 
 ## Installation Instructions
 
+### Prebuilt packages
+
+Each [release](https://github.com/xfmrexpert/Noumena/releases) carries a
+package for Linux x86-64 (glibc 2.35 or newer: Ubuntu 22.04, Debian 12, ...)
+and one for Windows x86-64. Unpack it and run `bin/noumena`; the shared
+libraries it needs are included, and the licenses of the bundled third-party
+libraries are in `share/licenses`. These are serial builds (OpenMP threads,
+STRUMPACK, no MPI), so 3D magnetics uses the direct solver; build with MPI as
+described below for its iterative solver.
+
+To produce the same package from a build tree, configure with
+`-DNOUMENA_BUNDLE_RUNTIME=ON` and run
+`cmake --install build --component noumena --prefix <dir>`.
+
 ### Linux (Ubuntu/Debian)
 
 ```bash
