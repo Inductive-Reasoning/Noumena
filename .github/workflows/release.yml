@@ -54,11 +54,16 @@ jobs:
       - name: Install
         run: |
           cmake --install build --component noumena
-          # The licenses of the bundled system libraries, from their packages.
+          # The licenses of the bundled system libraries, from their packages,
+          # with the full texts in /usr/share/common-licenses they refer to.
           for lib in stage/lib/*; do
             pkg=$(dpkg -S "$(readlink -f "/lib/x86_64-linux-gnu/$(basename "$lib")")" | cut -d: -f1)
-            mkdir -p "stage/share/licenses/$pkg"
-            cp "/usr/share/doc/$pkg/copyright" "stage/share/licenses/$pkg/"
+            dest="stage/share/licenses/$pkg"
+            mkdir -p "$dest"
+            cp "/usr/share/doc/$pkg/copyright" "$dest/"
+            for f in $(grep -o '/usr/share/common-licenses/[A-Za-z0-9.+-]*' "$dest/copyright" | sort -u); do
+              if [ -f "$f" ]; then cp "$f" "$dest/"; fi
+            done
           done
           find stage -type f
 
@@ -119,14 +124,28 @@ jobs:
 
       - name: Install
         run: |
+          set -e
           cmake --install build --component noumena
-          # The licenses of the bundled DLLs, from their MSYS2 packages.
+          # The licenses of the bundled DLLs, from their MSYS2 packages. METIS's
+          # package ships none, so its notice comes from upstream, with the
+          # Apache-2.0 text it refers to.
           for dll in stage/bin/*.dll; do
             pkg=$(pacman -Qqo "/ucrt64/bin/$(basename "$dll")")
+            dest="stage/share/licenses/$pkg"
+            mkdir -p "$dest"
             for f in $(pacman -Qlq "$pkg" | grep '/share/licenses/.*[^/]$'); do
-              mkdir -p "stage/share/licenses/$pkg"
-              cp "$f" "stage/share/licenses/$pkg/"
+              cp "$f" "$dest/"
             done
+            if [ "$pkg" = mingw-w64-ucrt-x86_64-metis ]; then
+              curl -fsSL -o "$dest/LICENSE" \
+                https://raw.githubusercontent.com/KarypisLab/METIS/v5.2.1/LICENSE
+              curl -fsSL -o "$dest/LICENSE-2.0.txt" \
+                https://www.apache.org/licenses/LICENSE-2.0.txt
+            fi
+            if [ -z "$(ls -A "$dest")" ]; then
+              echo "No license found for $pkg ($(basename "$dll"))" >&2
+              exit 1
+            fi
           done
           find stage -type f
 
