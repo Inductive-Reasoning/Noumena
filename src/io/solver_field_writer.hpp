@@ -46,7 +46,9 @@ public:
 			"ParaView export supports 2D and 3D meshes, not " << dim << "D.");
 
 		mfem::ParaViewDataCollection pv(collection_name, &mesh);
-		pv.SetPrefixPath(directory.string());
+		// MFEM creates the collection's directories by splitting the path at
+		// '/' only, so a Windows path must use '/' throughout.
+		pv.SetPrefixPath(directory.generic_string());
 
 		// SetHighOrderOutput emits Lagrange cells of the solution order rather
 		// than subdividing into linear cells.
