@@ -50,24 +50,24 @@ used by common commercial AC/DC and eddy-current tools.
 schema.
 
 This matters because the constants the mesh is multiplied against are
-per-metre -- `EPSILON_0` in F/m and `MU_0` in H/m -- and the axisymmetric
+per-meter -- `EPSILON_0` in F/m and `MU_0` in H/m -- and the axisymmetric
 volume measure `dV = 2*pi*r dr dz` treats `r` as a physical length. A model
-authored in millimetres therefore does not produce a rescaled answer that can
-be corrected afterwards; it mixes a millimetre geometry with per-metre material
+authored in millimeters therefore does not produce a rescaled answer that can
+be corrected afterwards; it mixes a millimeter geometry with per-meter material
 properties and corrupts every absolute quantity.
 
 > The convention is **documented but not enforced.** No code inspects the mesh
-> extent, so a millimetre mesh solves cleanly and reports plausible, quietly
+> extent, so a millimeter mesh solves cleanly and reports plausible, quietly
 > wrong energies, capacitances, inductances, and losses.
 
-A millimetre mesh cannot be detected reliably, because a bounding box of a few
-hundred units is equally consistent with a small model in metres and a large
-one in millimetres. Convert when the mesh is generated.
+A millimeter mesh cannot be detected reliably, because a bounding box of a few
+hundred units is equally consistent with a small model in meters and a large
+one in millimeters. Convert when the mesh is generated.
 
 One nuance: axis *classification* is scale-free. `axisym::kRelativeGeometryTolerance`
 is relative to the mesh bounding box, so "is this domain touching r = 0" is
 decided correctly in any unit. That is a geometric convenience only and does not
-relax the metres requirement the physics imposes.
+relax the meters requirement the physics imposes.
 
 ## Does the peak/RMS choice affect the capacitance, inductance, or resistance matrices?
 
@@ -146,7 +146,7 @@ operator indefinite.
 ## How do I choose a Robin far-field coefficient?
 
 Place a spherical outer boundary of radius `R` around the conductors (a
-half-circle centred on the axis for an axisymmetric model) and use
+half-circle centerd on the axis for an axisymmetric model) and use
 
 ```json
 {"type": "robin", "entity_group": "FarField", "value": 0.0,

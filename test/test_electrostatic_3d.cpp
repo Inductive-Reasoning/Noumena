@@ -28,7 +28,7 @@ ProblemConfig DecodeConfig(const json& config, const std::string& archive = {});
 namespace {
 
 // Maxwell capacitance coefficients of two spheres of radii a and b with
-// centres c apart in free space, from the series of J. Lekner, "Capacitance
+// centers c apart in free space, from the series of J. Lekner, "Capacitance
 // coefficients of two spheres", J. Electrostatics 69 (2011) 11-14, with
 // cosh u = (c^2 - a^2 - b^2) / (2ab). The terms fall off as exp(-n u), so 200
 // is far past convergence for any separated pair.

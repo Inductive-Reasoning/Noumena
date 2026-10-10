@@ -7,7 +7,7 @@ density above the plate and the eddy currents on its surfaces.
 
 ## Problem
 
-All dimensions in millimetres here; the mesh and config are in metres.
+All dimensions in millimeters here; the mesh and config are in meters.
 
 - **Plate:** aluminium, sigma = 3.526e7 S/m, 294 x 294 x 19 (0 <= x, y <= 294,
   0 <= z <= 19), with a through hole 18 <= x, y <= 126.

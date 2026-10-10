@@ -2,7 +2,7 @@
 //
 // Two square racetrack coils (axis z) carrying opposite currents beside a
 // 10 mm non-magnetic steel plate with 0-3 slits (P21a-0 ... P21a-3).
-// Coordinates in metres: the plate is centred on x = 0 (|x| <= 5 mm), the
+// Coordinates in meters: the plate is centerd on x = 0 (|x| <= 5 mm), the
 // coils' near face is 12 mm from it (x = 17 mm), z = 0 is the mid-plane
 // between the coils.
 //

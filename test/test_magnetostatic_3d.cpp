@@ -790,7 +790,7 @@ TEST_CASE("3D current terminals are validated", "[solvers][magnetostatic][3d]") 
 	using Catch::Matchers::ContainsSubstring;
 
 	SECTION("a conductor touching its axis is rejected") {
-		// Unit cube with the axis through its centre line: interior vertices
+		// Unit cube with the axis through its center line: interior vertices
 		// of the 2x2x2 mesh lie on it.
 		mfem::Mesh mesh = mfem::Mesh::MakeCartesian3D(2, 2, 2, mfem::Element::TETRAHEDRON);
 		json config = MakeCubeConfig(1.0);

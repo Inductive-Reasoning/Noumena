@@ -1205,7 +1205,7 @@ void CreateShieldedTurnsMesh(const std::string& filename,
 }
 
 // Geometry of the axisymmetric current loop used by the inductance checks:
-// a square cross-section of side kLoopSide centred at r = kLoopRadius, z = 0,
+// a square cross-section of side kLoopSide centerd at r = kLoopRadius, z = 0,
 // surrounded by air out to a far boundary at kLoopDomain.
 constexpr double kLoopRadius = 0.1;    // loop radius a [m]
 constexpr double kLoopSide = 0.002;    // conductor cross-section side [m]

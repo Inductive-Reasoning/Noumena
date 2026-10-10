@@ -146,7 +146,7 @@ json WireConfig(const std::string& physics, const std::string& conductor, double
 // R1 <= r <= R2 over the full height. Domain attributes: 1 air, 2 sphere,
 // 3 solenoid; boundary attributes: 1 the plane z = 0, 2 the plane z = H,
 // 3 the planes x = 0 and y = 0, 4 the cylinder r = Rw. The planes through
-// the sphere's centre are exact symmetry planes for a field applied along z;
+// the sphere's center are exact symmetry planes for a field applied along z;
 // the top and the cylinder truncate the model, imaging the sphere's dipole
 // there, which perturbs the field at the sphere by about 7e-4.
 struct SphereModel {
@@ -195,7 +195,7 @@ std::unique_ptr<mfem::Mesh> SphereMesh(const SphereModel& m, double h_sphere, do
 }
 
 // The values of a vector field at points inside the sphere, at most 0.6 a
-// from its centre.
+// from its center.
 std::vector<mfem::Vector> SampleInsideSphere(mfem::Mesh& mesh, const SphereModel& m,
 											 mfem::VectorCoefficient& field) {
 	const double fractions[][3] = { { 0.1, 0.1, 0.1 }, { 0.5, 0.1, 0.2 }, { 0.2, 0.4, 0.3 },
@@ -261,7 +261,7 @@ json SphereMagneticConfig(const std::string& physics, double mu_r, double sigma)
 // the wire's internal part plus the coaxial gap's. A massive conductor's DC
 // current is uniform here too (every path through it is equally long), so
 // both kinds of terminal give the same answer. At second order B agrees to
-// 1.2e-3 of its surface value at the element centres, and L' to 2e-6.
+// 1.2e-3 of its surface value at the element centers, and L' to 2e-6.
 TEST_CASE("A round conductor's field and inductance match the closed form",
 		  "[solvers][analytic][magnetostatic][planar][round]") {
 	constexpr double a = 1e-3, b = 5e-3, I = 1.0;
@@ -504,7 +504,7 @@ TEST_CASE("A conducting tube shields an axial AC field as the closed form says",
 	mfem::VectorCoefficient& B_re = DerivedVector(fields, "B_Real");
 	mfem::VectorCoefficient& B_im = DerivedVector(fields, "B_Imag");
 
-	// B_z at the centre of every bore and every outside cell.
+	// B_z at the center of every bore and every outside cell.
 	std::vector<complex> bore, outside;
 	mfem::IntegrationPoint center;
 	center.Set2(0.5, 0.5);

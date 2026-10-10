@@ -4,8 +4,8 @@ This example calculates the magnetostatic field of a current-carrying solenoid c
 
 ## Problem Description
 
-**Geometry:** (all dimensions in metres -- the solver is SI and assumes a mesh
-in metres; see [Units](../../docs/config_reference.md#units))
+**Geometry:** (all dimensions in meters -- the solver is SI and assumes a mesh
+in meters; see [Units](../../docs/config_reference.md#units))
 - Solenoid: inner radius r_in = 0.05 m, outer radius r_out = 0.08 m
 - Length: L = 0.2 m
 - Number of turns: N = 1000
@@ -24,7 +24,7 @@ in metres; see [Units](../../docs/config_reference.md#units))
 ## Analytical Solution
 
 On the axis of a finite coil of uniform current density J = NI/((r_out − r_in) L),
-centred on z = 0, the free-space field is
+centerd on z = 0, the free-space field is
 
 ```
 B_z(z) = (μ₀ J / 2) [f(z + L/2) − f(z − L/2)],
@@ -34,13 +34,13 @@ f(u) = u ln[(r_out + √(r_out² + u²)) / (r_in + √(r_in² + u²))]
 which gives
 
 ```
-B_z(0)   = 5.27 mT   (centre)
-B_z(L/2) = 2.99 mT   (end of the coil, 57% of the centre value)
+B_z(0)   = 5.27 mT   (center)
+B_z(L/2) = 2.99 mT   (end of the coil, 57% of the center value)
 ```
 
 The long-solenoid value μ₀NI/L = 6.28 mT does not apply: this coil is only
 1.25 times as long as its outer diameter, and the long-solenoid formula is
-16% above its centre field.
+16% above its center field.
 
 **Current density in coil:**
 
@@ -93,7 +93,7 @@ These paths are relative to the config directory unless `output.directory` is se
 
 The simulation should produce:
 1. **Vector potential A_φ:** Increases inside coil, drops to zero at far field
-2. **Magnetic flux density B:** about 5.2 mT axial field at the centre
+2. **Magnetic flux density B:** about 5.2 mT axial field at the center
 3. **Field lines:** Closed loops through coil and return path in air
 4. **Fringing:** Field spreads near ends of solenoid
 
@@ -131,7 +131,7 @@ at (r, z) = (0, 0) and (0, 0.1). The shipped mesh gives
 
 | Point | Computed | Analytical | Difference |
 |---|---|---|---|
-| Centre, z = 0 | 5.232 mT | 5.266 mT | -0.65% |
+| Center, z = 0 | 5.232 mT | 5.266 mT | -0.65% |
 | End, z = L/2 | 2.954 mT | 2.986 mT | -1.1% |
 
 Both are a little low because the far boundary (A_φ = 0 at r = 0.4 m,
@@ -157,8 +157,9 @@ Try:
 
 ## Advanced: Inductance Calculation
 
-Set `"analysis_type": "coupling_matrix"` to get the inductance from the
-stored magnetic energy, `L = 2U / I²`. With the terminal's `turns` set, I is
-the current in each turn and the reported value is the inductance of the
-whole winding. (Without `turns`, the excitation is the ampere-turns and the
+Set `"analysis_type": "coupling_matrix"` to get the inductance from the flux
+linkage of a unit-current solve, `L = lambda / I` (for a single winding this
+equals the energy form `2U / I²`). With the terminal's `turns` set, I is the
+current in each turn and the reported value is the inductance of the whole
+winding. (Without `turns`, the excitation is the ampere-turns and the
 reported value is per ampere-turn squared, 1/N² of the winding's.)

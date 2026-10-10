@@ -9,12 +9,12 @@ beside the plate.
 
 ## Problem
 
-Dimensions in millimetres here; the mesh and configs are in metres. The plate
-is centred on x = 0 and z = 0 is the mid-plane between the coils.
+Dimensions in millimeters here; the mesh and configs are in meters. The plate
+is centerd on x = 0 and z = 0 is the mid-plane between the coils.
 
 - **Plate:** non-magnetic steel (20Mn23Al), sigma = 1.3889e6 S/m, mu_r = 1;
   10 thick (|x| <= 5), 360 wide (y), 820 tall (z).
-- **Slits:** 10 wide, 660 long (|z| <= 330), through the plate, centred at
+- **Slits:** 10 wide, 660 long (|z| <= 330), through the plate, centerd at
   y = 0 (P21a-1), +-60 (P21a-2) or -90, 0, +90 (P21a-3).
 - **Coils:** two square racetracks around the z axis, 270 x 270 outside (R45
   corners) and 200 x 200 inside (R10, concentric), each 217 tall, 24 apart

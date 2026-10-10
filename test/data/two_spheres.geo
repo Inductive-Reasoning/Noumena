@@ -1,7 +1,7 @@
 // Two conducting spheres in free space, truncated by a far-field sphere:
 // the capacitance-matrix benchmark of J. Lekner, "Capacitance coefficients
 // of two spheres", J. Electrostatics 69 (2011) 11-14, in the configuration
-// of the Palace "spheres" example (a = 1 cm, b = 2 cm, centres 5 cm apart).
+// of the Palace "spheres" example (a = 1 cm, b = 2 cm, centers 5 cm apart).
 //
 // Regenerate with
 //   gmsh two_spheres.geo -3 -order 2 -format msh22 -bin -o two_spheres.msh
@@ -9,8 +9,8 @@
 // Physical groups (mesh attributes):
 //   volume 1  "Domain"    the vacuum between the spheres
 //   surface 1 "FarField"  the truncating sphere, radius R about the origin
-//   surface 2 "SphereA"   radius a, centred at (-c/2, 0, 0)
-//   surface 3 "SphereB"   radius b, centred at (+c/2, 0, 0)
+//   surface 2 "SphereA"   radius a, centerd at (-c/2, 0, 0)
+//   surface 3 "SphereB"   radius b, centerd at (+c/2, 0, 0)
 
 SetFactory("OpenCASCADE");
 

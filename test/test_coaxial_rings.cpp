@@ -9,7 +9,7 @@
 // free space. The two homogeneous conditions on that sphere bracket the free-
 // space value from either side: n x A = 0 (flux tangent, B . n = 0) holds the
 // returning flux in and lowers every inductance, n x H = 0 (flux normal, an
-// infinitely permeable wall) raises it. For a dipole moment m at the centre
+// infinitely permeable wall) raises it. For a dipole moment m at the center
 // the walls add a uniform field of -2 and +1 times mu0 m / (4 pi D^3), so
 // (L_tangent + 2 L_normal) / 3 cancels the leading O((R/D)^3) truncation
 // error, leaving O((R/D)^5) and the discretization error.
@@ -160,7 +160,7 @@ TEST_CASE("The coaxial-ring references are converged and match the round-wire se
 	REQUIRE(Self(kRing1, Uniform, 24) == Catch::Approx(Self(kRing1, Uniform, 32)).epsilon(2e-6));
 	REQUIRE(Mutual(kRing1, Uniform, kRing2, Uniform, 16) ==
 			Catch::Approx(Mutual(kRing1, Uniform, kRing2, Uniform, 24)).epsilon(1e-10));
-	// Thick rings: the centre filaments are a poor stand-in.
+	// Thick rings: the center filaments are a poor stand-in.
 	REQUIRE(Mutual(kRing1, Uniform, kRing2, Uniform) /
 			FilamentMutual(kRing1.R, kRing1.Z, kRing2.R, kRing2.Z) - 1.0 > 0.01);
 }

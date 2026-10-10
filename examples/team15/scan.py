@@ -3,8 +3,8 @@
 
 Usage: scan.py <problem 1|2> [--step MM] [--solver PATH] [--gmsh PATH]
 
-For each coil-centre position x (those of the measurements, or every --step
-millimetres over their range) this meshes team15.geo with the coil at x and
+For each coil-center position x (those of the measurements, or every --step
+millimeters over their range) this meshes team15.geo with the coil at x and
 solves config-<problem>.json on it twice, with the slot empty (flawed) and
 filled with the plate's aluminium (unflawed). The two solves share the mesh, so
 their difference, the impedance change the problem asks for, carries no

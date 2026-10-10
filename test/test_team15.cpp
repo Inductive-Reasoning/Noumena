@@ -37,7 +37,7 @@ const fs::path kExample = fs::path(NOUMENA_EXAMPLES) / "team15";
 // The model is the y >= 0 half of problem 1's winding.
 constexpr double kScale = 2.0;
 
-// The positions checked: the slot's centre, the peak of dL, and the tail
+// The positions checked: the slot's center, the peak of dL, and the tail
 // beyond the slot's end near the peak of the positive dR.
 const std::vector<double> kPositionsMm = { 0.0, 9.0, 17.0 };
 

@@ -3,8 +3,8 @@
 //
 // A circular air-cored coil above a 12.22 mm aluminium-alloy plate with a
 // surface-breaking slot, 12.6 mm long (along x), 5 mm deep and 0.28 mm wide,
-// centred on the origin. The plate's top face is z = 0; the coil's axis is
-// vertical through (X, 0). Coordinates in metres.
+// centerd on the origin. The plate's top face is z = 0; the coil's axis is
+// vertical through (X, 0). Coordinates in meters.
 //
 // Half model: y >= 0, with y = 0 (the plane of symmetry through the slot and
 // the coil's axis) part of the n x A = 0 boundary. The slot is its own volume,

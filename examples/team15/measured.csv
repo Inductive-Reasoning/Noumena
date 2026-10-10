@@ -1,5 +1,5 @@
 # TEAM Workshop Problem 15, measured change in the coil's impedance due to the
-# slot (Table 3): x = coil-centre position along the slot from its centre [mm],
+# slot (Table 3): x = coil-center position along the slot from its center [mm],
 # dL = change in inductance [uH], dR = change in resistance [ohm].
 # Problem 1's dL is tabulated in mH and converted here. Problem 2's column is
 # also headed mH but is in uH: its stated error is +-0.02 uH, and 9.5 mH would

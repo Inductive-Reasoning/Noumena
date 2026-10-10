@@ -9,8 +9,8 @@ at 7 kHz with a larger coil (1.09 mm, near the thin-skin limit).
 
 ## Problem
 
-Dimensions in millimetres here; the mesh and configs are in metres. The plate's
-top face is z = 0, the slot is centred on the origin along x, and the coil's
+Dimensions in millimeters here; the mesh and configs are in meters. The plate's
+top face is z = 0, the slot is centerd on the origin along x, and the coil's
 axis is vertical through (x, 0), x being the scanned position.
 
 - **Plate:** sigma = 3.06e7 S/m, mu_r = 1, 12.22 thick (modelled 200 x 200 in
@@ -52,7 +52,7 @@ measurement uncertainty.
 
 ## Results
 
-Problem 1, scanned every millimetre from 0 to 22 mm with `--step 1`. The run
+Problem 1, scanned every millimeter from 0 to 22 mm with `--step 1`. The run
 has about 0.9 million complex unknowns per position at order 2 and takes about
 8.5 minutes per position (two solves) on four threads with the iterative
 solver of the MPI build, about 3.3 hours for the whole scan.

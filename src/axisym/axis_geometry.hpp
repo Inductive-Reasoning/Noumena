@@ -16,7 +16,7 @@
  * Inspected once at solver setup rather than clamping r at each quadrature
  * point, which would silently deform the geometry. The tolerance is relative to
  * the mesh bounding box, so the axis test is scale-free; the physics is not, and
- * needs coordinates in metres (see core/constants.hpp).
+ * needs coordinates in meters (see core/constants.hpp).
  */
 namespace axisym {
 

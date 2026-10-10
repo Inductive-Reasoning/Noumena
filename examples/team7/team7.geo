@@ -2,7 +2,7 @@
 //
 // A 19 mm aluminium plate with an eccentric square hole, under a racetrack
 // coil, in the air box of the problem's recommended mesh (B . n = 0 on its
-// walls). Coordinates in metres, in the problem's frame (the plate's corner
+// walls). Coordinates in meters, in the problem's frame (the plate's corner
 // at the origin).
 //
 // Groups: Air 1, Plate 2, Coil 3 (volumes); Outer 1, Cut 2 (surfaces). The

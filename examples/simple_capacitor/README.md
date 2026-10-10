@@ -4,8 +4,8 @@ This example demonstrates electrostatic field calculation for a simple parallel 
 
 ## Problem Description
 
-**Geometry:** (all dimensions in metres -- the solver is SI and assumes a mesh
-in metres; see [Units](../../docs/config_reference.md#units))
+**Geometry:** (all dimensions in meters -- the solver is SI and assumes a mesh
+in meters; see [Units](../../docs/config_reference.md#units))
 - Two circular plates of radius R = 0.1 m
 - Plate thickness 0.001 m, with a small central bore of radius 0.001 m
 - Separation distance d = 0.01 m (1 cm)

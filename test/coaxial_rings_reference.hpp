@@ -15,7 +15,7 @@
 
 namespace coaxial_rings {
 
-/// A ring of round wire: wire centre (R, Z) in the meridian plane, wire
+/// A ring of round wire: wire center (R, Z) in the meridian plane, wire
 /// radius a.
 struct Ring { double R, Z, a; };
 

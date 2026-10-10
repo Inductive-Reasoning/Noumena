@@ -63,7 +63,7 @@ public:
 	///
 	/// Planar assembly integrates over the (x, y) cross-section only, which is
 	/// equivalent to a unit depth of a translationally invariant (infinitely
-	/// long) structure, so every extracted coupling quantity is per metre. No
+	/// long) structure, so every extracted coupling quantity is per meter. No
 	/// extrusion length is configurable. Axisymmetric assembly carries the full
 	/// revolved measure and 3D assembly the true volume, so both are absolute.
 	[[nodiscard]] bool IsPerUnitLength() const {

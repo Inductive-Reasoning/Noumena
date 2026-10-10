@@ -7,8 +7,8 @@
 //
 // Physical groups (mesh attributes):
 //   surface 1 "Air"      the half-disk r^2 + z^2 < D^2, r > 0, outside the wires
-//   surface 2 "Ring1"    wire radius a, centred at (R1, Z1)
-//   surface 3 "Ring2"    wire radius a, centred at (R2, Z2)
+//   surface 2 "Ring1"    wire radius a, centerd at (R1, Z1)
+//   surface 3 "Ring2"    wire radius a, centerd at (R2, Z2)
 //   curve 1   "Outer"    the arc r^2 + z^2 = D^2
 //   curve 2   "Axis"     r = 0
 
