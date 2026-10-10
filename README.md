@@ -269,9 +269,9 @@ make docs
 ## Configuration
 
 Problems are configured using JSON files. All input is **SI**, and mesh
-coordinates must be in **metres** -- material properties are per-metre and the
+coordinates must be in **meters** -- material properties are per-meter and the
 axisymmetric measure uses the radial coordinate as a physical length, so a mesh
-in millimetres solves cleanly and returns silently wrong absolute quantities.
+in millimeters solves cleanly and returns silently wrong absolute quantities.
 There is no unit or scale key in the schema; see
 [Units](docs/config_reference.md#units).
 
@@ -342,7 +342,7 @@ field in all enabled formats. Relative format paths resolve beneath the root.
 > phasors**, not RMS. This is not enforced by the solver; see the
 > [FAQ](docs/faq.md#are-excitations-peak-or-rms).
 
-> **Note:** mesh coordinates must be in **metres**. This is likewise not
+> **Note:** mesh coordinates must be in **meters**. This is likewise not
 > enforced; see the [FAQ](docs/faq.md#what-units-does-the-mesh-use).
 
 ## Output

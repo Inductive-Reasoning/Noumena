@@ -15,7 +15,7 @@ reasoning that produced it is easy to repeat.
 
 | # | Decision | Status |
 |---|----------|--------|
-| 1 | Drop "closure"; the word is topologically backwards | **Done** |
+| 1 | Drop "closure"; the word is topologically backward | **Done** |
 | 2 | A terminal is not a kind of boundary condition | **Done** |
 holds only prescribed boundary conditions
 | 4 | `ess_bdr` is an explicit union of several independent sources | **Done** |

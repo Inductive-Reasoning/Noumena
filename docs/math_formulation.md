@@ -297,7 +297,7 @@ The curl-curl operator is singular: it annihilates every gradient.
 
 - `iterative` (MPI/HYPRE build): CG preconditioned by hypre's AMS solves the
   singular system directly. It is consistent because every load is projected
-  (below). Afterwards the gradient part of `A` is removed,
+  (below). Afterward the gradient part of `A` is removed,
   `A ← A − Gψ` with `(GᵀMG)ψ = GᵀMA`, which is the discrete Coulomb gauge.
 - `direct`: the factorization needs a nonsingular matrix, so the discrete
   Coulomb gauge is imposed by a Lagrange multiplier `p` in the matching H1
@@ -349,7 +349,7 @@ The stranded direction `w/|w|` is not divergence-free in general, even though
 constant along each field line (an azimuthal path, a straight bar). On a
 solved path through a cut or between electrodes `|w|` varies along the field
 lines wherever the conductor turns at different radii across its section --
-a racetrack's corners, where it grows like `1/r` inwards -- and the projection
+a racetrack's corners, where it grows like `1/r` inward -- and the projection
 then removes that part, so the source is the projected field rather than a
 uniform winding current. In TEAM 7's racetrack coil this is 2.6% on any mesh
 (see `examples/team7/README.md` for the measurements), 4.7% in TEAM 21a's.
@@ -491,7 +491,7 @@ coupling matrix. Regions are classified by the constraint they carry:
 | `current_constraint: open` | yes (pins net current to zero) | solved voltage enforcing that constraint |
 | No constraint, `σ > 0` | none | zero |
 
-The per-attribute drive table is zero-initialised and written only where a port
+The per-attribute drive table is zero-initialized and written only where a port
 exists, so unported conductors reduce to the `P = ½ σ ω² |A⃗|²` special case
 through the general expression rather than through a separate code path. Note
 that this makes the "frequently quoted simplification" above exactly correct for
@@ -502,7 +502,7 @@ insulated strands in series: the connection fixes every strand's current and
 none crosses between strands, so its current is the imposed source alone and
 the `jωσA` term is omitted there, whatever the material's `σ` (which is the
 wire conductivity, relevant to the winding's own resistance and in-strand
-losses, neither of which is modelled).
+losses, neither of which is modeled).
 
 **Verification:** the DC limit gives `P → I²/(2 G_dc)` for a single massive port,
 and global power balance `Σ_regions P = ½ Re(Σ_p V_p I_p*)` holds to

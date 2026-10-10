@@ -158,8 +158,8 @@ Only the properties the physics needs are read:
 electrostatics uses `epsilon_r`, magnetostatics `mu_r`, MQS `mu_r` and `sigma`.
 
 Properties are SI: `sigma` in S/m, with `epsilon_r` and `mu_r` dimensionless
-relative values. Because these are per-metre quantities, they only compose
-correctly with a mesh whose coordinates are in **metres**. See
+relative values. Because these are per-meter quantities, they only compose
+correctly with a mesh whose coordinates are in **meters**. See
 [Units](config_reference.md#units).
 
 ### 3.4 `regions`

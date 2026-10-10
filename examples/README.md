@@ -4,10 +4,10 @@ This directory contains example problems demonstrating electromagnetic field sim
 using Noumena. All use second order (`"order": 2`) elements. The TEAM benchmarks
 are 3D models; the rest use the axisymmetric (r-z) formulation.
 
-**Units: SI, with mesh coordinates in metres.** Every `.geo` here is written in metres,
+**Units: SI, with mesh coordinates in meters.** Every `.geo` here is written in meters,
 and every config value is SI (`sigma` in S/m, `frequency` in Hz, excitations in V or A).
 The solver has no unit or scale key, and nothing validates the mesh extent, so a geometry
-authored in millimetres will solve cleanly and report absolute quantities that are wrong
+authored in millimeters will solve cleanly and report absolute quantities that are wrong
 by powers of 1000. See [Units](../docs/config_reference.md#units).
 
 ## Examples

@@ -8,7 +8,7 @@
 
 #include <string>
 
-// For MFEM_USE_MPI (build flavour in the banner).
+// For MFEM_USE_MPI (build flavor in the banner).
 #include "mfem.hpp"
 
 namespace build_info {

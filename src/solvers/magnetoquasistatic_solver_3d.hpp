@@ -34,7 +34,7 @@
  *
  * @par Conductors
  *  - Stranded terminals impose their current as a source, I / A_cs along the
- *    path, exactly as in 3D magnetostatics; no eddy currents are modelled in
+ *    path, exactly as in 3D magnetostatics; no eddy currents are modeled in
  *    their strands.
  *  - Massive terminals are ports. The conductor's field is
  *    E = V w - j omega A, with w its DC conduction path (found with its own

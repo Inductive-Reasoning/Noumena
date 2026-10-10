@@ -149,7 +149,7 @@ class MagnetoquasistaticSolver : public MagneticSolver {
 	// Per-attribute drive amplitudes from the solved port voltages, indexed by
 	// (attribute - 1) and sized to the mesh.
 	//
-	// The tables are zero-initialised and written only where a port unknown
+	// The tables are zero-initialized and written only where a port unknown
 	// exists. That default is load-bearing rather than defensive: conductive
 	// regions with no current constraint (a flux shield, a steel brace) carry
 	// eddy currents through the sigma mass term but own no voltage unknown, so

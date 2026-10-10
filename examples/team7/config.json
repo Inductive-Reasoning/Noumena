@@ -115,7 +115,7 @@
     {
       "name": "Plate",
       "entity_group": "Plate",
-      "material": "Aluminium"
+      "material": "Aluminum"
     },
     {
       "name": "Coil",
@@ -132,7 +132,7 @@
       }
     },
     {
-      "name": "Aluminium",
+      "name": "Aluminum",
       "properties": {
         "mu_r": 1.0,
         "sigma": 35260000.0

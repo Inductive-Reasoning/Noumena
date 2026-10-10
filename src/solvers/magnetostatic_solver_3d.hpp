@@ -42,7 +42,7 @@
  *    (SerialAmsPreconditioner) on the singular system itself, which is
  *    consistent because every load is projected. The iteration count stays
  *    roughly constant under refinement. CG leaves A's gradient part
- *    arbitrary, so it is removed afterwards
+ *    arbitrary, so it is removed afterward
  *    (DivergenceFreeProjector::RemoveGradient), putting A in the discrete
  *    Coulomb gauge.
  *  - "direct": the system gauged by a Lagrange multiplier

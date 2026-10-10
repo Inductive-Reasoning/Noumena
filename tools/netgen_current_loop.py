@@ -61,7 +61,7 @@ def build_geometry():
 
     def edge(a, b, role, leftdomain, rightdomain):
         # Append() returns a 0-BASED spline index, while Elements1D().index is
-        # 1-BASED. Normalise here so the lookup below cannot be off by one.
+        # 1-BASED. Normalize here so the lookup below cannot be off by one.
         idx = geo.Append(["line", a, b], leftdomain=leftdomain,
                          rightdomain=rightdomain)
         spline_attr[idx + 1] = ROLE_TO_ATTR[role]

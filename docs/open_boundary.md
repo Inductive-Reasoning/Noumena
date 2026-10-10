@@ -24,7 +24,7 @@ field of order `mu0 m / D^3` at the source, so its inductance error decays as
 `(a/D)^3`. A conductor with net charge is an electric monopole, whose
 capacitance error decays only as `a/D` (the sphere formula above).
 
-This is a modelling error, not a discretization error. Refining the mesh does
+This is a modeling error, not a discretization error. Refining the mesh does
 not reduce it, and a sweep over `D` that remeshes as it goes mixes the two:
 separating them needs the source region's mesh held fixed while only the
 exterior grows.

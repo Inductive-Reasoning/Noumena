@@ -4,8 +4,8 @@ This example demonstrates time-harmonic eddy current analysis for a conducting c
 
 ## Problem Description
 
-**Geometry:** (all dimensions in metres -- the solver is SI and assumes a mesh
-in metres; see [Units](../../docs/config_reference.md#units))
+**Geometry:** (all dimensions in meters -- the solver is SI and assumes a mesh
+in meters; see [Units](../../docs/config_reference.md#units))
 - Conducting cylinder: radius R = 0.05 m, length L = 0.1 m
 - Surrounding coil: creates time-varying magnetic field
 - Axisymmetric configuration
@@ -31,7 +31,7 @@ in metres; see [Units](../../docs/config_reference.md#units))
 ```
 
 At 60 Hz the skin depth is about a fifth of the cylinder's 50 mm radius, so
-the skin effect is moderate: the field reaches well into the aluminium.
+the skin effect is moderate: the field reaches well into the aluminum.
 
 ## Physical Phenomena
 

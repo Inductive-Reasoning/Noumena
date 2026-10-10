@@ -9,7 +9,7 @@ Defaults shown are the literal values applied in code. A key listed as
 **required** is enforced by `ConfigValidator`; a key with a default may be
 omitted entirely.
 
-**Units are SI throughout, and mesh coordinates must be in metres.** Every
+**Units are SI throughout, and mesh coordinates must be in meters.** Every
 numeric value in this document is SI: lengths in m, conductivity in S/m,
 frequency in Hz, voltage in V, current in A. There is no unit or scale key in
 the schema. See [Units](#units).
@@ -38,7 +38,7 @@ SI, with no exceptions and no configurable scale factor.
 
 | Quantity | Unit |
 |----------|------|
-| Mesh coordinates | metres (m) |
+| Mesh coordinates | meters (m) |
 | `properties.sigma` | S/m |
 | `properties.epsilon_r`, `properties.mu_r` | dimensionless (relative) |
 | `frequency` | Hz |
@@ -47,14 +47,14 @@ SI, with no exceptions and no configurable scale factor.
 | Charge density | C/m^3 |
 
 The mesh unit is the sharp edge. `MU_0` and `EPSILON_0` in
-`src/core/constants.hpp` are per-metre, and the axisymmetric measure `2*pi*r`
+`src/core/constants.hpp` are per-meter, and the axisymmetric measure `2*pi*r`
 uses the radial coordinate as a physical length, so a mesh authored in
-millimetres solves without complaint and returns absolute quantities --
+millimeters solves without complaint and returns absolute quantities --
 energy, capacitance, inductance, loss -- that are wrong by powers of 1000.
 
 > The convention is **documented but not enforced.** Nothing inspects the mesh
 > extent, because a plausible bounding box cannot distinguish a small model in
-> metres from a large one in millimetres. Convert at mesh generation time.
+> meters from a large one in millimeters. Convert at mesh generation time.
 
 Field values written to output files carry the same SI units as the
 formulation that produced them (V, V/m, T, Wb/m, W/m^3).
@@ -68,7 +68,7 @@ Object. **Required** -- the only required section.
 | Key | Type | Default | Range / values |
 |-----|------|---------|----------------|
 | `physics_type` | string | **required** | `electrostatics`, `magnetostatics`, `magnetoquasistatics` |
-| `mesh` | string | **required** | Path; relative resolves against the config file's directory. Coordinates must be in **metres** |
+| `mesh` | string | **required** | Path; relative resolves against the config file's directory. Coordinates must be in **meters** |
 | `geometry_type` | string | `planar` | `planar`, `axisymmetric`, `3d` |
 | `analysis_type` | string | `field` | `field`, `coupling_matrix` |
 | `order` | integer | `1` | 1-10 |
@@ -279,7 +279,7 @@ Array of objects. A material is a property bundle with no location.
 | Key | Type | Required | Default | Meaning |
 |-----|------|----------|---------|---------|
 | `name` | string | yes | -- | Unique material name |
-| `properties.sigma` | number | no | `0.0` | Conductivity [S/m] (assumes a mesh in metres) |
+| `properties.sigma` | number | no | `0.0` | Conductivity [S/m] (assumes a mesh in meters) |
 | `properties.epsilon_r` | number | no | `1.0` | Relative permittivity |
 | `properties.mu_r` | number | no | `1.0` | Relative permeability |
 

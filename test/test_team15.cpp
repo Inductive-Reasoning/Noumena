@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // TEAM Workshop Problem 15 (examples/team15) against its measurements: the
-// change in a coil's impedance due to a slot in a thick aluminium plate, at
+// change in a coil's impedance due to a slot in a thick aluminum plate, at
 // three positions of problem 1's scan. Run on demand ("[team15]"): about 25
 // minutes with the iterative solver of the MPI build. The meshes are not
 // committed: each position's is generated with Gmsh, and the test skips
@@ -37,7 +37,7 @@ const fs::path kExample = fs::path(NOUMENA_EXAMPLES) / "team15";
 // The model is the y >= 0 half of problem 1's winding.
 constexpr double kScale = 2.0;
 
-// The positions checked: the slot's centre, the peak of dL, and the tail
+// The positions checked: the slot's center, the peak of dL, and the tail
 // beyond the slot's end near the peak of the positive dR.
 const std::vector<double> kPositionsMm = { 0.0, 9.0, 17.0 };
 
@@ -95,7 +95,7 @@ TEST_CASE("TEAM 15 stays within its regression bounds of the measurements", "[.]
 			+ (work / "gmsh.log").string() + "\" 2>&1";
 		REQUIRE(std::system(command.c_str()) == 0);
 
-		const auto [L0, R0] = Impedance(work, mesh_file, x, "Aluminium");
+		const auto [L0, R0] = Impedance(work, mesh_file, x, "Aluminum");
 		const auto [L1, R1] = Impedance(work, mesh_file, x, "Air");
 		const double dl = 1e6 * kScale * (L1 - L0), dr = kScale * (R1 - R0);
 

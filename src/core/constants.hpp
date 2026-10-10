@@ -4,11 +4,11 @@
 #pragma once
 
 namespace Constants {
-    // UNITS: this project is strictly SI. Mesh coordinates MUST be in METRES.
+    // UNITS: this project is strictly SI. Mesh coordinates MUST be in METERS.
     //
-    // The constants below are per-metre (H/m, F/m) and are multiplied directly
+    // The constants below are per-meter (H/m, F/m) and are multiplied directly
     // against mesh-derived lengths during assembly, so a mesh authored in
-    // millimetres does not merely rescale the answer -- it silently corrupts
+    // millimeters does not merely rescale the answer -- it silently corrupts
     // every absolute quantity (energy, capacitance, inductance, loss) while
     // still solving cleanly. There is no length-scale factor in the schema and
     // nothing validates the mesh extent, so this convention is documented and
@@ -23,7 +23,7 @@ namespace Constants {
     // NOTE: axis proximity is no longer governed by a fixed absolute tolerance.
     // See axisym::kRelativeGeometryTolerance in axis_geometry.hpp, which scales
     // with the mesh bounding box. That makes axis CLASSIFICATION scale-free; it
-    // does not relax the metres requirement above, which the physics imposes.
+    // does not relax the meters requirement above, which the physics imposes.
 
     // Default solver parameters
     constexpr double DEFAULT_SOLVER_TOLERANCE = 1e-12;
