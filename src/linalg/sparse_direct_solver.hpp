@@ -14,7 +14,7 @@
 // against ONE matrix (one unit excitation per terminal). A direct solver factors
 // that matrix once and back-substitutes per RHS, so the per-terminal marginal
 // cost is a pair of triangular sweeps instead of a full Krylov solve. It also
-// removes the preconditioner's convergence behaviour from the results: the
+// removes the preconditioner's convergence behavior from the results: the
 // factorization is exact up to round-off, so weak off-diagonal coupling terms do
 // not depend on a residual tolerance.
 //

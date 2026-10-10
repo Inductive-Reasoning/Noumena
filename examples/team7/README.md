@@ -1,6 +1,6 @@
 # Example: TEAM Workshop Problem 7 (asymmetrical conductor with a hole)
 
-The Compumag TEAM benchmark 7: a thick aluminium plate with an eccentric hole,
+The Compumag TEAM benchmark 7: a thick aluminum plate with an eccentric hole,
 under a racetrack coil carrying a sinusoidal current, solved with 3D
 magnetoquasistatics and compared with the problem's measurements of the flux
 density above the plate and the eddy currents on its surfaces.
@@ -9,7 +9,7 @@ density above the plate and the eddy currents on its surfaces.
 
 All dimensions in millimeters here; the mesh and config are in meters.
 
-- **Plate:** aluminium, sigma = 3.526e7 S/m, 294 x 294 x 19 (0 <= x, y <= 294,
+- **Plate:** aluminum, sigma = 3.526e7 S/m, 294 x 294 x 19 (0 <= x, y <= 294,
   0 <= z <= 19), with a through hole 18 <= x, y <= 126.
 - **Coil:** a racetrack 25 wide and 100 tall (49 <= z <= 149), outline 200 x 200
   at 94 <= x <= 294, 0 <= y <= 200, corner radii 50 outside and 25 inside;
@@ -20,7 +20,7 @@ All dimensions in millimeters here; the mesh and config are in meters.
 
 The coil is a stranded conductor driven through a `cut` (the group `Cut`, a
 cross-section of its straight side along y = 0, crossed in +x). It is
-modelled as one turn of 2742 A, the same field as 2742 turns of 1 A. The hole
+modeled as one turn of 2742 A, the same field as 2742 turns of 1 A. The hole
 needs no special treatment: the plate is simply a conductor with a hole.
 
 ## Running
@@ -67,10 +67,10 @@ What remains is the comparison with the measurements:
   degrees (none is needed at 50 Hz) halves the complex error at 200 Hz, from
   3.2% to 1.6% of the peak: the difference looks like a phase-reference error
   of the measurement at 200 Hz.
-- **Jy:** the tables labelled A3-B3 (z = 19 mm, the surface facing the coil)
+- **Jy:** the tables labeled A3-B3 (z = 19 mm, the surface facing the coil)
   and A4-B4 (z = 0) are compared with the opposite surfaces. The table
-  labelled z = 0 carries the larger currents, as the coil-facing surface must,
-  and it matches the computed top surface to 13-22%; as labelled, the
+  labeled z = 0 carries the larger currents, as the coil-facing surface must,
+  and it matches the computed top surface to 13-22%; as labeled, the
   differences are 30-77%. NGSolve's TEAM 7 solution makes the same exchange
   ([TEAM-problems](https://github.com/NGSolve/TEAM-problems), `TEAM-7/team7.ipynb`).
   The bottom surface at 50 Hz still disagrees by about half its peak.
@@ -88,7 +88,7 @@ in general:
 
 which vanishes only where `|w|` is constant along each field line, as on an
 azimuthal path or a straight bar. In a racetrack the solved path is
-potential flow: `|w|` grows like `1/r` towards the inside of each corner and
+potential flow: `|w|` grows like `1/r` toward the inside of each corner and
 is uniform across the straight sides, so it changes along the field lines
 where the two meet. The winding's actual current -- uniform, straight along
 the sides and on circular arcs around the corners -- is divergence-free but

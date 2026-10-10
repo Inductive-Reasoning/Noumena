@@ -31,7 +31,7 @@ in meters; see [Units](../../docs/config_reference.md#units))
 ```
 
 At 60 Hz the skin depth is about a fifth of the cylinder's 50 mm radius, so
-the skin effect is moderate: the field reaches well into the aluminium.
+the skin effect is moderate: the field reaches well into the aluminum.
 
 ## Physical Phenomena
 

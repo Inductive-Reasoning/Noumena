@@ -1,7 +1,7 @@
 # Example: TEAM Workshop Problem 15 (rectangular slot in a thick plate)
 
 An eddy-current nondestructive-evaluation benchmark: a circular air-cored coil
-is scanned along a surface-breaking slot in a thick aluminium-alloy plate, and
+is scanned along a surface-breaking slot in a thick aluminum-alloy plate, and
 the quantity of interest is the change in the coil's impedance that the slot
 causes, dZ = dR + j omega dL, against the coil's position. Problem 1 is at
 900 Hz (skin depth 3.04 mm, comparable to the slot's 5 mm depth), problem 2
@@ -13,7 +13,7 @@ Dimensions in millimeters here; the mesh and configs are in meters. The plate's
 top face is z = 0, the slot is centerd on the origin along x, and the coil's
 axis is vertical through (x, 0), x being the scanned position.
 
-- **Plate:** sigma = 3.06e7 S/m, mu_r = 1, 12.22 thick (modelled 200 x 200 in
+- **Plate:** sigma = 3.06e7 S/m, mu_r = 1, 12.22 thick (modeled 200 x 200 in
   the plane, far beyond the coil's reach).
 - **Slot:** 12.6 long (|x| <= 6.3), 5 deep, 0.28 wide.
 - **Coil (problem 1):** inner radius 6.15, outer 12.4, length 6.15, 3790

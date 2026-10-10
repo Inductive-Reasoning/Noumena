@@ -9,7 +9,7 @@
 // conductor whose cross-section reaches r = 0 has no finite DC conductance, and
 // there is no limit to substitute. Rather than silently returning zero (which
 // would quietly under-report the conductance of the whole port), an axis-touching
-// evaluation is reported as the modelling error it is. Callers are expected to
+// evaluation is reported as the modeling error it is. Callers are expected to
 // reject such ports up front using the mesh radial extent.
 class AxisymmetricConductanceCoeff : public mfem::Coefficient
 {

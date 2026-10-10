@@ -593,7 +593,7 @@ TEST_CASE("A dielectric sphere in a uniform field matches the closed form",
 		solver.Setup();
 		solver.Run();
 		const FieldExportSet fields = solver.CollectExportFields();
-		// V rises towards the plate, so E points along -z.
+		// V rises toward the plate, so E points along -z.
 		const double E_in = -3.0 * E0 / (eps_r + 2.0);
 		for (const mfem::Vector& E : SampleInsideSphere(copy, m, DerivedVector(fields, "E"))) {
 			INFO("E inside " << E(0) << ", " << E(1) << ", " << E(2) << " (exact 0, 0, " << E_in << ")");

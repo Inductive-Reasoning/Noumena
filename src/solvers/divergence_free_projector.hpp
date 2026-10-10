@@ -99,7 +99,7 @@ public:
 		amg = std::make_unique<AmgPreconditioner>(*K);
 	}
 
-	/// Replace @p b by its divergence-free part (G^T b = 0 afterwards).
+	/// Replace @p b by its divergence-free part (G^T b = 0 afterward).
 	///
 	/// @return The squared L2 norm of what was removed, |grad psi|^2 =
 	///         psi . G^T b: for a load b of a current density J, the part of

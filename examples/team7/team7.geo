@@ -1,6 +1,6 @@
 // TEAM Workshop Problem 7: asymmetrical conductor with a hole.
 //
-// A 19 mm aluminium plate with an eccentric square hole, under a racetrack
+// A 19 mm aluminum plate with an eccentric square hole, under a racetrack
 // coil, in the air box of the problem's recommended mesh (B . n = 0 on its
 // walls). Coordinates in meters, in the problem's frame (the plate's corner
 // at the origin).

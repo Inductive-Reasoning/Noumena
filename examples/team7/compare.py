@@ -9,7 +9,7 @@ each table this prints computed against measured, and the RMS difference of
 each column as a fraction of that column's largest measured magnitude.
 
 The surface current tables are compared with the opposite surface to the one
-their labels name: the table labelled A4-B4 (z = 0) with the coil-facing
+their labels name: the table labeled A4-B4 (z = 0) with the coil-facing
 surface z = 19 mm, and A3-B3 with z = 0 (see README.md).
 """
 

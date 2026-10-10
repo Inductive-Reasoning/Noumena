@@ -1,6 +1,6 @@
 // Two coaxial rings of round wire (tori) in free space, truncated by a
 // sphere: the 3D counterpart of coaxial_rings_axi.geo, which is its meridian
-// section. One quadrant (x > 0, y > 0) is modelled: the current and A are
+// section. One quadrant (x > 0, y > 0) is modeled: the current and A are
 // azimuthal, so A is normal to every meridian plane and n x A = 0 holds
 // there exactly. Inductances of the quadrant are a quarter of the rings'.
 //

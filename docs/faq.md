@@ -53,7 +53,7 @@ This matters because the constants the mesh is multiplied against are
 per-meter -- `EPSILON_0` in F/m and `MU_0` in H/m -- and the axisymmetric
 volume measure `dV = 2*pi*r dr dz` treats `r` as a physical length. A model
 authored in millimeters therefore does not produce a rescaled answer that can
-be corrected afterwards; it mixes a millimeter geometry with per-meter material
+be corrected afterward; it mixes a millimeter geometry with per-meter material
 properties and corrupts every absolute quantity.
 
 > The convention is **documented but not enforced.** No code inspects the mesh

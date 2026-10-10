@@ -83,7 +83,7 @@ protected:
 	// sharing its volume -- which changes the coil's actual current, screens
 	// its field and dissipates power no terminal accounts for. The material's
 	// sigma is the wire's conductivity; it matters for the winding's own
-	// resistance and in-strand losses, which are not modelled, not for the
+	// resistance and in-strand losses, which are not modeled, not for the
 	// field.
 	void BuildConductivity() {
 		sigma_coeff = MaterialCoefficient(0.0, Conductivity);
@@ -178,7 +178,7 @@ protected:
 	//
 	// Reported only for field scenarios. Coupling runs drive synthetic unit
 	// currents one terminal at a time, so the loss of any single such column
-	// is not the loss of a physically realised operating point.
+	// is not the loss of a physically realized operating point.
 	void ReportRegionLosses(const std::vector<RegionLoss>& losses) const {
 		if (losses.empty()) { return; }
 		std::ostringstream out;

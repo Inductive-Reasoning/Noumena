@@ -606,7 +606,7 @@ TEST_CASE("PhysicsSolver owns the adaptive lifecycle", "[solvers][amr]") {
     REQUIRE(probe.OperatorBuilds() == 3);
     REQUIRE(probe.ErrorEstimates() == 3);
     // The AMR loop now runs exactly one solve pass per iteration; the last one
-    // is on the converged mesh, so there is no extra pass afterwards.
+    // is on the converged mesh, so there is no extra pass afterward.
     REQUIRE(probe.SolvePasses() == 3);
     REQUIRE(probe.AmrHistory().size() == 3);
     REQUIRE(probe.AmrHistory().back().peak_field_magnitude == 2.5);
@@ -3994,7 +3994,7 @@ TEST_CASE("MQS unported conductive region dissipates and is reported",
 // Regions that must not report eddy loss, for two different reasons.
 //
 // A non-conducting region has sigma = 0 and physically cannot dissipate. A
-// stranded terminal is a modelling choice: it represents a bundle of fine
+// stranded terminal is a modeling choice: it represents a bundle of fine
 // insulated strands carrying an imposed current, with eddy effects deliberately
 // not represented, so the field-based expression 0.5*sigma*|E|^2 does not
 // describe it even when the bulk material property is conductive. Applying the
@@ -4018,7 +4018,7 @@ TEST_CASE("MQS loss excludes non-conducting and stranded regions",
     config["entity_groups"].push_back(
         {{"name", "MassiveDomain"}, {"dim", 2}, {"attribute_ids", {2}}});
     config["materials"] = json::array({
-        // Conductive on purpose: only the stranded modelling choice, not a zero
+        // Conductive on purpose: only the stranded modeling choice, not a zero
         // material property, may keep this region out of the loss report.
         {{"name", "StrandedMaterial"},
          {"properties", {{"mu_r", 1.0}, {"sigma", 1.0e6}}}},

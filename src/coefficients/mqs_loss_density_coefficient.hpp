@@ -49,7 +49,7 @@
  * their current constraint. Using the simplified form there silently under- or
  * over-reports the loss, so the drive term is carried explicitly.
  *
- * The per-attribute drive table is zero-initialised and populated only where a
+ * The per-attribute drive table is zero-initialized and populated only where a
  * port unknown exists. Unported conductors therefore fall out of the general
  * expression with no special case, which is why this one coefficient serves
  * driven terminals, open-current regions, and passive conductors alike.

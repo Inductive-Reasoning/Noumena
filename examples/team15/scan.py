@@ -6,7 +6,7 @@ Usage: scan.py <problem 1|2> [--step MM] [--solver PATH] [--gmsh PATH]
 For each coil-center position x (those of the measurements, or every --step
 millimeters over their range) this meshes team15.geo with the coil at x and
 solves config-<problem>.json on it twice, with the slot empty (flawed) and
-filled with the plate's aluminium (unflawed). The two solves share the mesh, so
+filled with the plate's aluminum (unflawed). The two solves share the mesh, so
 their difference, the impedance change the problem asks for, carries no
 meshing noise. Each row of results-<problem>/dz.csv is one position:
 
@@ -87,7 +87,7 @@ def main():
         subprocess.run([args.gmsh, "-3", "-format", "msh2", "-setnumber", "problem", str(args.problem),
                         "-setnumber", "X", repr(x), str(HERE / "team15.geo"), "-o", str(work / "team15.msh")],
                        stdout=subprocess.DEVNULL, check=True)
-        L0, R0 = solve(args, work, x, "Aluminium")
+        L0, R0 = solve(args, work, x, "Aluminum")
         L1, R1 = solve(args, work, x, "Air")
         row = [x_mm, scale * L0, scale * R0, 1e6 * scale * (L1 - L0), scale * (R1 - R0)]
         with open(table, "a") as f:

@@ -1,7 +1,7 @@
 // TEAM Workshop Problem 15: rectangular slot in a thick plate (eddy-current
 // nondestructive evaluation).
 //
-// A circular air-cored coil above a 12.22 mm aluminium-alloy plate with a
+// A circular air-cored coil above a 12.22 mm aluminum-alloy plate with a
 // surface-breaking slot, 12.6 mm long (along x), 5 mm deep and 0.28 mm wide,
 // centerd on the origin. The plate's top face is z = 0; the coil's axis is
 // vertical through (X, 0). Coordinates in meters.

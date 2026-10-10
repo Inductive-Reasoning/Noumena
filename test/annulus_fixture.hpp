@@ -57,7 +57,7 @@ struct AnnulusSpec {
 	// times extent / (2 pi).
 	double extent = Constants::TWO_PI;
 	// Describe the terminals of a sector by electrodes on its two meridian
-	// planes (current from theta = 0 towards theta = extent) instead of
+	// planes (current from theta = 0 toward theta = extent) instead of
 	// analytically.
 	bool electrodes = false;
 
