@@ -20,7 +20,7 @@ public:
 									  mfem::VectorCoefficient& im)
 		: re_(re), im_(im) {}
 
-	double Eval(mfem::ElementTransformation& T,
+	mfem::real_t Eval(mfem::ElementTransformation& T,
 				const mfem::IntegrationPoint& ip) override {
 		mfem::Vector re_val, im_val;
 		re_.Eval(re_val, T, ip);

@@ -87,3 +87,14 @@ examples/simple_capacitor/results_electrostatic/*
 /examples/simple_capacitor/results_electrostatic_Top Plate/Cycle000000/data.pvtu
 /results_electrostatics_Bottom Plate/Cycle000000
 /results_electrostatics_Top Plate/Cycle000000
+/build-*/
+
+# Python bytecode caches (examples/*/compare.py and similar scripts)
+__pycache__/
+
+# Generated example meshes (Gmsh, see their READMEs) and results
+examples/team21a/*.msh
+examples/team21a/results-*/
+examples/team15/*.msh
+examples/team15/results-*/
+examples/team7/results/*

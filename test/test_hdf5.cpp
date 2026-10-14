@@ -19,7 +19,7 @@ namespace {
 
 struct TemporaryHdf5File {
 	std::filesystem::path path = std::filesystem::temp_directory_path()
-		/ ("mfem_em_hdf5_" + std::to_string(
+		/ ("noumena_hdf5_" + std::to_string(
 			std::chrono::steady_clock::now().time_since_epoch().count()) + ".h5");
 
 	~TemporaryHdf5File() {
@@ -192,8 +192,8 @@ TEST_CASE("Field HDF5 writes numeric primary and projected derived data", "[hdf5
 	Hdf5ResultsWriter writer(temporary.path, mesh, config);
 	Scenario scenario;
 	scenario.Frequency = 50.0;
-	writer.WriteScenario("scenario_000000", "Drive/A", scenario, fields);
-	writer.WriteScenario("scenario_000001", "Drive/A", scenario, fields);
+	writer.WriteScenario("scenario_000000", "Drive/A", scenario, fields, {});
+	writer.WriteScenario("scenario_000001", "Drive/A", scenario, fields, {});
 	mfem::DenseMatrix matrix(1);
 	matrix = 2.5;
 	matrix_io::CouplingMatrixWriter coupling(writer.File(), {"Drive"}, "electrostatics", "planar");
@@ -273,7 +273,7 @@ TEST_CASE("Field HDF5 spaces and curved mesh nodes describe each element's DOFs"
 	config.Order = 3;
 	Hdf5ResultsWriter writer(temporary.path, mesh, config);
 	Scenario scenario;
-	writer.WriteScenario("scenario_000000", "Base", scenario, fields);
+	writer.WriteScenario("scenario_000000", "Base", scenario, fields, {});
 
 	HighFive::File file(temporary.path.string(), HighFive::File::ReadOnly);
 
@@ -318,4 +318,28 @@ TEST_CASE("Field HDF5 spaces and curved mesh nodes describe each element's DOFs"
 	check("scenarios/scenario_000000/fields/potential/values", primary);
 	REQUIRE(file.exist("mesh/nodes/values"));
 	check("mesh/nodes/values", geometry);
+}
+
+TEST_CASE("Field HDF5 omits the space of fields that need DOF transformations", "[hdf5][io][fields]") {
+	const TemporaryHdf5File temporary;
+	// Order-2 Nedelec on tetrahedra needs per-element DOF transformations, which a
+	// DOF list cannot describe; the field is still written, without a space.
+	auto mesh = mfem::Mesh::MakeCartesian3D(1, 1, 1, mfem::Element::TETRAHEDRON);
+	mfem::ND_FECollection collection(2, 3);
+	mfem::FiniteElementSpace space(&mesh, &collection);
+	mfem::GridFunction primary(&space);
+	primary = 1.0;
+	FieldExportSet fields;
+	fields.AddPrimary("A", primary);
+	ProblemConfig config;
+	config.Order = 2;
+	Hdf5ResultsWriter writer(temporary.path, mesh, config);
+	Scenario scenario;
+	writer.WriteScenario("scenario_000000", "Base", scenario, fields, {});
+
+	HighFive::File file(temporary.path.string(), HighFive::File::ReadOnly);
+	const auto dataset = file.getDataSet("scenarios/scenario_000000/fields/A/values");
+	REQUIRE(dataset.getElementCount() == static_cast<std::size_t>(primary.Size()));
+	REQUIRE_FALSE(dataset.hasAttribute("space"));
+	REQUIRE_FALSE(file.exist(std::string("spaces/") + collection.Name()));
 }

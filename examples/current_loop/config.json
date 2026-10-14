@@ -31,7 +31,7 @@
     },
     {
       "name": "Copper",
-      "properties": { "mu_r": 1.0 }
+      "properties": { "mu_r": 1.0, "sigma": 5.8e7 }
     }
   ],
   "terminals": [

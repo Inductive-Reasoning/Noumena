@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "config/input_parser.hpp"
@@ -113,6 +114,57 @@ TEST_CASE("InputParser decodes the canonical schema", "[input_parser]") {
     REQUIRE(config.Scenarios[1].first == "First");
 }
 
+TEST_CASE("InputParser decodes every geometry_type", "[input_parser][geometry]") {
+    const std::pair<const char*, GeometryType> cases[] = {
+        {"axisymmetric", GeometryType::Axisymmetric},
+        {"planar",       GeometryType::Planar},
+        {"3d",           GeometryType::Cartesian3D},
+    };
+    for (const auto& [name, expected] : cases) {
+        json source = CanonicalConfig();
+        source["simulation"]["geometry_type"] = name;
+        REQUIRE(InputParser(source).GetProblemConfig().GeometryType == expected);
+        REQUIRE(std::string(ToString(expected)) == name);
+    }
+}
+
+TEST_CASE("InputParser defaults linear_solver by geometry", "[input_parser][linear_solver]") {
+    json source = CanonicalConfig();
+    source["simulation"].erase("linear_solver");
+    source["simulation"]["physics_type"] = "electrostatics";
+
+    source["simulation"]["geometry_type"] = "axisymmetric";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
+    source["simulation"]["geometry_type"] = "planar";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
+    source["simulation"]["geometry_type"] = "3d";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Iterative);
+
+    // 3D magnetics has an iterative solver only in the MPI/HYPRE build (AMS).
+    source["simulation"]["physics_type"] = "magnetostatics";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver ==
+            (parallel::Enabled() ? LinearSolverType::Iterative : LinearSolverType::Direct));
+
+    // An explicit choice always wins.
+    source["simulation"]["linear_solver"] = "direct";
+    REQUIRE(InputParser(source).GetProblemConfig().LinearSolver == LinearSolverType::Direct);
+}
+
+TEST_CASE("InputParser decodes a 3D coil direction", "[input_parser][3d][coil]") {
+    json source = CanonicalConfig();
+    source["terminals"][0]["direction"] = {
+        {"type", "azimuthal"}, {"origin", {1.0, 2.0, 3.0}}, {"axis", {0.0, 1.0, 0.0}}};
+    const ProblemConfig config = InputParser(source).GetProblemConfig();
+    const Terminal& coil = config.Terminals.begin()->second;
+    REQUIRE(coil.Direction.has_value());
+    REQUIRE(coil.Direction->Type == CurrentDirection::Kind::Azimuthal);
+    REQUIRE(coil.Direction->Origin == std::array<double, 3>{1.0, 2.0, 3.0});
+    REQUIRE(coil.Direction->Axis == std::array<double, 3>{0.0, 1.0, 0.0});
+
+    source["terminals"][0].erase("direction");
+    REQUIRE_FALSE(InputParser(source).GetProblemConfig().Terminals.begin()->second.Direction);
+}
+
 TEST_CASE("InputParser decodes typed Dirichlet and Neumann boundaries",
           "[input_parser][boundaries]") {
     json source = CanonicalConfig();
@@ -130,6 +182,21 @@ TEST_CASE("InputParser decodes typed Dirichlet and Neumann boundaries",
 
 TEST_CASE("InputParser expands MQS frequency sweeps", "[input_parser][mqs]") {
     json source = CanonicalConfig();
+
+    SECTION("an array sweep numbers its own points from 1") {
+        source["scenarios"] = json::array({
+            {{"name", "Base"}, {"frequency", 50.0},
+             {"excitations", json::array({{{"terminal", "Coil"}, {"value", 1.0}}})}},
+            {{"name", "Sweep"}, {"frequency", {100.0, 200.0}},
+             {"excitations", json::array({{{"terminal", "Coil"}, {"value", 1.0}}})}}
+        });
+        const auto scenarios = InputParser(source).GetProblemConfig().Scenarios;
+        REQUIRE(scenarios.size() == 3);
+        std::vector<std::string> names;
+        for (const auto& [name, scenario] : scenarios) { names.push_back(name); }
+        REQUIRE(std::find(names.begin(), names.end(), "Sweep_f1_100Hz") != names.end());
+        REQUIRE(std::find(names.begin(), names.end(), "Sweep_f2_200Hz") != names.end());
+    }
 
     SECTION("linear spacing is inclusive and preserves excitations") {
         source["scenarios"] = json::array({{
@@ -177,7 +244,7 @@ TEST_CASE("InputParser throws on missing file", "[input_parser]") {
 }
 
 TEST_CASE("InputParser resolves paths relative to the config file", "[input_parser]") {
-    const fs::path directory = fs::temp_directory_path() / "mfem-electromag-parser-test";
+    const fs::path directory = fs::temp_directory_path() / "noumena-parser-test";
     const fs::path config_path = directory / "config.json";
     fs::create_directories(directory);
 
@@ -221,7 +288,7 @@ TEST_CASE("Output directory resolves relative to the configuration", "[input_par
     }
 
     SECTION("absolute path is preserved") {
-        const fs::path results_path = fs::temp_directory_path() / "mfem-electromag-results";
+        const fs::path results_path = fs::temp_directory_path() / "noumena-results";
         test_config["output"]["directory"] = results_path.string();
         InputParser parser(test_config);
         REQUIRE(parser.GetProblemConfig().Output.Directory == results_path);

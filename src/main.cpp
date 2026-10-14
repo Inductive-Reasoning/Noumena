@@ -14,6 +14,7 @@
 #include "config/config_validator.hpp"
 #include "io/status_reporter.hpp"
 #include "io/mesh_loader.hpp"
+#include "parallel/mpi_runtime.hpp"
 
 namespace {
 
@@ -50,6 +51,10 @@ int ParseVerbosity(const std::string& text) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    // MPI must be initialized before anything else touches it; a no-op in a
+    // serial build.
+    parallel::Initialize(argc, argv);
+
     // Convert MFEM internal errors (MFEM_ASSERT / MFEM_VERIFY / MFEM_ABORT)
     // into catchable mfem::ErrorException objects so a malformed mesh does
     // not call std::abort() from deep inside the Mesh constructor. The mesh
@@ -78,6 +83,15 @@ int main(int argc, char *argv[]) {
     }
 
     try {
+        // An MPI build runs on one rank until the solvers and writers are
+        // distributed; more ranks would each repeat the whole run and race on
+        // the same output files.
+        if (parallel::WorldSize() > 1) {
+            throw std::runtime_error("This build runs on a single MPI rank; "
+                "launch with one process (mpirun -np 1) or none. Multi-rank "
+                "solves are not implemented yet.");
+        }
+
         std::string config_file = "config.json";
         std::string cli_output_directory;
         int cli_verbosity = 0;
@@ -188,9 +202,9 @@ int main(int argc, char *argv[]) {
             catch (const mfem::ErrorException& e) {
                 throw std::runtime_error(
                     "MFEM could not load mesh '" + config.MeshPath + "'. Check "
-                    "that the file format is supported and that 2D elements use "
-                    "counter-clockwise winding with boundary lines whose nodes "
-                    "lie on element edges.\nMFEM detail: " + std::string(e.what()));
+                    "that the file format is supported, that elements are "
+                    "consistently oriented (counter-clockwise winding in 2D), and "
+                    "that boundary elements lie on element faces with shared nodes.\nMFEM detail: " + std::string(e.what()));
             }
         }
 

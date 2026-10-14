@@ -53,8 +53,15 @@ display names cannot collide. Each scenario group has:
 - `mesh`: `/mesh`.
 - `frequency_hz`: numeric frequency for MQS scenarios.
 - `driven_terminal`: the unit-excited terminal for coupling scenarios.
-- `excitations/terminal_names` and `excitations/values`: aligned drive arrays.
+- `excitations/terminal_names`, `excitations/values` and `excitations/phases_deg`: aligned drive arrays (peak amplitude and phase in degrees).
 - `fields/<field>/values`: a one-dimensional double array of FE coefficients.
+- `probes/<probe>/points` and `probes/<probe>/<field>`, when `output.probes` is
+  configured: the probe's points (count x space dimension) and every field
+  sampled exactly at them (count x components).
+- `losses/region_names` and `losses/power_w`, for MQS field scenarios: the
+  time-averaged Joule loss [W] of every conducting region, as printed after
+  each solve (a massive terminal, a material region, or an unnamed conducting
+  attribute).
 
 Each field group has `kind` (`primary`, `scalar`, or `vector`). Each `values`
 dataset has `finite_element_collection`, `vector_dimension`, and `ordering`
@@ -64,8 +71,13 @@ and load the array into a `GridFunction`. These are native DOFs, not values on
 the corner-vertex array. Derived fields are projected into L2 order
 `max(0, solution_order - 1)`; primary fields retain their native space.
 
-MQS stores `A_Real`, `A_Imag`, `B_Real`, `B_Imag`, `B_Magnitude`, and `P_Loss`.
-Phasors use the peak-amplitude convention; `P_Loss` is time-averaged loss density.
+MQS stores `A_Real`, `A_Imag`, `B_Real`, `B_Imag`, `B_Magnitude`, and `P_Loss`;
+3D MQS also stores `J_Real` and `J_Imag`, the conduction current density
+`sigma E` (eddy currents, plus the driven current of massive conductors; zero
+in stranded ones). Phasors use the peak-amplitude convention, with time
+dependence `Re(X exp(j omega t))`: the instantaneous value at `omega t = 0` is
+the real part, at 90 degrees minus the imaginary part. `P_Loss` is the
+time-averaged loss density.
 
 ### Finite element spaces
 
@@ -85,16 +97,20 @@ inside any element, at any order:
 - `ndofs` attribute: the number of scalar DOFs.
 - `reference_nodes/<geometry>`: double array `[local DOF, dimension]` giving
   where each local DOF sits on the reference element, keyed by MFEM geometry
-  code (triangle `2`), with an integer `order` attribute.
+  code (triangle `2`, tetrahedron `4`, ...), with an integer `order` attribute.
 
-The reference triangle has vertices `(0,0)`, `(1,0)`, `(0,1)`, matching the
+Reference elements are MFEM's: the triangle has vertices `(0,0)`, `(1,0)`,
+`(0,1)` and the tetrahedron `(0,0,0)`, `(1,0,0)`, `(0,1,0)`, `(0,0,1)`, in the
 element's vertex order in `/mesh/elements`. Reference nodes are written only
 for nodal, value-mapped elements (MFEM's default H1 and L2 bases): a DOF is the
 field's value at its node, so the element's shape functions are the Lagrange
 polynomials on those nodes, and the field at reference point `x` is
 `sum_k sign_k * values[dof_k] * phi_k(x)`. The nodes are exported rather than
 named because they depend on the basis type (Gauss-Lobatto for H1,
-Gauss-Legendre for L2 by default).
+Gauss-Legendre for L2 by default). A field whose space cannot be described by
+a DOF list has no `space` attribute: high-order Nedelec spaces on tetrahedra
+(the 3D vector potential at order 2 and above) need per-element DOF
+transformations, so read those through `/mesh/mfem` with MFEM.
 
 ### Coupling matrices
 

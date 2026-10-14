@@ -19,7 +19,11 @@ public:
 				"Boundary element " << boundary << " (attribute " << GetBdrAttribute(boundary)
 				<< ") does not match a mesh face; regenerate a conforming mesh with shared boundary nodes.");
 		}
-		Finalize(false, false);
+		// refine=true marks a tetrahedral mesh for conforming bisection
+		// (MarkForRefinement reorders each tet's vertices), which conforming
+		// AMR on tets relies on. It is limited to 3D so the vertex order, and
+		// therefore every exported artifact, of existing 2D meshes is unchanged.
+		Finalize(/*refine=*/Dimension() == 3, /*fix_orientation=*/false);
 		const int bad_elements = CheckElementOrientation(false);
 		const int bad_boundaries = CheckBdrElementOrientation(false);
 		MFEM_VERIFY(bad_elements == 0 && bad_boundaries == 0,

@@ -6,7 +6,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "axisym/axisymmetric_curl_curl_integrator.hpp"
-#include "axisym/axisymmetric_mesh_validation.hpp"
+#include "axisym/axis_geometry.hpp"
 #include "axisym/magnetic_axis_boundary.hpp"
 #include "coefficients/magnetic_field_coefficient.hpp"
 
@@ -61,7 +61,6 @@ TEST_CASE("Axisymmetric radial validation classifies the mesh",
    {
 	  auto mesh = MakeRadialMesh(2, 0.0);
 	  const axisym::AxisGeometry info = axisym::ValidateMesh(*mesh);
-	  REQUIRE(info.relation == axisym::AxisRelation::TouchesAxis);
 	  REQUIRE(info.TouchesAxis());
 	  REQUIRE(info.tolerance > 0.0);
 
@@ -75,7 +74,6 @@ TEST_CASE("Axisymmetric radial validation classifies the mesh",
    {
 	  auto mesh = MakeRadialMesh(2, 1.0);
 	  const axisym::AxisGeometry info = axisym::ValidateMesh(*mesh);
-	  REQUIRE(info.relation == axisym::AxisRelation::Annular);
 	  REQUIRE_FALSE(info.TouchesAxis());
 	  REQUIRE(info.min_r == Catch::Approx(1.0));
 	  REQUIRE(axisym::FindAxisBoundaryMarker(*mesh, info).Max() == 0);
@@ -85,15 +83,15 @@ TEST_CASE("Axisymmetric radial validation classifies the mesh",
    {
 	  auto small = MakeRadialMesh(2, 0.0, 1.0e-6);
 	  auto large = MakeRadialMesh(2, 0.0, 1.0e6);
-	  REQUIRE(axisym::InspectAxisGeometry(*small).tolerance <
-			  axisym::InspectAxisGeometry(*large).tolerance);
+	  REQUIRE(axisym::ValidateMesh(*small).tolerance <
+			  axisym::ValidateMesh(*large).tolerance);
    }
 
    SECTION("negative radius is rejected")
    {
 	  auto mesh = MakeRadialMesh(2, -0.5);
-	  REQUIRE(axisym::InspectAxisGeometry(*mesh).relation ==
-			  axisym::AxisRelation::NegativeRadius);
+	  REQUIRE_THROWS_WITH(axisym::ValidateMesh(*mesh),
+						  Catch::Matchers::ContainsSubstring("negative radius"));
    }
 
    SECTION("a curved edge bulging across the axis is caught")
@@ -110,8 +108,8 @@ TEST_CASE("Axisymmetric radial validation classifies the mesh",
 		 });
 	  mesh->Transform(deformation);
 
-	  REQUIRE(axisym::InspectAxisGeometry(*mesh).relation ==
-			  axisym::AxisRelation::NegativeRadius);
+	  REQUIRE_THROWS_WITH(axisym::ValidateMesh(*mesh),
+						  Catch::Matchers::ContainsSubstring("negative radius"));
    }
 }
 

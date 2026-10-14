@@ -8,6 +8,7 @@
 - [Why must every domain attribute be claimed by a region?](#why-must-every-domain-attribute-be-claimed-by-a-region)
 - [Do the reported losses include hysteresis?](#do-the-reported-losses-include-hysteresis)
 - [Why is a Robin boundary condition rejected?](#why-is-a-robin-boundary-condition-rejected)
+- [How do I choose a Robin far-field coefficient?](#how-do-i-choose-a-robin-far-field-coefficient)
 
 ---
 
@@ -45,28 +46,28 @@ used by common commercial AC/DC and eddy-current tools.
 
 ## What units does the mesh use?
 
-**Metres.** The whole project is SI and there is no length-scale key in the
+**Meters.** The whole project is SI and there is no length-scale key in the
 schema.
 
 This matters because the constants the mesh is multiplied against are
-per-metre -- `EPSILON_0` in F/m and `MU_0` in H/m -- and the axisymmetric
+per-meter -- `EPSILON_0` in F/m and `MU_0` in H/m -- and the axisymmetric
 volume measure `dV = 2*pi*r dr dz` treats `r` as a physical length. A model
-authored in millimetres therefore does not produce a rescaled answer that can
-be corrected afterwards; it mixes a millimetre geometry with per-metre material
+authored in millimeters therefore does not produce a rescaled answer that can
+be corrected afterward; it mixes a millimeter geometry with per-meter material
 properties and corrupts every absolute quantity.
 
 > The convention is **documented but not enforced.** No code inspects the mesh
-> extent, so a millimetre mesh solves cleanly and reports plausible, quietly
+> extent, so a millimeter mesh solves cleanly and reports plausible, quietly
 > wrong energies, capacitances, inductances, and losses.
 
-A millimetre mesh cannot be detected reliably, because a bounding box of a few
-hundred units is equally consistent with a small model in metres and a large
-one in millimetres. Convert when the mesh is generated.
+A millimeter mesh cannot be detected reliably, because a bounding box of a few
+hundred units is equally consistent with a small model in meters and a large
+one in millimeters. Convert when the mesh is generated.
 
 One nuance: axis *classification* is scale-free. `axisym::kRelativeGeometryTolerance`
 is relative to the mesh bounding box, so "is this domain touching r = 0" is
 decided correctly in any unit. That is a geometric convenience only and does not
-relax the metres requirement the physics imposes.
+relax the meters requirement the physics imposes.
 
 ## Does the peak/RMS choice affect the capacitance, inductance, or resistance matrices?
 
@@ -133,9 +134,29 @@ or a superposition of several frequencies.
 
 ## Why is a Robin boundary condition rejected?
 
-`robin` is parsed and reserved in the schema but not implemented in any solver.
-Rather than silently ignoring it -- which would apply a homogeneous Neumann
-condition and quietly change the physics -- the validator rejects it outright.
+Robin is implemented for electrostatics only. The magnetostatic and MQS solvers
+reject it rather than silently ignoring it, which would apply a homogeneous
+Neumann condition and quietly change the physics. For magnetic open-boundary
+problems, truncate the domain further out with a Dirichlet condition and verify
+that the result is insensitive to the truncation radius.
 
-For open-boundary problems, truncate the domain further out with a Dirichlet
-condition and verify that the result is insensitive to the truncation radius.
+Electrostatics also rejects a negative `robin_coefficient`: it makes the
+operator indefinite.
+
+## How do I choose a Robin far-field coefficient?
+
+Place a spherical outer boundary of radius `R` around the conductors (a
+half-circle centerd on the axis for an axisymmetric model) and use
+
+```json
+{"type": "robin", "entity_group": "FarField", "value": 0.0,
+ "robin_coefficient": <eps0 * eps_r / R>}
+```
+
+with `eps_r` of the material next to that boundary. The monopole part of the
+exterior potential, `V ~ Q/(4 pi eps r)`, satisfies `eps dV/dn + (eps/R) V = 0`
+exactly on that sphere, so the leading truncation error vanishes; what remains
+decays like the dipole term. For an isolated sphere the condition is exact, so
+the only error left is discretization (1e-4 in the `3D Robin far-field` test,
+with `R = 3a`), where grounding the same boundary over-reports the capacitance
+by `R/(R - a)`, i.e. 50%.
