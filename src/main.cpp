@@ -11,7 +11,7 @@
 #include "config/input_parser.hpp"
 #include "solvers/physics_solver.hpp"
 #include "solvers/solver_factory.hpp"
-#include "config/attribute_set_resolver.hpp"
+#include "config/entity_group_resolver.hpp"
 #include "config/config_validator.hpp"
 #include "io/status_reporter.hpp"
 #include "io/mesh_loader.hpp"
@@ -210,11 +210,11 @@ int main(int argc, char *argv[]) {
 
         mfem::Mesh& mesh = *mesh_ptr;
 
-        // Resolve entity groups named by mesh attribute set, then validate
-        // the configuration against the mesh's attributes.
+        // Resolve entity groups against the groups the mesh names, then
+        // validate the configuration against the mesh's attributes.
         {
             auto operation = reporter.Start("configuration validation");
-            ResolveAttributeSets(mutable_json, mesh);
+            ResolveEntityGroups(mutable_json, mesh);
             validator.ValidateOrThrow(parser.config, &mesh);
         }
 

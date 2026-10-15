@@ -41,6 +41,10 @@ private:
     std::set<std::string> entity_group_names_;
     std::set<std::string> boundary_group_names_;
     std::set<std::string> domain_group_names_;
+    // Whether this pass validates against a mesh. Before the mesh is loaded a
+    // reference to an undeclared group may still name a group the mesh
+    // defines; ResolveEntityGroups() settles that once it is loaded.
+    bool against_mesh_ = false;
 
     void AddError(const std::string& field, const std::string& message) {
         errors.emplace_back(field, message);
@@ -214,7 +218,7 @@ private:
                         "dimension (1 = curve, 2 = surface, 3 = volume)");
             }
             CheckFieldType(group, "attribute_ids", prefix + ".attribute_ids", ExpectedType::Array);
-            CheckFieldType(group, "attribute_set", prefix + ".attribute_set", ExpectedType::String);
+            CheckFieldType(group, "entity_groups", prefix + ".entity_groups", ExpectedType::Array);
             if (group.contains("attribute_ids") && group["attribute_ids"].is_array()) {
                 for (size_t i = 0; i < group["attribute_ids"].size(); ++i) {
                     if (!group["attribute_ids"][i].is_number_integer()) {
@@ -323,14 +327,16 @@ private:
         }
         const std::string ref = node.get<std::string>();
         if (entity_group_names_.find(ref) == entity_group_names_.end()) {
-            AddError(field, "Unknown entity group '" + ref +
-                    "'. No entity group with that name is declared in 'entity_groups'");
+            if (against_mesh_) {
+                AddError(field, "Unknown entity group '" + ref + "': not declared in "
+                        "'entity_groups' and not named by the mesh");
+            }
             return;
         }
         if (required == RequiredGroupKind::Boundary && boundary_group_names_.count(ref) == 0) {
-            AddError(field, "Entity group '" + ref + "' must be a boundary group (kind = 'boundary')");
+            AddError(field, "Entity group '" + ref + "' must be a boundary group (dim one less than the mesh's)");
         } else if (required == RequiredGroupKind::Domain && domain_group_names_.count(ref) == 0) {
-            AddError(field, "Entity group '" + ref + "' must be a domain group (kind = 'domain')");
+            AddError(field, "Entity group '" + ref + "' must be a domain group (dim equal to the mesh's)");
         }
     }
 
@@ -500,7 +506,8 @@ private:
             if (probe.contains("entity_group")) {
                 if (!probe["entity_group"].is_string()) {
                     AddError(prefix + ".entity_group", "Must be a string");
-                } else if (!domain_group_names_.count(probe["entity_group"].get<std::string>())) {
+                } else if (!domain_group_names_.count(probe["entity_group"].get<std::string>()) &&
+                           (against_mesh_ || entity_group_names_.count(probe["entity_group"].get<std::string>()))) {
                     AddError(prefix + ".entity_group",
                         "Must name a domain entity group (of the mesh's dimension)");
                 }
@@ -587,20 +594,26 @@ private:
                 else             domain_group_names_.insert(name);
             }
 
-            // "attribute_set" names the ids instead; ResolveAttributeSets()
-            // replaces it with them once the mesh is loaded, so a group still
-            // carrying one is checked here only for its form.
-            if (g.contains("attribute_set")) {
-                if (g.contains("attribute_ids")) {
-                    AddError(prefix, "Give either 'attribute_ids' or 'attribute_set', not both");
-                } else if (!g["attribute_set"].is_string()) {
-                    AddError(prefix + ".attribute_set", "Must be the name of a mesh attribute set");
-                } else if (mesh) {
-                    AddError(prefix + ".attribute_set", "Not resolved against the mesh");
+            // "entity_groups" builds the group from other groups, possibly
+            // ones the mesh names; ResolveEntityGroups() replaces it with
+            // their ids once the mesh is loaded.
+            const bool has_members = g.contains("entity_groups");
+            if (has_members) {
+                bool names_only = g["entity_groups"].is_array() && !g["entity_groups"].empty();
+                if (names_only) {
+                    for (const auto& member : g["entity_groups"]) names_only &= member.is_string();
                 }
-            } else if (!g.contains("attribute_ids")) {
-                AddError(prefix + ".attribute_ids", "Missing required field: give 'attribute_ids' "
-                        "or 'attribute_set'");
+                if (!names_only) {
+                    AddError(prefix + ".entity_groups", "Must be a non-empty array of entity group names");
+                } else if (mesh) {
+                    AddError(prefix + ".entity_groups", "Not resolved against the mesh");
+                }
+            }
+            if (!g.contains("attribute_ids")) {
+                if (!has_members) {
+                    AddError(prefix + ".attribute_ids", "Missing required field: give "
+                            "'attribute_ids', 'entity_groups', or both");
+                }
             } else if (!g["attribute_ids"].is_array()) {
                 AddError(prefix + ".attribute_ids", "Attribute ids must be an array");
             } else {
@@ -1335,6 +1348,7 @@ public:
      */
     bool Validate(const json& config, const mfem::Mesh* mesh = nullptr) {
         errors.clear();
+        against_mesh_ = mesh != nullptr;
 
         ValidateDocumentTypes(config);
         if (!errors.empty()) {

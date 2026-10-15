@@ -251,32 +251,38 @@ is twice the time-averaged magnetic energy of the peak phasors (`¼∫ν|B̂|²`
 
 ## `entity_groups`
 
-Array of objects. The only section that refers to mesh attributes; every
-other section refers to a group by its `name`.
+Array of objects. An entity group is a named set of mesh attributes. A mesh
+file may define entity groups itself -- Gmsh `$PhysicalNames`, Netgen `.vol`
+material and boundary names, MFEM v1.3 `attribute_sets` (see
+[Mesh formats](mesh_formats.md)) -- and this section defines more. The
+`entity_group` of a region, terminal, boundary condition or probe may name a
+group from either source.
 
 | Key | Type | Required | Meaning |
 |-----|------|----------|---------|
 | `name` | string | yes | Unique group name |
 | `dim` | integer | yes | `1` = curve, `2` = surface, `3` = volume |
-| `attribute_ids` | array of integer | one of these two | Positive mesh attribute ids |
-| `attribute_set` | string | one of these two | Name of a mesh attribute set: the ids the mesh file gives that name |
-
-A group selects its attributes either by number or by the name the mesh file
-gives them, never both:
+| `attribute_ids` | array of integer | at least one of these two | Positive mesh attribute ids |
+| `entity_groups` | array of string | at least one of these two | Other entity groups (the mesh's or this section's) whose attributes this group includes |
 
 ```json
-{"name": "FarField", "dim": 1, "attribute_ids": [2, 3]}
-{"name": "FarField", "dim": 1, "attribute_set": "outer"}
+{"name": "Coil",     "dim": 2, "attribute_ids": [7, 8]}
+{"name": "FarField", "dim": 1, "entity_groups": ["outer", "symmetry"]}
+{"name": "Shell",    "dim": 2, "entity_groups": ["Coil"], "attribute_ids": [9]}
 ```
 
-`attribute_set` is resolved when the mesh is loaded, against the mesh's domain
-names for a domain group and its boundary names for a boundary group; from then
-on the group is exactly the one written with those ids. The names come from
-Gmsh `$PhysicalNames`, Netgen `.vol` material and boundary names and MFEM
-v1.3 `attribute_sets` (see
-[Mesh formats](mesh_formats.md)). A name the mesh does not define is an error
-that lists the names it does, so a configuration cannot silently select
-nothing on a mesh without names.
+A group's attributes are the union of its `attribute_ids` and those of its
+`entity_groups`, which must be groups of the same `dim`. A group the mesh
+defines needs no entry here: a boundary condition can name the mesh's `outer`
+directly.
+
+Names are resolved when the mesh is loaded. A reference looks among domain
+groups when it needs a domain (a region, a current terminal, a probe) and among
+boundary groups when it needs a boundary (a boundary condition, a voltage
+terminal). It is an error for a name to be defined nowhere (the message lists
+the groups that exist), for a group here to reuse a mesh group's name with
+different attributes, and for groups to include each other in a cycle. So a
+configuration cannot silently select nothing on a mesh that carries no names.
 
 Boundary versus domain is **derived** from `dim`, never prescribed:
 

@@ -9,13 +9,14 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "mfem.hpp"
-#include "config/attribute_set_resolver.hpp"
+#include "config/entity_group_resolver.hpp"
 #include "config/config_validator.hpp"
 #include "io/mesh_loader.hpp"
 
@@ -239,68 +240,109 @@ TEST_CASE("Gmsh physical names become attribute sets", "[mesh_loader][msh][names
 	REQUIRE(Set(mesh->bdr_attribute_sets, "edge") == std::set<int>{3});
 }
 
-TEST_CASE("Entity groups resolve attribute set names against the mesh",
-		  "[config][names]") {
+TEST_CASE("References may name the mesh's own entity groups", "[config][names]") {
 	const auto mesh = Load(kVol2D);
-	json config = {{"entity_groups", json::array({
-		{{"name", "Coil"}, {"dim", 2}, {"attribute_set", "coil"}},
-		{{"name", "Rails"}, {"dim", 1}, {"attribute_set", "rail"}},
-		{{"name", "Numbered"}, {"dim", 1}, {"attribute_ids", {2}}}
-	})}};
+	json config = {
+		{"regions", json::array({{{"entity_group", "coil"}, {"material", "Copper"}}})},
+		{"boundary_conditions", json::array({{{"entity_group", "rail"}, {"type", "dirichlet"}}})},
+		{"terminals", json::array({
+			{{"name", "Drive"}, {"quantity", "current"}, {"entity_group", "core"}},
+			{{"name", "Plate"}, {"quantity", "voltage"}, {"entity_group", "right side"}}})}};
 
-	SECTION("a name becomes its ids") {
-		ResolveAttributeSets(config, *mesh);
-		const auto& groups = config["entity_groups"];
-		REQUIRE(groups[0]["attribute_ids"] == json::array({1}));
-		REQUIRE_FALSE(groups[0].contains("attribute_set"));
-		REQUIRE(groups[1]["attribute_ids"] == json::array({1, 3}));
-		REQUIRE(groups[2]["attribute_ids"] == json::array({2}));
-	}
-	SECTION("a name the mesh lacks is an error naming the ones it has") {
-		config["entity_groups"][1]["attribute_set"] = "rial";
-		REQUIRE_THROWS_WITH(ResolveAttributeSets(config, *mesh),
-			Catch::Matchers::ContainsSubstring("no boundary attribute set named 'rial'") &&
+	ResolveEntityGroups(config, *mesh);
+	std::map<std::string, json> groups;
+	for (const auto& g : config["entity_groups"]) { groups[g["name"]] = g; }
+	REQUIRE(groups.size() == 4);
+	REQUIRE(groups["coil"] == json({{"name", "coil"}, {"dim", 2}, {"attribute_ids", {1}}}));
+	REQUIRE(groups["core"]["attribute_ids"] == json::array({2}));
+	REQUIRE(groups["rail"] == json({{"name", "rail"}, {"dim", 1}, {"attribute_ids", {1, 3}}}));
+	REQUIRE(groups["right side"]["dim"] == 1);
+
+	SECTION("a name defined nowhere is an error listing the known groups") {
+		json bad = {{"boundary_conditions", json::array({{{"entity_group", "rial"}}})}};
+		REQUIRE_THROWS_WITH(ResolveEntityGroups(bad, *mesh),
+			Catch::Matchers::ContainsSubstring("Unknown entity group 'rial'") &&
 			Catch::Matchers::ContainsSubstring("'rail', 'right side'"));
 	}
-	SECTION("a domain group looks only among domain names") {
-		config["entity_groups"][0]["attribute_set"] = "rail";
-		REQUIRE_THROWS_WITH(ResolveAttributeSets(config, *mesh),
-			Catch::Matchers::ContainsSubstring("no domain attribute set named 'rail'"));
-	}
-	SECTION("a mesh without names rejects every name") {
-		const auto unnamed = Load(
-			"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n"
-			"$Nodes\n3\n1 0 0 0\n2 1 0 0\n3 0 1 0\n$EndNodes\n"
-			"$Elements\n1\n1 2 2 1 1 1 2 3\n$EndElements\n");
-		REQUIRE_THROWS_WITH(ResolveAttributeSets(config, *unnamed),
-			Catch::Matchers::ContainsSubstring("it names none"));
+	SECTION("a domain reference looks only among domain groups") {
+		json bad = {{"regions", json::array({{{"entity_group", "rail"}}})}};
+		REQUIRE_THROWS_WITH(ResolveEntityGroups(bad, *mesh),
+			Catch::Matchers::ContainsSubstring("Known domain groups: 'coil', 'core'"));
 	}
 }
 
-TEST_CASE("The validator takes exactly one of attribute_ids and attribute_set",
+TEST_CASE("Config entity groups combine ids and other groups", "[config][names]") {
+	const auto mesh = Load(kVol2D);
+	json config = {{"entity_groups", json::array({
+		{{"name", "Walls"}, {"dim", 1}, {"entity_groups", {"rail", "right side"}}},
+		{{"name", "AllButTop"}, {"dim", 1}, {"entity_groups", {"Walls"}}, {"attribute_ids", {4}}},
+		{{"name", "Numbered"}, {"dim", 1}, {"attribute_ids", {2}}}
+	})}};
+
+	SECTION("members become the union of their ids") {
+		ResolveEntityGroups(config, *mesh);
+		const auto& groups = config["entity_groups"];
+		REQUIRE(groups[0]["attribute_ids"] == json::array({1, 2, 3}));
+		REQUIRE_FALSE(groups[0].contains("entity_groups"));
+		REQUIRE(groups[1]["attribute_ids"] == json::array({1, 2, 3, 4}));
+		REQUIRE(groups[2]["attribute_ids"] == json::array({2}));
+	}
+	SECTION("an unknown member is an error") {
+		config["entity_groups"][0]["entity_groups"] = {"rail", "rial"};
+		REQUIRE_THROWS_WITH(ResolveEntityGroups(config, *mesh),
+			Catch::Matchers::ContainsSubstring("includes unknown entity group 'rial'"));
+	}
+	SECTION("a cycle is an error") {
+		config["entity_groups"][0]["entity_groups"] = {"AllButTop"};
+		REQUIRE_THROWS_WITH(ResolveEntityGroups(config, *mesh),
+			Catch::Matchers::ContainsSubstring("includes itself"));
+	}
+	SECTION("a member of another dim is an error") {
+		config["entity_groups"].push_back({{"name", "Coils"}, {"dim", 2}, {"entity_groups", {"Walls"}}});
+		REQUIRE_THROWS_WITH(ResolveEntityGroups(config, *mesh),
+			Catch::Matchers::ContainsSubstring("of a different dim"));
+	}
+	SECTION("a config group may not redefine a mesh group's name") {
+		config["entity_groups"][2]["name"] = "rail";
+		REQUIRE_THROWS_WITH(ResolveEntityGroups(config, *mesh),
+			Catch::Matchers::ContainsSubstring("but the mesh names [1,3] 'rail'"));
+	}
+	SECTION("but may restate it") {
+		config["entity_groups"][2] = {{"name", "rail"}, {"dim", 1}, {"attribute_ids", {3, 1}}};
+		REQUIRE_NOTHROW(ResolveEntityGroups(config, *mesh));
+	}
+}
+
+TEST_CASE("The validator defers unknown group references until the mesh is known",
 		  "[config][validator][names]") {
-	auto errors = [](const json& group) {
+	auto errors = [](const json& config, const mfem::Mesh* mesh) {
 		ConfigValidator validator;
-		json config = {{"entity_groups", json::array({group})}};
-		validator.Validate(config);
+		validator.Validate(config, mesh);
 		std::string all;
 		for (const auto& e : validator.GetErrors()) {
-			if (e.field.rfind("entity_groups", 0) == 0) { all += e.field + ": " + e.message + "\n"; }
+			if (e.field.rfind("entity_groups", 0) == 0 || e.field.rfind("boundary_conditions", 0) == 0) {
+				all += e.field + ": " + e.message + "\n";
+			}
 		}
 		return all;
 	};
-	const json named = {{"name", "Coil"}, {"dim", 2}, {"attribute_set", "coil"}};
-	REQUIRE(errors(named).empty());
+	const json config = {
+		{"entity_groups", json::array({{{"name", "Walls"}, {"dim", 1}, {"entity_groups", {"rail"}}}})},
+		{"boundary_conditions", json::array({{{"name", "Far"}, {"entity_group", "rail"},
+											  {"type", "dirichlet"}, {"value", 0.0}}})}};
+	REQUIRE(errors(config, nullptr).empty());
 
-	json both = named;
-	both["attribute_ids"] = {1};
-	REQUIRE_THAT(errors(both), Catch::Matchers::ContainsSubstring("not both"));
+	const auto mesh = Load(kVol2D);
+	json resolved = config;
+	ResolveEntityGroups(resolved, *mesh);
+	REQUIRE(errors(resolved, mesh.get()).empty());
+	REQUIRE_THAT(errors(config, mesh.get()), Catch::Matchers::ContainsSubstring("Unknown entity group 'rail'"));
 
-	json neither = named;
-	neither.erase("attribute_set");
-	REQUIRE_THAT(errors(neither), Catch::Matchers::ContainsSubstring("'attribute_ids' or 'attribute_set'"));
-
-	json numeric = named;
-	numeric["attribute_set"] = 3;
-	REQUIRE_THAT(errors(numeric), Catch::Matchers::ContainsSubstring("attribute_set"));
+	json neither = config;
+	neither["entity_groups"][0].erase("entity_groups");
+	REQUIRE_THAT(errors(neither, nullptr),
+		Catch::Matchers::ContainsSubstring("'attribute_ids', 'entity_groups', or both"));
+	json numeric = config;
+	numeric["entity_groups"][0]["entity_groups"] = {3};
+	REQUIRE_THAT(errors(numeric, nullptr), Catch::Matchers::ContainsSubstring("array of entity group names"));
 }

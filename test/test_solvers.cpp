@@ -6,7 +6,8 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "config/input_parser.hpp"
-#include "config/attribute_set_resolver.hpp"
+#include "config/config_validator.hpp"
+#include "config/entity_group_resolver.hpp"
 #include "io/mesh_loader.hpp"
 #include "solvers/electrostatic_solver.hpp"
 #include "solvers/magnetostatic_solver.hpp"
@@ -3070,10 +3071,10 @@ TEST_CASE("Magnetostatic loop inductance is mesh-format independent (Netgen)",
 }
 
 
-// The same loop read from a Netgen .vol file, with every entity group given
-// by the name the mesh file carries instead of by attribute number. Guarded by
-// the analytic value, so a misread name -> attribute binding shows up as a
-// wrong inductance.
+// The same loop read from a Netgen .vol file, with every region, boundary
+// condition and terminal naming a group the mesh file defines, and no
+// "entity_groups" section at all. Guarded by the analytic value, so a misread
+// name -> attribute binding shows up as a wrong inductance.
 TEST_CASE("Magnetostatic loop inductance from a Netgen .vol mesh with named groups",
           "[solvers][analytic][magnetostatic][coupling][axisymmetric][netgen][names]") {
     const std::string mesh_file = "test_current_loop.vol";
@@ -3081,19 +3082,21 @@ TEST_CASE("Magnetostatic loop inductance from a Netgen .vol mesh with named grou
     CreateCurrentLoopVolMesh(mesh_file);
 
     json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
-    config["entity_groups"] = json::array({
-        {{"name", "AirDomain"},  {"dim", 2}, {"attribute_set", "air"}},
-        {{"name", "LoopDomain"}, {"dim", 2}, {"attribute_set", "loop"}},
-        {{"name", "Outer"},      {"dim", 1}, {"attribute_set", "far"}}
+    config.erase("entity_groups");
+    config["regions"] = json::array({
+        {{"name", "Air"},  {"entity_group", "air"},  {"material", "Air"}},
+        {{"name", "Loop"}, {"entity_group", "loop"}, {"material", "Conductor"}}
     });
+    config["boundary_conditions"][0]["entity_group"] = "far";
     config["terminals"] = json::array({
         {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
-         {"entity_group", "LoopDomain"}}
+         {"entity_group", "loop"}}
     });
 
     const auto mesh = mesh_io::LoadMesh(mesh_file);
-    ResolveAttributeSets(config, *mesh);
-    REQUIRE(config["entity_groups"][2]["attribute_ids"] == json::array({2, 3}));
+    ResolveEntityGroups(config, *mesh);
+    ConfigValidator validator;
+    REQUIRE(validator.Validate(config, mesh.get()));
 
     MagnetostaticSolver solver(*mesh, DecodeConfig(config, matrix_file));
     solver.Setup();

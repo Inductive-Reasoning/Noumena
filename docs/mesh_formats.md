@@ -18,26 +18,30 @@ reads names that MFEM's own Gmsh reader leaves out:
 
 The format is recognized from the file's content, not its extension.
 
-## How a configuration refers to mesh entities
+## Entity groups from the mesh file
 
-An `entity_groups` entry selects mesh attributes by number or by name (see
-[`entity_groups`](config_reference.md#entity_groups)):
+An entity group is a named set of mesh attributes (see
+[`entity_groups`](config_reference.md#entity_groups)). The names a mesh file
+carries are entity groups too: domain names become domain groups, boundary
+names boundary groups. A configuration can refer to them directly, and its own
+`entity_groups` can combine them:
 
 ```json
-{"name": "FarField", "dim": 1, "attribute_ids": [2, 3]}
-{"name": "FarField", "dim": 1, "attribute_set": "outer"}
+"entity_groups": [
+  {"name": "FarField", "dim": 1, "entity_groups": ["outer", "symmetry"]}
+],
+"boundary_conditions": [
+  {"name": "Ground", "entity_group": "outer", "type": "dirichlet", "value": 0.0}
+]
 ```
 
-A name is resolved to its ids when the mesh is loaded: a domain group
-(`dim` equal to the mesh dimension) against the mesh's domain names, a
-boundary group against its boundary names. After that, the group is exactly the
-one written with ids, and every solver works on attribute numbers.
-
-One name may cover several attributes: Netgen numbers each face or edge of the
-geometry separately, so five faces named `outer` are five attributes in one
-set. A name the mesh does not define is an error that lists the names it does.
-This is what keeps a configuration portable between formats: on a mesh without
-names, a named group fails loudly instead of selecting nothing.
+Names are resolved when the mesh is loaded, and every group becomes a list of
+attribute numbers before the solvers see it. One name may cover several
+attributes: Netgen numbers each face or edge of the geometry separately, so
+five faces named `outer` are five attributes in one group. A name defined
+nowhere is an error that lists the groups that exist, which keeps a
+configuration portable between formats: on a mesh without names it fails
+loudly instead of selecting nothing.
 
 ## Element orientation
 
@@ -59,15 +63,16 @@ hand the result to Noumena as a file. Noumena itself does not link Netgen.
 1. **Name every domain and every boundary** in the geometry: `mat()` on
    solids, `.name` on faces with the OpenCASCADE geometry; `SetMaterial()` and
    `bc=` in 2D. Netgen calls an unnamed face or edge `"default"`, which Noumena
-   does not treat as a name, so an unnamed boundary cannot be selected by
-   `attribute_set`.
+   does not treat as a name, so an unnamed boundary cannot be referred to by
+   name.
 2. **Save in Netgen's native format:** `mesh.Save("model.vol")` (or
    `Ng_SaveMesh` from nglib). This is the only Netgen output that keeps both the
    boundary elements and the names. nglib's C interface (`nglib.h`) can save a
    mesh but has no calls for naming, so the names have to be set through
    Netgen's C++ or Python geometry classes.
-3. **Write the configuration with `attribute_set`** using the same names. The
-   application never needs Netgen's numbers.
+3. **Refer to the names in the configuration.** The application never needs
+   Netgen's numbers, and needs no `entity_groups` section unless it combines
+   names.
 
 ```python
 from netgen.occ import Box, Cylinder, Pnt, Z, X, OCCGeometry, Glue
@@ -85,12 +90,16 @@ mesh.Save("bar.vol")
 ```
 
 ```json
-"entity_groups": [
-  {"name": "air",          "dim": 3, "attribute_set": "air"},
-  {"name": "bar",          "dim": 3, "attribute_set": "bar"},
-  {"name": "outer",        "dim": 2, "attribute_set": "outer"},
-  {"name": "terminal_in",  "dim": 2, "attribute_set": "terminal_in"},
-  {"name": "terminal_out", "dim": 2, "attribute_set": "terminal_out"}
+"regions": [
+  {"entity_group": "air", "material": "air"},
+  {"entity_group": "bar", "material": "bar"}
+],
+"terminals": [
+  {"name": "in",  "quantity": "voltage", "entity_group": "terminal_in"},
+  {"name": "out", "quantity": "voltage", "entity_group": "terminal_out"}
+],
+"boundary_conditions": [
+  {"name": "outer", "entity_group": "outer", "type": "dirichlet", "value": 0.0}
 ]
 ```
 

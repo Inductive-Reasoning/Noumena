@@ -406,10 +406,10 @@ protected:
     // Marker (1/0 over bdr attributes) for a named entity group.
     //
     // Resolved from the group's own AttributeIds, which validation has
-    // already checked. A group the configuration gives by mesh name
-    // ("attribute_set") was turned into those ids when the mesh was loaded
-    // (ResolveAttributeSets), failing if the mesh lacks the name, so the
-    // solvers never consult the mesh's named sets themselves.
+    // already checked. Groups the mesh names, and config groups built from
+    // other groups, were turned into such ids when the mesh was loaded
+    // (ResolveEntityGroups), so the solvers never consult the mesh's named
+    // sets themselves.
     //
     // Ids the mesh does not carry are dropped rather than rejected: a boundary
     // group naming an attribute absent from this mesh contributes no DOFs,
