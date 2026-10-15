@@ -405,14 +405,11 @@ protected:
 
     // Marker (1/0 over bdr attributes) for a named entity group.
     //
-    // Resolved from the group's own AttributeIds, which the configuration
-    // supplies and validation has already checked. The mesh's
-    // bdr_attribute_sets are deliberately NOT consulted: only three of MFEM's
-    // readers populate them (MFEM v1.3+, Gmsh $PhysicalNames, and Cubit), so
-    // depending on them would make an otherwise portable configuration resolve
-    // correctly for some mesh formats and silently not at all for others --
-    // Netgen and VTK carry no names whatsoever. The config is the single
-    // source of truth for name -> attribute binding.
+    // Resolved from the group's own AttributeIds, which validation has
+    // already checked. A group the configuration gives by mesh name
+    // ("attribute_set") was turned into those ids when the mesh was loaded
+    // (ResolveAttributeSets), failing if the mesh lacks the name, so the
+    // solvers never consult the mesh's named sets themselves.
     //
     // Ids the mesh does not carry are dropped rather than rejected: a boundary
     // group naming an attribute absent from this mesh contributes no DOFs,

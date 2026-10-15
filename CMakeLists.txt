@@ -397,6 +397,7 @@ if(BUILD_TESTING)
         test/test_config_validator.cpp
         test/test_gmsh_interpolation.cpp
         test/test_gmsh_msh_format.cpp
+        test/test_mesh_names.cpp
         test/test_hdf5.cpp
         test/test_input_parser.cpp
         test/test_electrostatic_3d.cpp

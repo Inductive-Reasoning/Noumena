@@ -251,13 +251,32 @@ is twice the time-averaged magnetic energy of the peak phasors (`¼∫ν|B̂|²`
 
 ## `entity_groups`
 
-Array of objects. The only section that names raw mesh attribute ids.
+Array of objects. The only section that refers to mesh attributes; every
+other section refers to a group by its `name`.
 
 | Key | Type | Required | Meaning |
 |-----|------|----------|---------|
 | `name` | string | yes | Unique group name |
 | `dim` | integer | yes | `1` = curve, `2` = surface, `3` = volume |
-| `attribute_ids` | array of integer | yes | Positive mesh attribute ids |
+| `attribute_ids` | array of integer | one of these two | Positive mesh attribute ids |
+| `attribute_set` | string | one of these two | Name of a mesh attribute set: the ids the mesh file gives that name |
+
+A group selects its attributes either by number or by the name the mesh file
+gives them, never both:
+
+```json
+{"name": "FarField", "dim": 1, "attribute_ids": [2, 3]}
+{"name": "FarField", "dim": 1, "attribute_set": "outer"}
+```
+
+`attribute_set` is resolved when the mesh is loaded, against the mesh's domain
+names for a domain group and its boundary names for a boundary group; from then
+on the group is exactly the one written with those ids. The names come from
+Gmsh `$PhysicalNames`, Netgen `.vol` material and boundary names and MFEM
+v1.3 `attribute_sets` (see
+[Mesh formats](mesh_formats.md)). A name the mesh does not define is an error
+that lists the names it does, so a configuration cannot silently select
+nothing on a mesh without names.
 
 Boundary versus domain is **derived** from `dim`, never prescribed:
 

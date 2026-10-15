@@ -336,7 +336,7 @@ field in all enabled formats. Relative format paths resolve beneath the root.
 | [`docs/boundary_and_terminal_model.md`](docs/boundary_and_terminal_model.md) | Boundary, boundary-condition, and terminal modeling rules |
 | [`docs/math_formulation.md`](docs/math_formulation.md) | Mathematical formulation of each physics type |
 | [`docs/open_boundary.md`](docs/open_boundary.md) | Far-field truncation error, the measured convergence study, and options for true open boundaries |
-| [`docs/mesh_formats.md`](docs/mesh_formats.md) | Which mesh formats carry named groups, why the config owns name to attribute binding, and Netgen feasibility |
+| [`docs/mesh_formats.md`](docs/mesh_formats.md) | Mesh formats Noumena reads, where the names `attribute_set` refers to come from, and meshing with Netgen from an application |
 
 > **Note:** excitation values in time-harmonic runs are **peak (amplitude)
 > phasors**, not RMS. This is not enforced by the solver; see the

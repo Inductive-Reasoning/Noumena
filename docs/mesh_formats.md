@@ -1,187 +1,142 @@
-# Mesh formats and generator portability
+# Mesh formats
 
-Status: feasibility note. Records what was measured while evaluating Netgen as a
-possible alternative to Gmsh, so the expensive half of that work can be scoped
-honestly. The motivation is licensing (see below), not mesh quality. No
-migration is proposed here; nothing in the codebase depends on Netgen.
+Which mesh files Noumena reads, where the names a configuration can refer to
+come from, and how to produce meshes with Netgen from an application that links
+it.
 
-## The portability property we rely on
+## Formats
 
-The application's mesh loader establishes ownership before parsing, so a load
-exception releases the partially loaded mesh. Before MFEM finalization it checks
-that each boundary element maps to an actual mesh face; orphan boundaries are
-rejected in both debug and release builds. Ordinary boundary directions are
-normalized by MFEM, while inverted domain elements are rejected.
+Noumena reads every format MFEM reads, plus Netgen's native `.vol`, and it
+reads names that MFEM's own Gmsh reader leaves out:
 
-A configuration binds a logical name to a set of raw mesh attribute ids:
+| Format | Written by | Names | Notes |
+|---|---|---|---|
+| Gmsh `.msh` 2.2 / 4.1 | Gmsh | `$PhysicalNames` | Names are read by Noumena; MFEM's reader skips them |
+| Netgen `.vol` | Netgen `Mesh.Save()` | `materials`, `bcnames` | Read by Noumena (`src/io/netgen_vol.hpp`); 2D and 3D |
+| MFEM v1.3+ | MFEM | `attribute_sets` block | |
+| MFEM v1.0, `areamesh2`, Netgen neutral, VTK | various | none | Attributes only |
+
+The format is recognized from the file's content, not its extension.
+
+## How a configuration refers to mesh entities
+
+An `entity_groups` entry selects mesh attributes by number or by name (see
+[`entity_groups`](config_reference.md#entity_groups)):
 
 ```json
-{"name": "LoopDomain", "dim": 2, "attribute_ids": [2]}
+{"name": "FarField", "dim": 1, "attribute_ids": [2, 3]}
+{"name": "FarField", "dim": 1, "attribute_set": "outer"}
 ```
 
-`PhysicsSolver::MarkerFromGroup()` resolves that name using the group's own
-`AttributeIds` and nothing else. The mesh's `attribute_sets` /
-`bdr_attribute_sets` are deliberately not consulted, and the solver no longer
-writes into them.
+A name is resolved to its ids when the mesh is loaded: a domain group
+(`dim` equal to the mesh dimension) against the mesh's domain names, a
+boundary group against its boundary names. After that, the group is exactly the
+one written with ids, and every solver works on attribute numbers.
 
-This matters because named sets are **not** a universal mesh feature. Of MFEM's
-readers:
+One name may cover several attributes: Netgen numbers each face or edge of the
+geometry separately, so five faces named `outer` are five attributes in one
+set. A name the mesh does not define is an error that lists the names it does.
+This is what keeps a configuration portable between formats: on a mesh without
+names, a named group fails loudly instead of selecting nothing.
 
-| Reader | Populates `attribute_sets`? | Source of names |
-|---|---|---|
-| MFEM v1.3+ | yes | explicit `attribute_sets` block |
-| Gmsh (`.msh`) | yes | `$PhysicalNames` |
-| Cubit (`.e`) | yes | block/sideset names |
-| **Netgen** (`areamesh2`, 3D neutral) | **no** | none; bare integer attributes |
-| VTK | no | none |
+## Element orientation
 
-Had we resolved names through the mesh, an identical config would work on Gmsh
-and silently resolve to nothing on Netgen. Keeping the config authoritative
-makes group resolution independent of the generator.
+Noumena repairs element orientation the way MFEM's own mesh constructors do: an
+element whose vertices are listed with the opposite handedness is reordered,
+which is exact. MFEM can reorder triangles, quadrilaterals, tetrahedra and
+pyramids. An inverted hexahedron or prism it cannot repair, and the mesh is
+rejected.
 
-## Measured: the read path is generator-independent
+Netgen lists the vertices of every volume element with the opposite handedness
+to MFEM, for prisms as well as tetrahedra. The `.vol` reader converts Netgen's
+order to MFEM's itself, so Netgen's prism boundary layers load too.
 
-`test/test_solvers.cpp` writes the current-loop geometry twice, from one shared
-`CurrentLoopGrid`, so the two files differ only in serialization:
+## Netgen from an application
 
-- `CreateCurrentLoopMesh()` -> `MFEM mesh v1.0`
-- `CreateCurrentLoopNetgenMesh()` -> `areamesh2` (Netgen 2D)
+Netgen is LGPL, so an application may link it dynamically, mesh in-process, and
+hand the result to Noumena as a file. Noumena itself does not link Netgen.
 
-The test `"Magnetostatic loop inductance is mesh-format independent (Netgen)"`
-runs the *same* config over the Netgen file and asserts the analytic ring
-inductance. Result:
+1. **Name every domain and every boundary** in the geometry: `mat()` on
+   solids, `.name` on faces with the OpenCASCADE geometry; `SetMaterial()` and
+   `bc=` in 2D. Netgen calls an unnamed face or edge `"default"`, which Noumena
+   does not treat as a name, so an unnamed boundary cannot be selected by
+   `attribute_set`.
+2. **Save in Netgen's native format:** `mesh.Save("model.vol")` (or
+   `Ng_SaveMesh` from nglib). This is the only Netgen output that keeps both the
+   boundary elements and the names. nglib's C interface (`nglib.h`) can save a
+   mesh but has no calls for naming, so the names have to be set through
+   Netgen's C++ or Python geometry classes.
+3. **Write the configuration with `attribute_set`** using the same names. The
+   application never needs Netgen's numbers.
 
-| Mesh format | Inductance [H] |
-|---|---|
-| MFEM v1.0 | 6.023785e-07 |
-| Netgen `areamesh2` | 6.023785e-07 |
+```python
+from netgen.occ import Box, Cylinder, Pnt, Z, X, OCCGeometry, Glue
 
-Bit-identical, and the test additionally asserts that the Netgen reader produced
-**zero** named sets. Reading Netgen meshes therefore requires no code changes at
-all. The test is tagged `[netgen]`.
+air = Box(Pnt(-1, -1, -1), Pnt(1, 1, 1)); air.mat("air")
+air.faces.name = "outer"
+air.faces.Min(X).name = "symmetry"
+bar = Cylinder(Pnt(0, 0, -0.2), Z, r=0.1, h=0.4); bar.mat("bar")
+bar.faces.name = "bar_side"
+bar.faces.Min(Z).name = "terminal_in"
+bar.faces.Max(Z).name = "terminal_out"
 
-### `areamesh2` format
-
-1-based indices; note that boundary elements precede elements, the reverse of
-the MFEM format:
-
+mesh = OCCGeometry(Glue([air - bar, bar])).GenerateMesh(maxh=0.3)
+mesh.Save("bar.vol")
 ```
-areamesh2
-<n_bdr>     then per line: attr v1 v2
-<n_elem>    then per line: attr nverts v1 ... vn
-<n_vert>    then per line: x y
+
+```json
+"entity_groups": [
+  {"name": "air",          "dim": 3, "attribute_set": "air"},
+  {"name": "bar",          "dim": 3, "attribute_set": "bar"},
+  {"name": "outer",        "dim": 2, "attribute_set": "outer"},
+  {"name": "terminal_in",  "dim": 2, "attribute_set": "terminal_in"},
+  {"name": "terminal_out", "dim": 2, "attribute_set": "terminal_out"}
+]
 ```
 
-## Measured: geometry emission works, but id provenance is the trap
+Coordinates are taken as they are written, so the geometry must be in meters.
 
-Netgen 6.x (`C:\netgen`, Python 3.14 bindings) was then installed and the loop
-was rebuilt as an actual **geometry** definition -- `SplineGeometry`, two
-materials, a `SetDomainMaxH` on the conductor -- and meshed by Netgen.
-`tools/netgen_current_loop.py` does this and emits `areamesh2`.
+### Where the `.vol` attributes come from
 
-Result on a coarse unstructured mesh (510 vertices, 948 triangles):
+Following Netgen's own reader (`Mesh::Load`):
 
-| Source | Inductance [H] | vs analytic |
-|---|---|---|
-| analytic (GMD ring) | 6.0272e-07 | - |
-| structured, MFEM + Netgen format | 6.023785e-07 | -0.06% |
-| **Netgen-meshed geometry** | **6.019738e-07** | **-0.12%** |
+- **3D:** a volume element's material number is its attribute, named by
+  `materials`. A boundary face's boundary condition number is its attribute,
+  named by `bcnames`.
+- **2D:** the domain elements are Netgen's "surface elements"; each belongs to
+  the face descriptor matching its region, and that descriptor's 1-based index
+  is its attribute, named by `materials`. The boundary is the `edgesegmentsgi3`
+  section; each segment's 0-based edge index plus one is its attribute, named by
+  `bcnames`.
 
-So the end-to-end path is feasible: geometry in, correct physics out, with no
-solver changes.
+Interior faces and edges (between two domains) are boundary elements too, as in
+Gmsh meshes, so a terminal or interface can be named and selected.
 
-### The id-provenance trap, concretely
+### Netgen's other outputs
 
-The predicted risk was real and took three attempts to get right. In Netgen's
-2D Python API:
+Measured with Netgen 6.2; none of them is a substitute for `.vol`:
 
-1. **Domain ids follow `SetMaterial` order.** These behaved as expected
-   (`air` -> 1, `loop` -> 2).
-2. **`bc="name"` numbers boundaries by order of first appearance**, not by any
-   declared value. Declaring `updown` first gave it id 1 where 3 was wanted.
-3. **`bc=<int>` does not control `Elements1D().index`.** Passing `bc=3` does
-   *not* make segments come back as index 3. `index` is the **spline
-   declaration index**, so an 8-spline geometry yields ids 1..8 regardless.
-4. **`Append()` returns a 0-based spline index while `Elements1D().index` is
-   1-based.** A clean off-by-one between the two numbering systems.
+- **Gmsh2 export** writes no `$PhysicalNames`, drops the boundary elements of a
+  2D mesh, and writes a version line (`2.000000`) MFEM rejects.
+- **Neutral export** (3D) carries no names and no format line, so MFEM does not
+  recognize it without one being added.
+- **`areamesh2`** (MFEM's 2D Netgen format) is not written by Netgen at all.
 
-The working approach is to ignore `bc=` for numbering entirely: capture
-`Append()`'s return value at declaration time, `+1` it, and map spline index ->
-attribute yourself. The geometry declares the *role*; the code derives the
-*number*. `tools/netgen_current_loop.py` asserts the resulting contract after
-meshing, so any future drift fails loudly instead of producing a plausible
-solve.
+### Not supported
 
-Note also that Netgen emits **interior** segments (the air/conductor interface)
-as boundary elements, so MFEM sees a bdr attribute that no boundary condition
-references. It must be given an id so it cannot collide with an exterior one.
+- Second-order (curved) Netgen elements; the reader rejects them with a
+  message. Mesh with first-order elements.
+- 2D `.vol` files from Netgen older than 6.2 (`edgesegmentsgi2` boundary
+  sections); save them again with 6.2 or newer.
 
-### Implication for configs
+## Licensing
 
-`attribute_ids` are hand-maintained integers, and none of the four hazards above
-produce an error -- they produce a *different mesh with the same shape*. A wrong
-boundary id silently moves a Dirichlet condition. If Netgen becomes real, the
-generator should emit a sidecar mapping names to the ids it actually assigned,
-and `entity_groups` should be generated from that rather than typed by hand.
+Gmsh is GPL and Noumena MIT, so Gmsh is used only as a separately installed
+executable (`examples/generate_meshes.sh`), never linked. Netgen is LGPL, which
+permits an application to link it dynamically with the relink freedom
+preserved; static linking does not satisfy the LGPL.
 
-Netgen has **no `areamesh2` writer** of its own (`Export()` lists Gmsh2,
-Neutral, Abaqus and others, but not this one), so the writer in
-`tools/netgen_current_loop.py` is ours. The obvious alternative -- exporting
-Gmsh2 and letting MFEM rebuild names from `$PhysicalNames` -- was tested and
-does not work; see the next section.
-
-## Measured: Netgen's Gmsh2 export does NOT restore named groups
-
-The obvious way to avoid a sidecar is to have Netgen `Export()` Gmsh2 and let
-MFEM's Gmsh reader rebuild `attribute_sets` from `$PhysicalNames`. This was
-tried directly. **It does not work**, for three independent reasons:
-
-1. **No `$PhysicalNames` section is written at all.** `mesh.SetMaterial()` and
-   `mesh.SetBCName()` both succeed, but the exporter discards the names. The
-   file contains only `$MeshFormat`, `$Nodes` and `$Elements`. Element tags
-   carry the raw integer ids (`tags=(1,1)` and `tags=(2,2)`), so the *numbers*
-   survive and the *names* do not -- which is exactly the situation the sidecar
-   exists to fix.
-2. **Boundary elements are dropped.** The writer announces itself as
-   "Write Gmsh v2.xx Surface Mesh" and emits 948 triangles and **zero** line
-   elements, losing all 86 boundary segments. MFEM consequently sees
-   `bdr_attributes` max of 1, and our own validator rejects the config:
-   `entity_groups[2].attribute_ids: Attribute 2 is out of range [1, 1]`. Without
-   boundary attributes there is nowhere to hang the far-field Dirichlet
-   condition, so this path cannot express the problem at all.
-3. **The version header is unreadable by MFEM.** Netgen writes
-   `2.000000 0 8`; MFEM's `ReadGmshMesh` aborts with "Gmsh file version < 2.2".
-   Reason 3 alone is a one-line patch, but it masks reasons 1 and 2 until fixed.
-
-So Gmsh2-from-Netgen is strictly worse than `areamesh2`: it loses the boundary
-information that `areamesh2` preserves, and gains no names. The custom
-`areamesh2` writer in `tools/netgen_current_loop.py` is the right path, and the
-sidecar remains the way to carry names for generators that have no place to put
-them.
-
-## Why this was investigated: licensing
-
-The motivation is not technical. Gmsh is GPL, this project is MIT, and Gmsh is
-therefore used only as a **separately installed executable** invoked by
-`examples/generate_meshes.sh`. It is not a build dependency: `CMakeLists.txt`
-fetches only MFEM, Eigen, nlohmann_json and Catch2. Generated `.mesh` files are
-committed so the examples run without Gmsh present.
-
-**This arrangement is deliberate and load-bearing.** Linking a GPL mesher's
-library into this codebase would impose GPL on it. The practical consequence is
-that in-process meshing -- meshing directly from a geometry definition, remeshing
-during AMR, parametric sweeps without subprocess round-trips -- is closed off
-while Gmsh is the mesher. That constraint, not mesh quality, is what makes
-alternatives worth evaluating.
-
-Netgen is **LGPL**, which permits use from an MIT project via *dynamic* linking
-with the relink freedom preserved. Any adoption of `nglib` would have to be
-dynamically linked and LGPL-compliant; static linking is not an option.
-
-### Permissively licensed alternatives
-
-Surveyed while looking for something that would avoid the LGPL obligations
-entirely:
+Permissively licensed meshers surveyed as alternatives:
 
 | Mesher | License | Fit |
 |---|---|---|
@@ -194,51 +149,7 @@ entirely:
 | poly2tri | BSD | 2D constrained Delaunay only; no sizing or grading |
 
 No permissively licensed general-purpose mesher covers the 2D axisymmetric and
-3D cases this project needs. The realistic options are therefore GPL Gmsh at
-arm's length (the status quo) or LGPL Netgen dynamically linked.
-
-## Gmsh's id model is better than Netgen's
-
-Worth recording explicitly, because it is the opposite of what the Netgen work
-above might suggest. Gmsh's `.geo` DSL binds a name and an id together in the
-geometry source:
-
-```
-Physical Surface("Loop", 2) = {loop_surfaces()};
-```
-
-and entities can be selected *geometrically* rather than by id, so the binding
-survives renumbering after boolean operations:
-
-```
-loop_surfaces() = Surface In BoundingBox{ ... };
-```
-
-`examples/current_loop/loop.geo` uses exactly this to stay stable across
-`BooleanDifference`. Netgen's 2D API offers no equivalent -- ids come from
-declaration order, which is what produced the four hazards above.
-
-So the sidecar concept is a **Netgen tax**, not a general requirement. It exists
-to replace naming machinery that Gmsh already provides and Netgen lacks. Any
-migration should count it as a cost of moving, not as a gap in the current setup.
-
-## Not measured
-
-- 3D. Only the 2D `SplineGeometry` / `areamesh2` path was exercised. The 3D
-  neutral format and CSG geometry are untested here.
-- Curved geometry. The loop is all straight splines; Netgen's curved elements
-  and MFEM's `curved_areamesh2` variant were not tried.
-- Whether a **newer** Netgen or its OCC/`nggui` export path writes richer Gmsh
-  output. Only the bundled `Export(..., "Gmsh2 Format")` of the installed
-  6.x build was tested. Gmsh itself can also read Netgen neutral files and
-  re-export them with physical groups, which would be a third route.
-- **Linking `nglib`.** The decisive question for the licensing motivation is
-  whether Netgen can be driven in-process as a dynamically linked LGPL library,
-  since that is the capability GPL Gmsh denies. Only the file-level and Python
-  paths were exercised here; `nglib.lib` was not linked or called.
-- Mesh quality on realistic geometry. The current-loop example is a toy: one
-  rectangle in air. Nothing here says how Netgen compares to Gmsh on actual
-  winding geometry, which is where meshing robustness would actually be decided.
+3D cases this project needs.
 
 ## Related
 

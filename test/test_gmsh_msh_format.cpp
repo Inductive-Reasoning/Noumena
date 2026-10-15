@@ -177,6 +177,32 @@ TEST_CASE("Owned mesh loading normalizes boundary directions", "[gmsh][msh][inpu
 	REQUIRE(mesh->GetNBE() == 1);
 }
 
+// A vertex order of the opposite handedness is a convention, not damage:
+// Netgen writes every tetrahedron that way. The loader reorients such elements
+// as MFEM's own constructors do, and the attributes are untouched.
+TEST_CASE("Owned mesh loading reorients inverted simplices", "[gmsh][msh][input][mesh_loader]") {
+	SECTION("triangle") {
+		std::istringstream input(
+			"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n"
+			"$Nodes\n3\n1 0 0 0\n2 1 0 0\n3 0 1 0\n$EndNodes\n"
+			"$Elements\n1\n1 2 2 7 7 1 3 2\n$EndElements\n");
+		const auto mesh = mesh_io::LoadMesh(input);
+		REQUIRE(mesh->CheckElementOrientation(false) == 0);
+		REQUIRE(mesh->GetAttribute(0) == 7);
+	}
+	SECTION("tetrahedron") {
+		std::istringstream input(
+			"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n"
+			"$Nodes\n4\n1 0 0 0\n2 1 0 0\n3 0 1 0\n4 0 0 1\n$EndNodes\n"
+			"$Elements\n2\n1 2 2 3 3 1 2 3\n2 4 2 5 5 1 3 2 4\n$EndElements\n");
+		const auto mesh = mesh_io::LoadMesh(input);
+		REQUIRE(mesh->CheckElementOrientation(false) == 0);
+		REQUIRE(mesh->GetAttribute(0) == 5);
+		REQUIRE(mesh->GetNBE() == 1);
+		REQUIRE(mesh->GetBdrAttribute(0) == 3);
+	}
+}
+
 TEST_CASE("Owned mesh loading releases failed parses", "[msh][input][mesh_loader]") {
 	std::string text;
 	SECTION("unknown format") {
@@ -192,10 +218,11 @@ TEST_CASE("Owned mesh loading releases failed parses", "[msh][input][mesh_loader
 			"$Nodes\n4\n1 0 0 0\n2 1 0 0\n3 1 1 0\n4 0 1 0\n$EndNodes\n"
 			"$Elements\n2\n1 2 2 7 7 1 2 3\n2 2 2 0 12 1 3 4\n$EndElements\n";
 	}
-	SECTION("inverted domain element") {
+	SECTION("inverted hexahedron, which MFEM cannot reorient") {
 		text = "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n"
-			"$Nodes\n3\n1 0 0 0\n2 1 0 0\n3 0 1 0\n$EndNodes\n"
-			"$Elements\n1\n1 2 2 7 7 1 3 2\n$EndElements\n";
+			"$Nodes\n8\n1 0 0 0\n2 1 0 0\n3 1 1 0\n4 0 1 0\n"
+			"5 0 0 1\n6 1 0 1\n7 1 1 1\n8 0 1 1\n$EndNodes\n"
+			"$Elements\n1\n1 5 2 1 1 5 6 7 8 1 2 3 4\n$EndElements\n";
 	}
 	for (int attempt = 0; attempt < 3; ++attempt) {
 		std::istringstream input(text);

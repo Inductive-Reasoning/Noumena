@@ -72,6 +72,14 @@ public:
 		}
 	}
 
+    // Relative mesh paths resolve against the directory holding the config file.
+    [[nodiscard]] std::string GetMeshPath() const {
+        const std::string mesh = Get(Sim(), "mesh", std::string{});
+        if (mesh.empty()) return "default.msh";
+        const fs::path p(mesh);
+        return p.is_absolute() ? p.string() : (fs::path(config_dir) / p).string();
+    }
+
 private:
 	const ProblemConfig BuildProblemConfig() const {
 		ProblemConfig prob_config;
@@ -364,14 +372,6 @@ private:
         return ParseEnum(Sim(), "linear_solver", fallback,
                          {{"iterative", ::LinearSolverType::Iterative},
                           {"direct",    ::LinearSolverType::Direct}});
-    }
-
-    // Relative mesh paths resolve against the directory holding the config file.
-    [[nodiscard]] std::string GetMeshPath() const {
-        const std::string mesh = Get(Sim(), "mesh", std::string{});
-        if (mesh.empty()) return "default.msh";
-        const fs::path p(mesh);
-        return p.is_absolute() ? p.string() : (fs::path(config_dir) / p).string();
     }
 
 	std::unordered_map<std::string, EntityGroup> GetEntityGroups() const {

@@ -214,6 +214,7 @@ private:
                         "dimension (1 = curve, 2 = surface, 3 = volume)");
             }
             CheckFieldType(group, "attribute_ids", prefix + ".attribute_ids", ExpectedType::Array);
+            CheckFieldType(group, "attribute_set", prefix + ".attribute_set", ExpectedType::String);
             if (group.contains("attribute_ids") && group["attribute_ids"].is_array()) {
                 for (size_t i = 0; i < group["attribute_ids"].size(); ++i) {
                     if (!group["attribute_ids"][i].is_number_integer()) {
@@ -586,8 +587,20 @@ private:
                 else             domain_group_names_.insert(name);
             }
 
-            if (!g.contains("attribute_ids")) {
-                AddError(prefix + ".attribute_ids", "Missing required field 'attribute_ids'");
+            // "attribute_set" names the ids instead; ResolveAttributeSets()
+            // replaces it with them once the mesh is loaded, so a group still
+            // carrying one is checked here only for its form.
+            if (g.contains("attribute_set")) {
+                if (g.contains("attribute_ids")) {
+                    AddError(prefix, "Give either 'attribute_ids' or 'attribute_set', not both");
+                } else if (!g["attribute_set"].is_string()) {
+                    AddError(prefix + ".attribute_set", "Must be the name of a mesh attribute set");
+                } else if (mesh) {
+                    AddError(prefix + ".attribute_set", "Not resolved against the mesh");
+                }
+            } else if (!g.contains("attribute_ids")) {
+                AddError(prefix + ".attribute_ids", "Missing required field: give 'attribute_ids' "
+                        "or 'attribute_set'");
             } else if (!g["attribute_ids"].is_array()) {
                 AddError(prefix + ".attribute_ids", "Attribute ids must be an array");
             } else {
