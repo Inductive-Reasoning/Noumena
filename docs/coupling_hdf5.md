@@ -34,14 +34,17 @@ For non-MFEM readers, `/mesh/vertices` is a double array `[vertex, component]`.
   tetrahedron 4, cube 5, prism 6, pyramid 7).
 
 Mesh attributes are `dimension`, `space_dimension`, and `coordinate_units = "m"`.
-Corner connectivity alone is not a high-order geometry description. A curved
-mesh (for example one read from a second-order Gmsh file) also has
-`/mesh/nodes`, laid out like a field group: `kind = "geometry"` and a `values`
-dataset holding the node coordinates as a `space_dimension`-component field,
-with the same attributes as field values (including `space`, below). The
-element's geometry is then `x(xi) = sum_k nodes[dof_k] * phi_k(xi)`, the same
-expansion used for fields. `/mesh/nodes` is absent for straight-sided meshes,
-whose elements are the affine maps of their corner vertices.
+Corner connectivity alone is not a high-order geometry description. A mesh
+that carries nodal geometry (`mfem::Mesh::GetNodes()` is set, as for a curved
+mesh read from a second-order Gmsh file) also has `/mesh/nodes`, laid out like
+a field group: `kind = "geometry"` and a `values` dataset holding the node
+coordinates as a `space_dimension`-component field, with the same attributes
+as field values (including `space`, below). The element's geometry is then
+`x(xi) = sum_k nodes[dof_k] * phi_k(xi)`, the same expansion used for fields.
+Such a mesh may still be straight-sided; read `/mesh/nodes` whenever it is
+present. When it is absent, each element is mapped by its geometry's
+first-order shape functions on its corner vertices: affine for triangles and
+tetrahedra, bilinear for quadrilaterals, trilinear for hexahedra.
 
 ### Scenario fields
 
