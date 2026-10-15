@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <iomanip>
 #include <limits>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -42,6 +44,11 @@ public:
 		coordinates.write_raw(vertices.data());
 		WriteElements(mesh_group.createGroup("elements"), false);
 		WriteElements(mesh_group.createGroup("boundary"), true);
+		// A curved (high-order) mesh carries its geometry as a nodal GridFunction;
+		// export it like a field so readers can map reference points to space.
+		if (const mfem::GridFunction* nodes = mesh.GetNodes()) {
+			WriteField(mesh_group, "nodes", "geometry", *nodes);
+		}
 		file_.flush();
 	}
 
@@ -102,6 +109,7 @@ private:
 	HighFive::File file_;
 	mfem::Mesh& mesh_;
 	int order_;
+	std::set<std::string> undescribed_spaces_;
 
 	static HighFive::File Open(const std::filesystem::path& path) {
 		if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
@@ -143,7 +151,7 @@ private:
 		}
 	}
 
-	static void WriteField(HighFive::Group parent, const std::string& name,
+	void WriteField(HighFive::Group parent, const std::string& name,
 		const std::string& kind, const mfem::GridFunction& field) {
 		std::vector<double> values(field.Size());
 		for (int index = 0; index < field.Size(); ++index) values[index] = field(index);
@@ -154,5 +162,63 @@ private:
 		dataset.createAttribute("finite_element_collection", std::string(space->FEColl()->Name()));
 		dataset.createAttribute("vector_dimension", space->GetVDim());
 		dataset.createAttribute("ordering", static_cast<int>(space->GetOrdering()));
+		const std::string space_path = WriteSpace(*space);
+		if (!space_path.empty()) dataset.createAttribute("space", space_path);
+	}
+
+	// Describes a field's scalar FE space for readers without MFEM: which scalar
+	// DOFs each element uses, in element-local order, and where those local DOFs
+	// sit on the reference element. Spaces depend only on the collection and the
+	// mesh, so each is written once per archive and shared by every scenario.
+	// Returns the space's path, or an empty string when a DOF list cannot describe
+	// it: high-order Nedelec spaces on tetrahedra need a DOF transformation, which
+	// is not exported, so those fields are readable only through /mesh/mfem.
+	std::string WriteSpace(const mfem::FiniteElementSpace& space) {
+		const std::string collection = space.FEColl()->Name();
+		const std::string path = "/spaces/" + collection;
+		if (file_.exist("spaces") && file_.getGroup("spaces").exist(collection)) return path;
+		if (undescribed_spaces_.count(collection)) return {};
+
+		std::vector<int> offsets{0}, dofs;
+		std::map<int, const mfem::FiniteElement*> reference;
+		mfem::Array<int> element_dofs;
+		mfem::DofTransformation transformation;
+		for (int element = 0; element < mesh_.GetNE(); ++element) {
+			space.GetElementDofs(element, element_dofs, transformation);
+			if (!transformation.IsIdentity()) {
+				undescribed_spaces_.insert(collection);
+				return {};
+			}
+			dofs.insert(dofs.end(), element_dofs.begin(), element_dofs.end());
+			offsets.push_back(static_cast<int>(dofs.size()));
+			reference.emplace(static_cast<int>(mesh_.GetElementGeometry(element)), space.GetFE(element));
+		}
+
+		if (!file_.exist("spaces")) file_.createGroup("spaces");
+		auto group = file_.getGroup("spaces").createGroup(collection);
+		group.createAttribute("ndofs", space.GetNDofs());
+		group.createDataSet("element_dof_offsets", offsets);
+		group.createDataSet("element_dofs", dofs);
+		auto nodes_group = group.createGroup("reference_nodes");
+		for (const auto& [geometry, element] : reference) {
+			// Only nodal, value-mapped elements have DOFs that are point values; a
+			// reader cannot interpret any other basis from node positions alone.
+			const auto* nodal = dynamic_cast<const mfem::NodalFiniteElement*>(element);
+			if (!nodal || element->GetMapType() != mfem::FiniteElement::VALUE) continue;
+			const mfem::IntegrationRule& nodes = element->GetNodes();
+			const int dim = element->GetDim();
+			std::vector<double> coordinates;
+			for (int node = 0; node < nodes.GetNPoints(); ++node) {
+				const mfem::IntegrationPoint& point = nodes.IntPoint(node);
+				coordinates.push_back(point.x);
+				if (dim > 1) coordinates.push_back(point.y);
+				if (dim > 2) coordinates.push_back(point.z);
+			}
+			auto dataset = nodes_group.createDataSet<double>(std::to_string(geometry), HighFive::DataSpace(
+				{static_cast<std::size_t>(nodes.GetNPoints()), static_cast<std::size_t>(dim)}));
+			dataset.write_raw(coordinates.data());
+			dataset.createAttribute("order", element->GetOrder());
+		}
+		return path;
 	}
 };
