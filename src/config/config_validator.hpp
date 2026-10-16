@@ -535,18 +535,15 @@ private:
         const int max_bdr = mesh && mesh->bdr_attributes.Size() ? mesh->bdr_attributes.Max() : 0;
 
         // The role of a group (boundary vs. domain) is derived by comparing its
-        // entity dimension to the mesh dimension, so a reference dimension is
-        // needed before any group can be classified. With a mesh loaded that is
-        // simply its dimension. Without one, the highest dimension any group
-        // declares is used: domain groups carry the mesh's own dimension, so the
-        // maximum over all groups equals it in any well-formed file.
-        int mesh_dim = mesh ? mesh->Dimension() : 0;
-        if (!mesh) {
-            for (const auto& g : groups) {
-                if (g.contains("dim") && g["dim"].is_number_integer()) {
-                    mesh_dim = std::max(mesh_dim, g["dim"].get<int>());
-                }
-            }
+        // entity dimension to the mesh dimension. With a mesh loaded that is
+        // its dimension; without one it follows from geometry_type (3 for
+        // "3d", otherwise 2, the planar default). It cannot be inferred from
+        // the groups declared here: when the domains come from the mesh's own
+        // names, the section may declare only boundary groups.
+        int mesh_dim = mesh ? mesh->Dimension() : 2;
+        if (!mesh && config.contains("simulation") && config["simulation"].is_object() &&
+            config["simulation"].value("geometry_type", json("planar")) == json("3d")) {
+            mesh_dim = 3;
         }
 
         for (size_t i = 0; i < groups.size(); ++i) {

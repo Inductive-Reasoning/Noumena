@@ -346,3 +346,76 @@ TEST_CASE("The validator defers unknown group references until the mesh is known
 	numeric["entity_groups"][0]["entity_groups"] = {3};
 	REQUIRE_THAT(errors(numeric, nullptr), Catch::Matchers::ContainsSubstring("array of entity group names"));
 }
+
+// A name the mesh gives both a domain and a boundary, referenced in both
+// roles, becomes two groups; the boundary references are rewritten to the
+// second one's name.
+TEST_CASE("A mesh name that is both a domain and a boundary resolves per role",
+		  "[config][names]") {
+	const auto mesh = Load(
+		"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n"
+		"$PhysicalNames\n2\n1 3 \"coil\"\n2 7 \"coil\"\n$EndPhysicalNames\n"
+		"$Nodes\n3\n1 0 0 0\n2 1 0 0\n3 0 1 0\n$EndNodes\n"
+		"$Elements\n2\n1 1 2 3 3 1 2\n2 2 2 7 7 1 2 3\n$EndElements\n");
+	json config = {
+		{"regions", json::array({{{"entity_group", "coil"}}})},
+		{"boundary_conditions", json::array({{{"entity_group", "coil"}}})}};
+	ResolveEntityGroups(config, *mesh);
+	REQUIRE(config["regions"][0]["entity_group"] == "coil");
+	REQUIRE(config["boundary_conditions"][0]["entity_group"] == "coil (boundary)");
+	std::map<std::string, json> groups;
+	for (const auto& g : config["entity_groups"]) { groups[g["name"]] = g; }
+	REQUIRE(groups.at("coil") == json({{"name", "coil"}, {"dim", 2}, {"attribute_ids", {7}}}));
+	REQUIRE(groups.at("coil (boundary)") ==
+		json({{"name", "coil (boundary)"}, {"dim", 1}, {"attribute_ids", {3}}}));
+}
+
+// The electrodes and cut of a 3D current terminal's direction name boundary
+// groups, which may be the mesh's own.
+TEST_CASE("Terminal direction references resolve to mesh boundary groups",
+		  "[config][names]") {
+	const auto mesh = Load(kVolTet);
+	json config = {{"terminals", json::array({
+		{{"name", "A"}, {"quantity", "current"}, {"entity_group", "iron"},
+		 {"direction", {{"type", "electrodes"}, {"input", "base"}, {"output", "side"}}}},
+		{{"name", "B"}, {"quantity", "current"}, {"entity_group", "iron"},
+		 {"direction", {{"type", "cut"}, {"cut", "base"}, {"normal", {0, 0, 1}}}}}})}};
+	ResolveEntityGroups(config, *mesh);
+	std::map<std::string, json> groups;
+	for (const auto& g : config["entity_groups"]) { groups[g["name"]] = g; }
+	REQUIRE(groups.size() == 3);
+	REQUIRE(groups.at("iron")["dim"] == 3);
+	REQUIRE(groups.at("base") == json({{"name", "base"}, {"dim", 2}, {"attribute_ids", {1}}}));
+	REQUIRE(groups.at("side")["attribute_ids"] == json::array({2}));
+}
+
+// Before the mesh is loaded, a group's role follows from geometry_type, so a
+// configuration whose domains all come from the mesh may declare only a
+// boundary group and reference it.
+TEST_CASE("The validator classifies groups by geometry_type before the mesh loads",
+		  "[config][validator][names]") {
+	auto boundary_errors = [](const json& config) {
+		ConfigValidator validator;
+		validator.Validate(config);
+		std::string all;
+		for (const auto& e : validator.GetErrors()) {
+			if (e.field.rfind("boundary_conditions", 0) == 0 || e.field.rfind("entity_groups", 0) == 0) {
+				all += e.field + ": " + e.message + "\n";
+			}
+		}
+		return all;
+	};
+	json config = {
+		{"simulation", {{"physics_type", "electrostatics"}}},
+		{"entity_groups", json::array({{{"name", "Walls"}, {"dim", 1}, {"entity_groups", {"rail", "right side"}}}})},
+		{"boundary_conditions", json::array({{{"name", "Ground"}, {"entity_group", "Walls"},
+											  {"type", "dirichlet"}, {"value", 0.0}}})}};
+	REQUIRE(boundary_errors(config).empty());
+
+	config["simulation"]["geometry_type"] = "3d";
+	config["entity_groups"][0]["dim"] = 2;
+	REQUIRE(boundary_errors(config).empty());
+
+	config["entity_groups"][0]["dim"] = 1;
+	REQUIRE_THAT(boundary_errors(config), Catch::Matchers::ContainsSubstring("must be a boundary group"));
+}

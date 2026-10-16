@@ -255,7 +255,8 @@ Array of objects. An entity group is a named set of mesh attributes. A mesh
 file may define entity groups itself -- Gmsh `$PhysicalNames`, Netgen `.vol`
 material and boundary names, MFEM v1.3 `attribute_sets` (see
 [Mesh formats](mesh_formats.md)) -- and this section defines more. The
-`entity_group` of a region, terminal, boundary condition or probe may name a
+`entity_group` of a region, terminal, boundary condition or probe, and the
+`input`/`output` or `cut` of a 3D current terminal's `direction`, may name a
 group from either source.
 
 | Key | Type | Required | Meaning |
@@ -279,7 +280,9 @@ directly.
 Names are resolved when the mesh is loaded. A reference looks among domain
 groups when it needs a domain (a region, a current terminal, a probe) and among
 boundary groups when it needs a boundary (a boundary condition, a voltage
-terminal). It is an error for a name to be defined nowhere (the message lists
+terminal, a direction). A mesh may give one name to both a domain and a
+boundary; referenced in both roles, the boundary group is called
+`<name> (boundary)` in messages. It is an error for a name to be defined nowhere (the message lists
 the groups that exist), for a group here to reuse a mesh group's name with
 different attributes, and for groups to include each other in a cycle. So a
 configuration cannot silently select nothing on a mesh that carries no names.

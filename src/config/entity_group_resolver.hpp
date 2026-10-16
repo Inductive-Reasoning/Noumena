@@ -26,17 +26,21 @@
  *   {"name": "Coil",  "dim": 2, "attribute_ids": [7, 8]}
  *   {"name": "Walls", "dim": 2, "entity_groups": ["outer", "symmetry"]}
  *
- * The "entity_group" of a region, terminal, boundary condition or probe may
- * name a group from either source. A domain reference (a region, a current
- * terminal, a probe) looks among domain groups, a boundary reference (a
- * boundary condition, a voltage terminal) among boundary groups.
+ * The "entity_group" of a region, terminal, boundary condition or probe, and
+ * the electrodes or cut of a 3D current terminal's direction, may name a group
+ * from either source. A domain reference (a region, a current terminal, a
+ * probe) looks among domain groups, a boundary reference (a boundary
+ * condition, a voltage terminal, a direction) among boundary groups.
  *
  * ResolveEntityGroups() rewrites the configuration so that every group a
  * reference names is a config group with explicit "attribute_ids":
  *   - each config group's "entity_groups" is replaced by the union of their
  *     ids (merged with its own "attribute_ids");
  *   - each reference to a mesh-defined group adds that group to
- *     "entity_groups" with the mesh's ids.
+ *     "entity_groups" with the mesh's ids. A name the mesh gives both a
+ *     domain and a boundary, referenced in both roles, becomes two groups:
+ *     the boundary one is named "<name> (boundary)" and its references are
+ *     rewritten to it.
  * Downstream code then sees only attribute ids. It is an error for a name to
  * be defined nowhere, for a config group to reuse a mesh group's name with
  * different ids, and for groups to include each other in a cycle.
@@ -61,18 +65,40 @@ public:
 		for (const auto& [name, group] : config_groups_) { Ids(name); }
 		for (const auto& [name, group] : config_groups_) { CheckNoShadowing(name, *group); }
 
+		// A mesh keeps domain and boundary names apart, so one name may be
+		// both. Each (name, role) a reference needs becomes one group; when a
+		// name is needed in both roles, the boundary group gets a distinct
+		// name and its references are rewritten to it.
+		const std::vector<Reference> refs = References();
+		std::map<std::string, std::set<bool>> roles;
+		for (const auto& ref : refs) {
+			if (!config_groups_.count(ref.name)) { roles[ref.name].insert(ref.boundary); }
+		}
 		std::vector<json> added;
-		std::set<std::string> added_names;
-		for (const auto& [name, boundary] : References()) {
-			if (config_groups_.count(name) || added_names.count(name)) { continue; }
-			const mfem::AttributeSets& sets = Sets(boundary);
-			if (!sets.AttributeSetExists(name)) {
-				throw std::runtime_error("Unknown entity group '" + name + "': not defined in "
-					"'entity_groups' and not named by the mesh. " + Known(boundary));
+		std::map<std::pair<std::string, bool>, std::string> materialized;
+		for (const auto& ref : refs) {
+			if (config_groups_.count(ref.name)) { continue; }
+			const auto key = std::make_pair(ref.name, ref.boundary);
+			if (!materialized.count(key)) {
+				const mfem::AttributeSets& sets = Sets(ref.boundary);
+				if (!sets.AttributeSetExists(ref.name)) {
+					throw std::runtime_error("Unknown entity group '" + ref.name + "': not defined in "
+						"'entity_groups' and not named by the mesh. " + Known(ref.boundary));
+				}
+				std::string name = ref.name;
+				if (ref.boundary && roles[ref.name].count(false)) {
+					name += " (boundary)";
+					if (config_groups_.count(name)) {
+						throw std::runtime_error("The mesh names both a domain and a boundary '" +
+							ref.name + "', and the boundary group's name '" + name +
+							"' is taken by a configuration group; rename that group");
+					}
+				}
+				added.push_back({{"name", name}, {"dim", Dim(ref.boundary)},
+								 {"attribute_ids", Sorted(sets.GetAttributeSet(ref.name))}});
+				materialized[key] = name;
 			}
-			added.push_back({{"name", name}, {"dim", Dim(boundary)},
-							 {"attribute_ids", Sorted(sets.GetAttributeSet(name))}});
-			added_names.insert(name);
+			*ref.node = materialized[key];
 		}
 		if (!added.empty() && !config_.contains("entity_groups")) {
 			config_["entity_groups"] = json::array();
@@ -173,27 +199,40 @@ private:
 		}
 	}
 
-	// Every group reference, with whether it needs a boundary group.
-	std::vector<std::pair<std::string, bool>> References() const {
-		std::vector<std::pair<std::string, bool>> refs;
-		auto collect = [&](const char* section, auto needs_boundary) {
-			if (!config_.contains(section) || !config_[section].is_array()) { return; }
-			for (const auto& item : config_[section]) {
-				if (item.is_object() && item.contains("entity_group") && item["entity_group"].is_string()) {
-					refs.emplace_back(item["entity_group"].get<std::string>(), needs_boundary(item));
-				}
+	// A group reference: the JSON string naming the group, and whether the
+	// referring setting needs a boundary group.
+	struct Reference {
+		json* node;
+		std::string name;
+		bool boundary;
+	};
+
+	// Every group reference in the configuration: regions, boundary
+	// conditions, terminals and their 3D current directions, and probes.
+	std::vector<Reference> References() {
+		std::vector<Reference> refs;
+		auto add = [&](json& item, const char* key, bool boundary) {
+			if (item.is_object() && item.contains(key) && item[key].is_string()) {
+				refs.push_back({&item[key], item[key].get<std::string>(), boundary});
 			}
 		};
-		collect("regions", [](const json&) { return false; });
-		collect("boundary_conditions", [](const json&) { return true; });
-		collect("terminals", [](const json& t) { return t.value("quantity", "voltage") != "current"; });
-		if (config_.contains("output") && config_["output"].is_object() &&
-			config_["output"].contains("probes") && config_["output"]["probes"].is_array()) {
-			for (const auto& probe : config_["output"]["probes"]) {
-				if (probe.is_object() && probe.contains("entity_group") && probe["entity_group"].is_string()) {
-					refs.emplace_back(probe["entity_group"].get<std::string>(), false);
-				}
+		auto each = [&](json& parent, const char* section, auto visit) {
+			if (parent.is_object() && parent.contains(section) && parent[section].is_array()) {
+				for (auto& item : parent[section]) { visit(item); }
 			}
+		};
+		each(config_, "regions", [&](json& r) { add(r, "entity_group", false); });
+		each(config_, "boundary_conditions", [&](json& bc) { add(bc, "entity_group", true); });
+		each(config_, "terminals", [&](json& t) {
+			if (!t.is_object()) { return; }
+			add(t, "entity_group", t.value("quantity", "voltage") != "current");
+			if (t.contains("direction")) {
+				// Electrodes and cuts name boundary groups.
+				for (const char* key : {"input", "output", "cut"}) { add(t["direction"], key, true); }
+			}
+		});
+		if (config_.contains("output")) {
+			each(config_["output"], "probes", [&](json& p) { add(p, "entity_group", false); });
 		}
 		return refs;
 	}
