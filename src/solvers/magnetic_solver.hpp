@@ -90,7 +90,7 @@ protected:
 		for (const auto& [name, term] : config.Terminals) {
 			if (term.Conductor != ConductorType::Stranded) continue;
 			bool conducts = false;
-			for (int attr : config.EntityGroups.at(term.EntityGroupName).AttributeIds) {
+			for (int attr : config.DomainGroup(term.EntityGroupName).AttributeIds) {
 				if (attr < 1 || attr > sigma_coeff->GetNConst()) continue;
 				conducts |= (*sigma_coeff)(attr) > 0.0;
 				(*sigma_coeff)(attr) = 0.0;
@@ -155,12 +155,12 @@ protected:
 	std::map<std::string, std::set<int>> ConductingGroups() const {
 		std::map<int, std::string> owner;
 		for (const Region& region : config.Regions) {
-			const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
+			const EntityGroup& group = config.DomainGroup(region.EntityGroupName);
 			for (int attr : group.AttributeIds) { owner[attr] = region.EntityGroupName; }
 		}
 		for (const auto& [name, term] : config.Terminals) {
 			if (term.Conductor != ConductorType::Massive) continue;
-			const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+			const EntityGroup& group = config.DomainGroup(term.EntityGroupName);
 			for (int attr : group.AttributeIds) { owner[attr] = name; }
 		}
 
@@ -454,7 +454,7 @@ protected:
 	mfem::Vector BuildTerminalCurrentDensity(
 		const std::string& terminal_name, double current) const {
 		const Terminal& term = config.Terminals.at(terminal_name);
-		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+		const EntityGroup& group = config.DomainGroup(term.EntityGroupName);
 		return AttributeVector(group.AttributeIds,
 							   term.Turns * current / TerminalArea(terminal_name));
 	}
@@ -483,7 +483,7 @@ private:
 		if (cached != terminal_areas.end()) { return cached->second; }
 		const Terminal& term = config.Terminals.at(terminal_name);
 		const double area = CalculateRegionMeasure(
-			config.EntityGroups.at(term.EntityGroupName).AttributeIds);
+			config.DomainGroup(term.EntityGroupName).AttributeIds);
 		MFEM_VERIFY(area > 0.0,
 			"Current terminal '" + terminal_name + "' has zero cross-section.");
 		return terminal_areas.emplace(terminal_name, area).first->second;

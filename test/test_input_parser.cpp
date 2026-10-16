@@ -86,11 +86,11 @@ TEST_CASE("InputParser decodes the canonical schema", "[input_parser]") {
     REQUIRE(config.Amr.ErrorFraction == Catch::Approx(0.6));
     REQUIRE(config.Amr.ErrorTolerance == Catch::Approx(1e-5));
 
-    REQUIRE(config.EntityGroups.at("Conductor").Dim == 2);
-    REQUIRE(config.EntityGroups.at("Conductor").IsDomain(2));
-    REQUIRE((config.EntityGroups.at("Conductor").AttributeIds == std::vector<int>{1, 2}));
-    REQUIRE(config.EntityGroups.at("FarField").Dim == 1);
-    REQUIRE(config.EntityGroups.at("FarField").IsBoundary(2));
+    REQUIRE(config.DomainGroup("Conductor").Dim == 2);
+    REQUIRE(config.DomainGroup("Conductor").IsDomain(2));
+    REQUIRE((config.DomainGroup("Conductor").AttributeIds == std::vector<int>{1, 2}));
+    REQUIRE(config.BoundaryGroup("FarField").Dim == 1);
+    REQUIRE(config.BoundaryGroup("FarField").IsBoundary(2));
     REQUIRE(config.Regions[0].CurrentConstraint == RegionCurrentConstraint::Open);
     REQUIRE(config.Regions.size() == 1);
     REQUIRE(config.Regions[0].EntityGroupName == "Conductor");

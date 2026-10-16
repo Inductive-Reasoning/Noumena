@@ -261,7 +261,7 @@ TEST_CASE("References may name the mesh's own entity groups", "[config][names]")
 	SECTION("a name defined nowhere is an error listing the known groups") {
 		json bad = {{"boundary_conditions", json::array({{{"entity_group", "rial"}}})}};
 		REQUIRE_THROWS_WITH(ResolveEntityGroups(bad, *mesh),
-			Catch::Matchers::ContainsSubstring("Unknown entity group 'rial'") &&
+			Catch::Matchers::ContainsSubstring("Unknown boundary entity group 'rial'") &&
 			Catch::Matchers::ContainsSubstring("'rail', 'right side'"));
 	}
 	SECTION("a domain reference looks only among domain groups") {
@@ -297,10 +297,10 @@ TEST_CASE("Config entity groups combine ids and other groups", "[config][names]"
 		REQUIRE_THROWS_WITH(ResolveEntityGroups(config, *mesh),
 			Catch::Matchers::ContainsSubstring("includes itself"));
 	}
-	SECTION("a member of another dim is an error") {
+	SECTION("members are looked up in the group's own dim") {
 		config["entity_groups"].push_back({{"name", "Coils"}, {"dim", 2}, {"entity_groups", {"Walls"}}});
 		REQUIRE_THROWS_WITH(ResolveEntityGroups(config, *mesh),
-			Catch::Matchers::ContainsSubstring("of a different dim"));
+			Catch::Matchers::ContainsSubstring("includes unknown entity group 'Walls' of its dim"));
 	}
 	SECTION("a config group may not redefine a mesh group's name") {
 		config["entity_groups"][2]["name"] = "rail";
@@ -336,7 +336,7 @@ TEST_CASE("The validator defers unknown group references until the mesh is known
 	json resolved = config;
 	ResolveEntityGroups(resolved, *mesh);
 	REQUIRE(errors(resolved, mesh.get()).empty());
-	REQUIRE_THAT(errors(config, mesh.get()), Catch::Matchers::ContainsSubstring("Unknown entity group 'rail'"));
+	REQUIRE_THAT(errors(config, mesh.get()), Catch::Matchers::ContainsSubstring("Unknown boundary entity group 'rail'"));
 
 	json neither = config;
 	neither["entity_groups"][0].erase("entity_groups");
@@ -347,10 +347,9 @@ TEST_CASE("The validator defers unknown group references until the mesh is known
 	REQUIRE_THAT(errors(numeric, nullptr), Catch::Matchers::ContainsSubstring("array of entity group names"));
 }
 
-// A name the mesh gives both a domain and a boundary, referenced in both
-// roles, becomes two groups; the boundary references are rewritten to the
-// second one's name.
-TEST_CASE("A mesh name that is both a domain and a boundary resolves per role",
+// A group is identified by name and dim, so a name the mesh gives both a
+// domain and a boundary is two groups, each found by the role referring to it.
+TEST_CASE("A mesh name that is both a domain and a boundary is two groups",
 		  "[config][names]") {
 	const auto mesh = Load(
 		"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n"
@@ -361,13 +360,20 @@ TEST_CASE("A mesh name that is both a domain and a boundary resolves per role",
 		{"regions", json::array({{{"entity_group", "coil"}}})},
 		{"boundary_conditions", json::array({{{"entity_group", "coil"}}})}};
 	ResolveEntityGroups(config, *mesh);
-	REQUIRE(config["regions"][0]["entity_group"] == "coil");
-	REQUIRE(config["boundary_conditions"][0]["entity_group"] == "coil (boundary)");
-	std::map<std::string, json> groups;
-	for (const auto& g : config["entity_groups"]) { groups[g["name"]] = g; }
-	REQUIRE(groups.at("coil") == json({{"name", "coil"}, {"dim", 2}, {"attribute_ids", {7}}}));
-	REQUIRE(groups.at("coil (boundary)") ==
-		json({{"name", "coil (boundary)"}, {"dim", 1}, {"attribute_ids", {3}}}));
+	REQUIRE(config["boundary_conditions"][0]["entity_group"] == "coil");
+	std::map<int, json> by_dim;
+	for (const auto& g : config["entity_groups"]) { by_dim[g["dim"]] = g; }
+	REQUIRE(by_dim.size() == 2);
+	REQUIRE(by_dim.at(2) == json({{"name", "coil"}, {"dim", 2}, {"attribute_ids", {7}}}));
+	REQUIRE(by_dim.at(1) == json({{"name", "coil"}, {"dim", 1}, {"attribute_ids", {3}}}));
+
+	ConfigValidator validator;
+	validator.Validate(config, mesh.get());
+	for (const auto& e : validator.GetErrors()) {
+		INFO(e.field << ": " << e.message);
+		CHECK(e.field.rfind("entity_groups", 0) != 0);
+		CHECK(e.field.find(".entity_group") == std::string::npos);
+	}
 }
 
 // The electrodes and cut of a 3D current terminal's direction name boundary
@@ -417,5 +423,5 @@ TEST_CASE("The validator classifies groups by geometry_type before the mesh load
 	REQUIRE(boundary_errors(config).empty());
 
 	config["entity_groups"][0]["dim"] = 1;
-	REQUIRE_THAT(boundary_errors(config), Catch::Matchers::ContainsSubstring("must be a boundary group"));
+	REQUIRE_THAT(boundary_errors(config), Catch::Matchers::ContainsSubstring("unusable in a 3D mesh"));
 }

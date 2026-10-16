@@ -98,12 +98,12 @@ class MagnetoquasistaticSolver : public MagneticSolver {
         massive_ports.reserve(config.Terminals.size() + config.Regions.size());
         for (const auto& [term_name, term] : config.Terminals) {
             if (term.Conductor != ConductorType::Massive) continue;
-            const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+            const EntityGroup& group = config.DomainGroup(term.EntityGroupName);
             massive_ports.push_back({ term_name, group.AttributeIds });
         }
         for (const Region& region : config.Regions) {
             if (region.CurrentConstraint != RegionCurrentConstraint::Open) continue;
-            const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
+            const EntityGroup& group = config.DomainGroup(region.EntityGroupName);
             massive_ports.push_back({ region.EntityGroupName, group.AttributeIds });
         }
         return massive_ports;

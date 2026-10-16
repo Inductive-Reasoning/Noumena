@@ -80,10 +80,10 @@ std::vector<std::vector<std::string>> ReadCsv(const fs::path& path) {
 	return rows;
 }
 
-std::vector<std::string> ProbeErrors(const json& probes) {
+std::vector<std::string> ProbeErrors(const json& probes, const mfem::Mesh* mesh = nullptr) {
 	ConfigValidator validator;
 	json config = LayersConfig("results", probes);
-	validator.Validate(config);
+	validator.Validate(config, mesh);
 	std::vector<std::string> fields;
 	for (const auto& error : validator.GetErrors()) {
 		if (error.field.rfind("output.probes", 0) == 0) { fields.push_back(error.field); }
@@ -111,8 +111,15 @@ TEST_CASE("Probes are validated", "[probes][config_validator]") {
 	REQUIRE(ProbeErrors(json::array({{{"name", "p"}, {"line",
 		{{"from", {0.0, 0.0}}, {"to", {1.0}}, {"count", 1}}}}})) ==
 			List{ "output.probes[0].line.to", "output.probes[0].line.count" });
-	REQUIRE(ProbeErrors(json::array({{{"name", "p"}, {"points", {{0.0, 0.0}}},
-		{"entity_group", "Bottom"}, {"spacing", 1.0}}})) ==
+	// A probe needs a domain group; "Bottom" is declared only as a boundary
+	// group. The mesh might still define a domain "Bottom", so only the pass
+	// against the mesh reports it.
+	const json bottom = json::array({{{"name", "p"}, {"points", {{0.0, 0.0}}},
+		{"entity_group", "Bottom"}, {"spacing", 1.0}}});
+	REQUIRE(ProbeErrors(bottom) == List{ "output.probes[0].spacing" });
+	const mfem::Mesh square = mfem::Mesh::MakeCartesian2D(
+		2, 2, mfem::Element::QUADRILATERAL, false, 1.0, 1.0);
+	REQUIRE(ProbeErrors(bottom, &square) ==
 			List{ "output.probes[0].spacing", "output.probes[0].entity_group" });
 }
 

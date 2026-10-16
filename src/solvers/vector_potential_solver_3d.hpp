@@ -288,7 +288,7 @@ private:
 		c.Type = term.Conductor;
 		c.Turns = term.Turns;
 		c.Direction = term.Direction->Type;
-		const EntityGroup& group = config.EntityGroups.at(term.EntityGroupName);
+		const EntityGroup& group = config.DomainGroup(term.EntityGroupName);
 		c.Marker = DomainMarkerFromAttrs(group.AttributeIds, "terminal '" + name + "'");
 		if (c.Type == ConductorType::Massive) {
 			ValidateMassiveConductivity(name, group.AttributeIds);

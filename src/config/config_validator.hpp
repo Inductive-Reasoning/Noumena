@@ -34,13 +34,17 @@ public:
 private:
     std::vector<ValidationError> errors;
 
-    // Entity group names declared in the "entity_groups" section, split by the
-    // dimensionality the InputParser assigns (dim == 1 => boundary, otherwise
-    // domain). Populated by ValidateEntityGroups and consulted when checking
-    // that regions/terminals/boundaries reference a group of the right kind.
+    // Entity group names declared in the "entity_groups" section, in all and
+    // split by role: a group is identified by (name, dim), so a domain and a
+    // boundary group may share a name. Populated by ValidateEntityGroups and
+    // consulted when checking that regions/terminals/boundaries reference a
+    // group of the role they need.
     std::set<std::string> entity_group_names_;
     std::set<std::string> boundary_group_names_;
     std::set<std::string> domain_group_names_;
+    // The mesh dimension groups are classified against (see
+    // ValidateEntityGroups).
+    int mesh_dim_ = 2;
     // Whether this pass validates against a mesh. Before the mesh is loaded a
     // reference to an undeclared group may still name a group the mesh
     // defines; ResolveEntityGroups() settles that once it is loaded.
@@ -316,27 +320,29 @@ private:
     // Which kind of entity group a reference is required to name.
     enum class RequiredGroupKind { Any, Boundary, Domain };
 
-    // Verify that an "entity_group" reference points at a declared group and,
-    // when required is not Any, that the group is of the matching kind. Mirrors
-    // how the solvers resolve EntityGroupName -> EntityGroup via
-    // config.EntityGroups.at(name).
+    // Verify that an "entity_group" reference names a group of the role it
+    // needs. A group is identified by (name, dim), and the role selects the
+    // dim, as the solvers' ProblemConfig::DomainGroup()/BoundaryGroup() do.
+    // Before the mesh is loaded a name not declared in that role may still be
+    // a group the mesh defines, so only the pass against the mesh reports it.
     void CheckEntityGroupRef(const json& node, const std::string& field, RequiredGroupKind required) {
         if (!node.is_string()) {
             AddError(field, "Entity group reference must be a string");
             return;
         }
         const std::string ref = node.get<std::string>();
-        if (entity_group_names_.find(ref) == entity_group_names_.end()) {
-            if (against_mesh_) {
-                AddError(field, "Unknown entity group '" + ref + "': not declared in "
-                        "'entity_groups' and not named by the mesh");
-            }
-            return;
-        }
-        if (required == RequiredGroupKind::Boundary && boundary_group_names_.count(ref) == 0) {
-            AddError(field, "Entity group '" + ref + "' must be a boundary group (dim one less than the mesh's)");
-        } else if (required == RequiredGroupKind::Domain && domain_group_names_.count(ref) == 0) {
-            AddError(field, "Entity group '" + ref + "' must be a domain group (dim equal to the mesh's)");
+        const std::set<std::string>& declared =
+            required == RequiredGroupKind::Boundary ? boundary_group_names_
+            : required == RequiredGroupKind::Domain ? domain_group_names_ : entity_group_names_;
+        if (declared.count(ref) || !against_mesh_) return;
+        const char* role = required == RequiredGroupKind::Boundary ? "boundary"
+                         : required == RequiredGroupKind::Domain ? "domain" : "";
+        if (entity_group_names_.count(ref)) {
+            AddError(field, "No " + std::string(role) + " entity group '" + ref +
+                    "': 'entity_groups' declares '" + ref + "' only with another dim");
+        } else {
+            AddError(field, "Unknown " + std::string(role) + (*role ? " " : "") + "entity group '" +
+                    ref + "': not declared in 'entity_groups' and not named by the mesh");
         }
     }
 
@@ -506,8 +512,7 @@ private:
             if (probe.contains("entity_group")) {
                 if (!probe["entity_group"].is_string()) {
                     AddError(prefix + ".entity_group", "Must be a string");
-                } else if (!domain_group_names_.count(probe["entity_group"].get<std::string>()) &&
-                           (against_mesh_ || entity_group_names_.count(probe["entity_group"].get<std::string>()))) {
+                } else if (against_mesh_ && !domain_group_names_.count(probe["entity_group"].get<std::string>())) {
                     AddError(prefix + ".entity_group",
                         "Must name a domain entity group (of the mesh's dimension)");
                 }
@@ -545,6 +550,8 @@ private:
             config["simulation"].value("geometry_type", json("planar")) == json("3d")) {
             mesh_dim = 3;
         }
+        mesh_dim_ = mesh_dim;
+        std::set<std::pair<std::string, int>> declared;  // (name, dim)
 
         for (size_t i = 0; i < groups.size(); ++i) {
             const auto& g = groups[i];
@@ -553,8 +560,13 @@ private:
             std::string name = g.value("name", std::string{});
             if (name.empty()) {
                 AddError(prefix + ".name", "Missing required field 'name'");
-            } else if (!entity_group_names_.insert(name).second) {
-                AddError(prefix + ".name", "Duplicate entity group name '" + name + "'");
+            } else {
+                entity_group_names_.insert(name);
+                const int dim = g.contains("dim") && g["dim"].is_number_integer() ? g["dim"].get<int>() : 0;
+                if (!declared.insert({name, dim}).second) {
+                    AddError(prefix + ".name", "Duplicate entity group '" + name + "' of dim " +
+                            std::to_string(dim));
+                }
             }
 
             // 'dim' is the topological dimension of the entities the ids name,
@@ -654,7 +666,8 @@ private:
                 return attributes;
             }
             for (const auto& group : config["entity_groups"]) {
-                if (group.value("name", std::string{}) != name) continue;
+                // Regions and current terminals name domain groups.
+                if (group.value("name", std::string{}) != name || group.value("dim", 0) != mesh_dim_) continue;
                 // A group without valid attribute_ids is reported by
                 // ValidateEntityGroups; it contributes no attributes here.
                 if (group.contains("attribute_ids") && group["attribute_ids"].is_array()) {

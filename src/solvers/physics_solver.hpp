@@ -416,14 +416,12 @@ protected:
     // which is the same outcome as omitting it. (Domain groups take the
     // opposite line -- see DomainMarkerFromAttrs.)
     mfem::Array<int> MarkerFromGroup(const std::string& group_name) const {
-        const auto entry = config.EntityGroups.find(group_name);
+        const int boundary_dim = mesh.Dimension() - 1;
+        const auto entry = config.EntityGroups.find({group_name, boundary_dim});
         MFEM_VERIFY(entry != config.EntityGroups.end(),
-            "Unknown entity group '" + group_name + "'.");
-        MFEM_VERIFY(entry->second.IsBoundary(mesh.Dimension()),
-            "Entity group '" + group_name + "' declares dim " +
-            std::to_string(entry->second.Dim) + ", but is used here as a "
-            "boundary, which for this " + std::to_string(mesh.Dimension()) +
-            "D mesh requires dim " + std::to_string(mesh.Dimension() - 1) + ".");
+            "No boundary entity group '" + group_name + "' (dim " +
+            std::to_string(boundary_dim) + " in this " + std::to_string(mesh.Dimension()) +
+            "D mesh).");
 
         const int max_bdr_attr = mesh.bdr_attributes.Size() > 0
             ? mesh.bdr_attributes.Max() : 0;
@@ -443,7 +441,7 @@ protected:
     // region, so the match here is unique and order-independent.
     const Material* MaterialForAttr(int attr) const {
         for (const auto& region : config.Regions) {
-            const EntityGroup& group = config.EntityGroups.at(region.EntityGroupName);
+            const EntityGroup& group = config.DomainGroup(region.EntityGroupName);
             if (std::find(group.AttributeIds.begin(), group.AttributeIds.end(), attr)
                 != group.AttributeIds.end())
                 return &config.Materials.at(region.MaterialName);
