@@ -1,6 +1,7 @@
 #pragma once
 
 #include <istream>
+#include <algorithm>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -13,37 +14,6 @@
 namespace mesh_io {
 
 namespace detail {
-
-// Gmsh's "$PhysicalNames" rows (`dim tag "name"`), which MFEM's Gmsh reader
-// does not read, as named attribute sets: a name of the mesh dimension names
-// domain attributes, one of a dimension less boundary attributes. The section
-// is text in binary .msh files too, and precedes the binary data.
-inline void AddGmshPhysicalNames(const std::string& text, mfem::Mesh& mesh) {
-	const auto begin = text.find("$PhysicalNames");
-	if (begin == std::string::npos) { return; }
-	std::istringstream section(text.substr(begin));
-	std::string line;
-	std::getline(section, line);
-	int n = 0;
-	section >> n;
-	std::getline(section, line);
-	for (int i = 0; i < n && std::getline(section, line); ++i) {
-		std::istringstream fields(line);
-		int dim = 0, tag = 0;
-		fields >> dim >> tag;
-		const auto open = line.find('"');
-		const auto close = line.rfind('"');
-		MFEM_VERIFY(fields && open != std::string::npos && close > open,
-			"Malformed $PhysicalNames row: " << line);
-		const std::string name = line.substr(open + 1, close - open - 1);
-		mfem::AttributeSets* sets =
-			dim == mesh.Dimension() ? &mesh.attribute_sets
-			: dim == mesh.Dimension() - 1 ? &mesh.bdr_attribute_sets : nullptr;
-		if (!sets || name.empty()) { continue; }
-		if (!sets->AttributeSetExists(name)) { sets->CreateAttributeSet(name); }
-		sets->AddToAttributeSet(name, tag);
-	}
-}
 
 class InputMesh final : public mfem::Mesh {
 public:
@@ -58,9 +28,10 @@ public:
 			Build(vol);
 		}
 		else {
+			// MFEM's readers keep the names a format carries (Gmsh
+			// $PhysicalNames, MFEM attribute_sets) as named attribute sets.
 			std::istringstream stream(text);
 			Loader(stream, 1);
-			AddGmshPhysicalNames(text, *this);
 		}
 		for (int boundary = 0; boundary < GetNBE(); ++boundary) {
 			const int face = GetBdrElementFaceIndex(boundary);
@@ -115,6 +86,7 @@ private:
 			}
 		}
 		FinalizeTopology(/*generate_bdr=*/false);
+		if (!vol.edge_nodes.empty()) { SetEdgeNodes(vol); }
 		const auto name_sets = [](mfem::AttributeSets& sets, const std::map<int, std::string>& names) {
 			for (const auto& [attribute, name] : names) {
 				if (!sets.AttributeSetExists(name)) { sets.CreateAttributeSet(name); }
@@ -123,6 +95,28 @@ private:
 		};
 		name_sets(attribute_sets, vol.domain_names);
 		name_sets(bdr_attribute_sets, vol.boundary_names);
+	}
+
+	// A second-order Netgen mesh as an order-2 curved mesh: its nodes are the
+	// vertices plus, on each edge, the node Netgen placed on the geometry. On
+	// an order-2 Lagrange edge the one interior node is the midpoint of the
+	// reference edge, so the file's node is its nodal value.
+	void SetEdgeNodes(const netgen_vol::VolMesh& vol) {
+		SetCurvature(2, /*discontinuous=*/false, Dimension(), mfem::Ordering::byVDIM);
+		mfem::GridFunction& nodes = *GetNodes();
+		const mfem::FiniteElementSpace& fes = *nodes.FESpace();
+		mfem::Array<int> vertices, dofs;
+		for (int edge = 0; edge < GetNEdges(); ++edge) {
+			GetEdgeVertices(edge, vertices);
+			const auto node = vol.edge_nodes.find(std::minmax(vertices[0], vertices[1]));
+			MFEM_VERIFY(node != vol.edge_nodes.end(), "Netgen .vol mesh: the edge between "
+				"vertices " << vertices[0] << " and " << vertices[1] << " has no second-order node");
+			fes.GetEdgeInteriorDofs(edge, dofs);
+			MFEM_VERIFY(dofs.Size() == 1, "an order-2 edge has one interior node");
+			for (int c = 0; c < Dimension(); ++c) {
+				nodes(fes.DofToVDof(dofs[0], c)) = node->second[c];
+			}
+		}
 	}
 };
 

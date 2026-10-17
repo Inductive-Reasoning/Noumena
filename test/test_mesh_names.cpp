@@ -6,9 +6,11 @@
 // Netgen 6.2's Mesh::Save writes, cut down to the sections the reader uses
 // plus the comment lines Netgen emits.
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <cmath>
 #include <map>
 #include <set>
 #include <sstream>
@@ -206,9 +208,13 @@ TEST_CASE("Netgen .vol meshes the reader cannot represent are rejected",
 		  "[mesh_loader][netgen]") {
 	std::string text = kVolTet;
 	std::string expected;
-	SECTION("second-order elements") {
-		text.replace(text.find("1 4 2 1 3 4"), 11, "1 10 2 1 3 4 1 1 1 1 1 1");
-		expected = "second-order";
+	SECTION("second-order prisms (serendipity)") {
+		text.replace(text.find("1 4 2 1 3 4"), 11, "1 12 2 1 3 4 1 1 1 1 1 1 1 1");
+		expected = "first-order pyramids, prisms and hexahedra";
+	}
+	SECTION("a mesh curved with Curve(order)") {
+		text.replace(text.find("endmesh"), 7, "curvedelements\n1 1\nendmesh");
+		expected = "call SecondOrder() instead";
 	}
 	SECTION("a vertex out of range") {
 		text.replace(text.find("1 4 2 1 3 4"), 11, "1 4 2 1 3 9");
@@ -227,6 +233,70 @@ TEST_CASE("Netgen .vol meshes the reader cannot represent are rejected",
 		expected = "older than Netgen 6.2";
 	}
 	REQUIRE_THROWS_WITH(Load(text), Catch::Matchers::ContainsSubstring(expected));
+}
+
+// One triangle whose edge from (0,0) to (1,0) has its second-order node at
+// (0.5, -0.1): a parabolic edge bulging by h = 0.1 adds 2/3 L h to the area.
+const char* kVolTrig6 = R"VOL(mesh3d
+dimension
+2
+facedescriptors
+1
+1 0 0 1 1
+surfaceelements
+1
+ 2 1 0 0 6 1 2 3 5 6 4
+edgesegmentsgi3
+0
+points
+6
+0 0 0
+1 0 0
+0 1 0
+0.5 -0.1 0
+0.5 0.5 0
+0 0.5 0
+endmesh
+)VOL";
+
+TEST_CASE("Netgen .vol second-order triangles are curved", "[mesh_loader][netgen]") {
+	const auto mesh = Load(kVolTrig6);
+	REQUIRE(mesh->GetNV() == 3);
+	REQUIRE(mesh->GetNodes() != nullptr);
+	REQUIRE(mesh->GetNodes()->FESpace()->GetMaxElementOrder() == 2);
+	REQUIRE(mesh->GetElementVolume(0) == Catch::Approx(0.5 + 2.0 / 3.0 * 0.1).epsilon(1e-12));
+
+	SECTION("a mesh mixing first- and second-order elements is rejected") {
+		std::string text = kVolTrig6;
+		text.replace(text.find("surfaceelements\n1\n"), 18, "surfaceelements\n2\n 2 1 0 0 3 2 3 5\n");
+		REQUIRE_THROWS_WITH(Load(text), Catch::Matchers::ContainsSubstring("first- or second-order throughout"));
+	}
+}
+
+// kVolTet as a second-order tetrahedron: its edge nodes are the midpoints but
+// for the edge from (0,0,0) to (1,0,0), whose node is moved to (0.5,-0.05,0).
+TEST_CASE("Netgen .vol second-order tetrahedra are curved", "[mesh_loader][netgen]") {
+	std::string text = kVolTet;
+	// Netgen's order 2 1 3 4, then the nodes on edges (2,1) (2,3) (2,4) (1,3)
+	// (1,4) (3,4) of that order.
+	text.replace(text.find("1 4 2 1 3 4"), 11, "1 10 2 1 3 4 5 6 7 8 9 10");
+	text.replace(text.find("points\n4\n"), 9, "points\n10\n");
+	text.replace(text.find("0 0 1\nmaterials"), 15,
+		"0 0 1\n0.5 -0.05 0\n0.5 0.5 0\n0.5 0 0.5\n0 0.5 0\n0 0 0.5\n0 0.5 0.5\nmaterials");
+	const auto mesh = Load(text);
+	REQUIRE(mesh->GetNV() == 4);
+	REQUIRE(mesh->GetNBE() == 4);
+	REQUIRE(mesh->CheckElementOrientation(false) == 0);
+	const mfem::GridFunction& nodes = *mesh->GetNodes();
+	const mfem::FiniteElementSpace& fes = *nodes.FESpace();
+	REQUIRE(fes.GetMaxElementOrder() == 2);
+	bool moved_node = false;
+	for (int i = 0; i < fes.GetNDofs(); ++i) {
+		const double x = nodes(fes.DofToVDof(i, 0)), y = nodes(fes.DofToVDof(i, 1)),
+					 z = nodes(fes.DofToVDof(i, 2));
+		moved_node |= std::abs(x - 0.5) < 1e-14 && std::abs(y + 0.05) < 1e-14 && std::abs(z) < 1e-14;
+	}
+	REQUIRE(moved_node);
 }
 
 TEST_CASE("Gmsh physical names become attribute sets", "[mesh_loader][msh][names]") {
