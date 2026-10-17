@@ -6,6 +6,8 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "config/input_parser.hpp"
+#include "config/config_validator.hpp"
+#include "config/entity_group_resolver.hpp"
 #include "io/mesh_loader.hpp"
 #include "solvers/electrostatic_solver.hpp"
 #include "solvers/magnetostatic_solver.hpp"
@@ -1374,13 +1376,10 @@ void CreateCurrentLoopMesh(const std::string& filename,
 // The same current-loop geometry written in Netgen's 2D "areamesh2" format,
 // which MFEM dispatches to ReadNetgen2DMesh().
 //
-// This exists to exercise a mesh format that carries NO named groups at all.
-// MFEM only populates attribute_sets for the MFEM v1.3+, Gmsh and Cubit
-// readers; the Netgen readers produce bare integer attributes and nothing else.
-// A configuration that resolved group names through mesh-provided names would
-// therefore silently fail here, so pairing this writer with the analytic
-// inductance assertion is a direct test that name -> attribute binding comes
-// from the config alone.
+// This exists to exercise a mesh format that carries NO named groups at all:
+// MFEM's areamesh2 reader produces bare integer attributes and nothing else.
+// Pairing this writer with the analytic inductance assertion is a direct test
+// that a configuration given by attribute_ids needs no names from the mesh.
 //
 // Format (all indices 1-based, no header fields beyond the type line):
 //   areamesh2
@@ -1429,6 +1428,50 @@ void CreateCurrentLoopNetgenMesh(const std::string& filename,
         }
     }
     m.close();
+}
+
+// The same current-loop geometry in Netgen's native .vol format, as Netgen
+// 6.2's Mesh::Save writes a 2D mesh, with names for every attribute. Both
+// exterior boundary attributes, 2 (outer) and 3 (top/bottom), are named
+// "far" so a single name selects the whole truncation boundary.
+void CreateCurrentLoopVolMesh(const std::string& filename) {
+    const CurrentLoopGrid g = BuildCurrentLoopGrid();
+    const int nr = g.nr();
+    const int nz = g.nz();
+
+    std::ofstream m(filename);
+    m << "mesh3d\ndimension\n2\ngeomtype\n0\n";
+    // One face descriptor per domain; a 2D element row names its descriptor
+    // by (surfnr + 1, bcprop, domin, domout).
+    m << "facedescriptors\n2\n1 0 0 1 1\n2 0 0 2 2\n";
+    m << "surfaceelements\n" << (2 * nr * nz) << "\n";
+    for (int j = 0; j < nz; ++j) {
+        for (int i = 0; i < nr; ++i) {
+            const int a = g.ElementAttribute(i, j);
+            const int v00 = g.vid(i, j) + 1;
+            const int v10 = g.vid(i + 1, j) + 1;
+            const int v11 = g.vid(i + 1, j + 1) + 1;
+            const int v01 = g.vid(i, j + 1) + 1;
+            m << (a + 1) << " " << a << " 0 0 3 " << v00 << " " << v10 << " " << v11 << "\n";
+            m << (a + 1) << " " << a << " 0 0 3 " << v00 << " " << v11 << " " << v01 << "\n";
+        }
+    }
+    m << "volumeelements\n0\n";
+    const std::vector<std::array<int, 3>> bdr = g.BoundaryElements();
+    m << "edgesegmentsgi3\n" << bdr.size() << "\n";
+    for (const auto& b : bdr) {
+        m << (b[1] + 1) << " " << (b[2] + 1) << " -1 -1 0 1 " << (b[0] - 1) << "\n";
+    }
+    m << "points\n" << (g.nvr() * (nz + 1)) << "\n";
+    m << std::setprecision(17);
+    for (int j = 0; j <= nz; ++j) {
+        for (int i = 0; i < g.nvr(); ++i) {
+            m << g.rs[i] << " " << g.zs[j] << " 0\n";
+        }
+    }
+    m << "materials\n2\n1 air\n2 loop\n";
+    m << "bcnames\n3\n1 axis\n2 far\n3 far\n";
+    m << "endmesh\n";
 }
 
 // Coupling-matrix config for the current-loop mesh. The far boundary and the
@@ -2980,14 +3023,12 @@ TEST_CASE("Magnetoquasistatic loop inductance matches the analytic ring value at
 }
 
 
-// Feasibility probe for swapping mesh generators (see docs/mesh_formats.md).
-//
 // Identical geometry to the magnetostatic test above, but read from a Netgen
-// areamesh2 file instead of an MFEM one. Netgen carries no named groups
-// whatsoever, so this passes only if group name -> attribute binding is
-// resolved entirely from the configuration. The config below is byte-identical
-// to the MFEM-mesh case apart from the mesh path: notably, attribute_ids did
-// NOT have to change, because both writers assign the same attributes.
+// areamesh2 file instead of an MFEM one. areamesh2 carries no names, so this
+// passes only if group name -> attribute binding comes from the
+// configuration's attribute_ids. The config is byte-identical to the
+// MFEM-mesh case apart from the mesh path, because both writers assign the
+// same attributes.
 //
 // Guarding this with the analytic value rather than a golden number means a
 // format misread (swapped element/boundary blocks, off-by-one vertex indexing)
@@ -3022,6 +3063,47 @@ TEST_CASE("Magnetostatic loop inductance is mesh-format independent (Netgen)",
 
     const auto matrix = ReadHdf5Matrix(matrix_file, "Inductance");
     REQUIRE(matrix.labels == std::vector<std::string>{"LoopCurrent"});
+    REQUIRE(matrix.values[0][0] ==
+        Catch::Approx(AnalyticLoopInductance()).epsilon(0.005));
+
+    fs::remove(matrix_file);
+    fs::remove(mesh_file);
+}
+
+
+// The same loop read from a Netgen .vol file, with every region, boundary
+// condition and terminal naming a group the mesh file defines, and no
+// "entity_groups" section at all. Guarded by the analytic value, so a misread
+// name -> attribute binding shows up as a wrong inductance.
+TEST_CASE("Magnetostatic loop inductance from a Netgen .vol mesh with named groups",
+          "[solvers][analytic][magnetostatic][coupling][axisymmetric][netgen][names]") {
+    const std::string mesh_file = "test_current_loop.vol";
+    const std::string matrix_file = "coupling_magnetostatics.h5";
+    CreateCurrentLoopVolMesh(mesh_file);
+
+    json config = MakeCurrentLoopConfig("magnetostatics", mesh_file, 0.0);
+    config.erase("entity_groups");
+    config["regions"] = json::array({
+        {{"name", "Air"},  {"entity_group", "air"},  {"material", "Air"}},
+        {{"name", "Loop"}, {"entity_group", "loop"}, {"material", "Conductor"}}
+    });
+    config["boundary_conditions"][0]["entity_group"] = "far";
+    config["terminals"] = json::array({
+        {{"name", "LoopCurrent"}, {"quantity", "current"}, {"conductor_type", "stranded"},
+         {"entity_group", "loop"}}
+    });
+
+    const auto mesh = mesh_io::LoadMesh(mesh_file);
+    ResolveEntityGroups(config, *mesh);
+    ConfigValidator validator;
+    REQUIRE(validator.Validate(config, mesh.get()));
+
+    MagnetostaticSolver solver(*mesh, DecodeConfig(config, matrix_file));
+    solver.Setup();
+    solver.Run();
+    solver.SaveAnalysis();
+
+    const auto matrix = ReadHdf5Matrix(matrix_file, "Inductance");
     REQUIRE(matrix.values[0][0] ==
         Catch::Approx(AnalyticLoopInductance()).epsilon(0.005));
 

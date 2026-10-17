@@ -48,11 +48,10 @@ public:
 		for (const Probe& probe : config.Output.Probes) {
 			std::set<int> attributes;
 			if (!probe.EntityGroupName.empty()) {
-				const auto group = config.EntityGroups.find(probe.EntityGroupName);
-				MFEM_VERIFY(group != config.EntityGroups.end(),
-					"Probe '" << probe.Name << "' names an unknown entity group '"
+				const EntityGroup* group = config.FindDomainGroup(probe.EntityGroupName);
+				MFEM_VERIFY(group, "Probe '" << probe.Name << "' names an unknown domain entity group '"
 					<< probe.EntityGroupName << "'.");
-				attributes.insert(group->second.AttributeIds.begin(), group->second.AttributeIds.end());
+				attributes.insert(group->AttributeIds.begin(), group->AttributeIds.end());
 			}
 			Located located{ &probe, {} };
 			for (const std::vector<double>& point : probe.Points) {

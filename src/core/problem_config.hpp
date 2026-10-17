@@ -9,6 +9,7 @@
 #include <map>
 #include <unordered_map>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <filesystem>
 #include "enums.hpp"      // PhysicsType, GeometryType
@@ -205,10 +206,42 @@ struct ProblemConfig {
 	std::string MeshPath;
 	OutputSettings Output;
 	AmrSettings Amr;               // Adaptive mesh refinement controls (disabled by default)
-	std::unordered_map<std::string, EntityGroup> EntityGroups;
+	// Entity groups keyed by (name, dim): a domain and a boundary may share a
+	// name, as they may in the mesh formats (Gmsh names physical groups per
+	// dimension). Every reference knows which role it needs, so look groups
+	// up with DomainGroup() or BoundaryGroup().
+	std::map<std::pair<std::string, int>, EntityGroup> EntityGroups;
 	std::vector<Region> Regions;
 	std::map<std::string, Material> Materials;
 	std::map<std::string, Terminal> Terminals;
 	std::vector<BoundaryCondition> BoundaryConditions;
 	std::vector<std::pair<std::string, Scenario>> Scenarios;
+
+	// The mesh dimension geometry_type implies (validated against the mesh).
+	int MeshDimension() const { return GeometryType == ::GeometryType::Cartesian3D ? 3 : 2; }
+
+	// The domain or boundary group of a name, or nullptr.
+	const EntityGroup* FindDomainGroup(const std::string& name) const { return Find(name, MeshDimension()); }
+	const EntityGroup* FindBoundaryGroup(const std::string& name) const { return Find(name, MeshDimension() - 1); }
+
+	// The domain or boundary group of a name; throws if there is none.
+	const EntityGroup& DomainGroup(const std::string& name) const {
+		return Get(name, MeshDimension(), "domain");
+	}
+	const EntityGroup& BoundaryGroup(const std::string& name) const {
+		return Get(name, MeshDimension() - 1, "boundary");
+	}
+
+private:
+	const EntityGroup* Find(const std::string& name, int dim) const {
+		const auto entry = EntityGroups.find({name, dim});
+		return entry == EntityGroups.end() ? nullptr : &entry->second;
+	}
+	const EntityGroup& Get(const std::string& name, int dim, const char* role) const {
+		const EntityGroup* group = Find(name, dim);
+		if (!group) {
+			throw std::runtime_error(std::string("No ") + role + " entity group '" + name + "'");
+		}
+		return *group;
+	}
 };

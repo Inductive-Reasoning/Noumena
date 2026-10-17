@@ -72,6 +72,14 @@ public:
 		}
 	}
 
+    // Relative mesh paths resolve against the directory holding the config file.
+    [[nodiscard]] std::string GetMeshPath() const {
+        const std::string mesh = Get(Sim(), "mesh", std::string{});
+        if (mesh.empty()) return "default.msh";
+        const fs::path p(mesh);
+        return p.is_absolute() ? p.string() : (fs::path(config_dir) / p).string();
+    }
+
 private:
 	const ProblemConfig BuildProblemConfig() const {
 		ProblemConfig prob_config;
@@ -366,16 +374,9 @@ private:
                           {"direct",    ::LinearSolverType::Direct}});
     }
 
-    // Relative mesh paths resolve against the directory holding the config file.
-    [[nodiscard]] std::string GetMeshPath() const {
-        const std::string mesh = Get(Sim(), "mesh", std::string{});
-        if (mesh.empty()) return "default.msh";
-        const fs::path p(mesh);
-        return p.is_absolute() ? p.string() : (fs::path(config_dir) / p).string();
-    }
-
-	std::unordered_map<std::string, EntityGroup> GetEntityGroups() const {
-		std::unordered_map<std::string, EntityGroup> groups;
+	// Keyed by (name, dim): a domain and a boundary group may share a name.
+	std::map<std::pair<std::string, int>, EntityGroup> GetEntityGroups() const {
+		std::map<std::pair<std::string, int>, EntityGroup> groups;
 		if (config.contains("entity_groups")) {
 			for (const auto& g : config["entity_groups"]) {
 				EntityGroup group;
@@ -403,7 +404,8 @@ private:
 						group.AttributeIds.push_back(attr);
 					}
 				}
-				groups.emplace(std::move(name), std::move(group));
+				const int dim = group.Dim;
+				groups.emplace(std::make_pair(std::move(name), dim), std::move(group));
 			}
 		}
 		return groups;

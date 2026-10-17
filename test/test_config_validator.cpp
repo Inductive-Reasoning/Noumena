@@ -637,18 +637,31 @@ TEST_CASE("ConfigValidator reports malformed groups, terminals and excitations",
 
 TEST_CASE("ConfigValidator checks entity group references and kinds", "[config_validator]") {
 	SECTION("unknown group") {
+		// Before the mesh is loaded the name may still be a group the mesh
+		// defines; against the mesh it is an error.
 		json config = ValidConfig();
 		config["regions"][0]["entity_group"] = "Missing";
 		ConfigValidator validator;
-		REQUIRE_FALSE(validator.Validate(config));
+		validator.Validate(config);
+		REQUIRE_FALSE(HasError(validator, "regions[0].entity_group"));
+		mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(
+			2, 2, mfem::Element::QUADRILATERAL, false, 1.0, 1.0);
+		REQUIRE_FALSE(validator.Validate(config, &mesh));
 		REQUIRE(HasError(validator, "regions[0].entity_group"));
 	}
 
 	SECTION("wrong group kind") {
+		// A voltage terminal needs a boundary group; "Domain" is declared only
+		// as a domain group. Before the mesh is loaded the mesh might still
+		// define a boundary "Domain", so only the pass against it reports this.
 		json config = ValidConfig();
 		config["terminals"][0]["entity_group"] = "Domain";
 		ConfigValidator validator;
-		REQUIRE_FALSE(validator.Validate(config));
+		validator.Validate(config);
+		REQUIRE_FALSE(HasError(validator, "terminals[0].entity_group"));
+		mfem::Mesh mesh = mfem::Mesh::MakeCartesian2D(
+			2, 2, mfem::Element::QUADRILATERAL, false, 1.0, 1.0);
+		REQUIRE_FALSE(validator.Validate(config, &mesh));
 		REQUIRE(HasError(validator, "terminals[0].entity_group"));
 	}
 

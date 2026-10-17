@@ -333,7 +333,7 @@ private:
 			const CurrentDirection& d = *term.Direction;
 			if (d.Type != CurrentDirection::Kind::Electrodes) continue;
 			for (const std::string& group : { d.Input, d.Output }) {
-				const auto& ids = config.EntityGroups.at(group).AttributeIds;
+				const auto& ids = config.BoundaryGroup(group).AttributeIds;
 				electrodes.insert(ids.begin(), ids.end());
 			}
 		}

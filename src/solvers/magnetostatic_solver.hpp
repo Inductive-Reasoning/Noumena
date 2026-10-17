@@ -85,7 +85,7 @@ public:
 		BuildConductivity();
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.Conductor != ConductorType::Massive) continue;
-			ValidateMassiveConductor(term_name, config.EntityGroups.at(term.EntityGroupName).AttributeIds);
+			ValidateMassiveConductor(term_name, config.DomainGroup(term.EntityGroupName).AttributeIds);
 		}
 
 		boundary_conditions = BuildBoundaryConditions();
@@ -108,7 +108,7 @@ public:
 		massive_sources.clear();
 		for (const auto& [term_name, term] : config.Terminals) {
 			if (term.Conductor != ConductorType::Massive) continue;
-			const auto& attributes = config.EntityGroups.at(term.EntityGroupName).AttributeIds;
+			const auto& attributes = config.DomainGroup(term.EntityGroupName).AttributeIds;
 			massive_sources[term_name] = { MassiveConductorLoad(term_name, attributes),
 										   MassiveConductance(term_name, attributes) };
 		}

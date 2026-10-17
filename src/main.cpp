@@ -11,6 +11,7 @@
 #include "config/input_parser.hpp"
 #include "solvers/physics_solver.hpp"
 #include "solvers/solver_factory.hpp"
+#include "config/entity_group_resolver.hpp"
 #include "config/config_validator.hpp"
 #include "io/status_reporter.hpp"
 #include "io/mesh_loader.hpp"
@@ -175,46 +176,49 @@ int main(int argc, char *argv[]) {
             validator.ValidateOrThrow(parser.config);
         }
 
-        ProblemConfig config = parser.GetProblemConfig();
-
         // Load Mesh
+        const std::string mesh_path = parser.GetMeshPath();
         std::error_code mesh_ec;
-        auto mesh_abs = std::filesystem::weakly_canonical(config.MeshPath, mesh_ec);
+        auto mesh_abs = std::filesystem::weakly_canonical(mesh_path, mesh_ec);
         reporter.Diagnostic("Mesh file: "
-            + (mesh_ec ? std::filesystem::absolute(config.MeshPath).string()
+            + (mesh_ec ? std::filesystem::absolute(mesh_path).string()
                        : mesh_abs.string()));
 
         // MFEM reports a missing/unreadable file through the same error path
         // as a malformed one, so check it up front to keep the two failures
         // distinguishable for the user.
         std::error_code exists_ec;
-        if (!std::filesystem::is_regular_file(config.MeshPath, exists_ec)) {
+        if (!std::filesystem::is_regular_file(mesh_path, exists_ec)) {
             throw std::runtime_error(
-                "Mesh file not found or not readable: '" + config.MeshPath + "'");
+                "Mesh file not found or not readable: '" + mesh_path + "'");
         }
 
         std::unique_ptr<mfem::Mesh> mesh_ptr;
         {
             auto operation = reporter.Start("mesh loading");
             try {
-                mesh_ptr = mesh_io::LoadMesh(config.MeshPath);
+                mesh_ptr = mesh_io::LoadMesh(mesh_path);
             }
             catch (const mfem::ErrorException& e) {
                 throw std::runtime_error(
-                    "MFEM could not load mesh '" + config.MeshPath + "'. Check "
-                    "that the file format is supported, that elements are "
-                    "consistently oriented (counter-clockwise winding in 2D), and "
+                    "MFEM could not load mesh '" + mesh_path + "'. Check "
+                    "that the file format is supported, that no element is "
+                    "inverted beyond repair (a hexahedron or prism), and "
                     "that boundary elements lie on element faces with shared nodes.\nMFEM detail: " + std::string(e.what()));
             }
         }
 
         mfem::Mesh& mesh = *mesh_ptr;
 
-        // Validate Configuration (with mesh for attribute checking)
+        // Resolve entity groups against the groups the mesh names, then
+        // validate the configuration against the mesh's attributes.
         {
             auto operation = reporter.Start("configuration validation");
+            ResolveEntityGroups(mutable_json, mesh);
             validator.ValidateOrThrow(parser.config, &mesh);
         }
+
+        const ProblemConfig config = parser.GetProblemConfig();
 
         // Factory Logic - Create Solver
         std::unique_ptr<PhysicsSolver> solver;

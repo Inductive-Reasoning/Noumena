@@ -251,13 +251,43 @@ is twice the time-averaged magnetic energy of the peak phasors (`¼∫ν|B̂|²`
 
 ## `entity_groups`
 
-Array of objects. The only section that names raw mesh attribute ids.
+Array of objects. An entity group is a named set of mesh attributes. A mesh
+file may define entity groups itself -- Gmsh `$PhysicalNames`, Netgen `.vol`
+material and boundary names, MFEM v1.3 `attribute_sets` (see
+[Mesh formats](mesh_formats.md)) -- and this section defines more. The
+`entity_group` of a region, terminal, boundary condition or probe, and the
+`input`/`output` or `cut` of a 3D current terminal's `direction`, may name a
+group from either source.
 
 | Key | Type | Required | Meaning |
 |-----|------|----------|---------|
-| `name` | string | yes | Unique group name |
+| `name` | string | yes | Group name, unique among groups of the same `dim` |
 | `dim` | integer | yes | `1` = curve, `2` = surface, `3` = volume |
-| `attribute_ids` | array of integer | yes | Positive mesh attribute ids |
+| `attribute_ids` | array of integer | at least one of these two | Positive mesh attribute ids |
+| `entity_groups` | array of string | at least one of these two | Other entity groups (the mesh's or this section's) whose attributes this group includes |
+
+```json
+{"name": "Coil",     "dim": 2, "attribute_ids": [7, 8]}
+{"name": "FarField", "dim": 1, "entity_groups": ["outer", "symmetry"]}
+{"name": "Shell",    "dim": 2, "entity_groups": ["Coil"], "attribute_ids": [9]}
+```
+
+A group is identified by its name **and** `dim`, as the mesh formats identify
+them (Gmsh names physical groups per dimension): a domain group and a boundary
+group may share a name, such as a coil and its surface. A group's attributes
+are the union of its `attribute_ids` and those of its `entity_groups`, which
+are groups of its own `dim`. A group the mesh defines needs no entry here: a
+boundary condition can name the mesh's `outer` directly.
+
+Names are resolved when the mesh is loaded. A reference looks among domain
+groups when it needs a domain (a region, a current terminal, a probe) and among
+boundary groups when it needs a boundary (a boundary condition, a voltage
+terminal, a direction), so the role a reference needs selects the `dim`. It
+is an error for a name to be defined nowhere in that role (the message lists
+the groups that exist in it), for a group here to reuse a mesh group's name and
+`dim` with different attributes, and for groups to include each other in a
+cycle. So a configuration cannot silently select nothing on a mesh that carries
+no names.
 
 Boundary versus domain is **derived** from `dim`, never prescribed:
 
@@ -533,7 +563,7 @@ than one at a time.
 - Superseded names are rejected with the replacement named (see below).
 
 **Names and references**
-- Entity group names are unique.
+- Entity groups are unique by name and `dim`.
 - Every `entity_group` reference resolves to a defined group.
 - Every group's `dim` is the mesh dimension (domain) or one below it
   (boundary); anything else is rejected, naming both acceptable values.
