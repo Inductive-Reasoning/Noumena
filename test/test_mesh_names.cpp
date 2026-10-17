@@ -235,6 +235,36 @@ TEST_CASE("Netgen .vol meshes the reader cannot represent are rejected",
 	REQUIRE_THROWS_WITH(Load(text), Catch::Matchers::ContainsSubstring(expected));
 }
 
+// Checks the node on each edge of an order-2 mesh after loading: the midpoint
+// of its vertices, except on the edge from `a` to `b`, whose node is `moved`.
+// Comparing edge by edge catches nodes attached to the wrong edge.
+static void RequireEdgeNodes(const mfem::Mesh& mesh, const mfem::Vector& a, const mfem::Vector& b,
+							 const mfem::Vector& moved) {
+	const mfem::GridFunction& nodes = *mesh.GetNodes();
+	const mfem::FiniteElementSpace& fes = *nodes.FESpace();
+	const int dim = mesh.SpaceDimension();
+	auto same = [&](const double* p, const mfem::Vector& q) {
+		for (int d = 0; d < dim; ++d) { if (std::abs(p[d] - q(d)) > 1e-14) { return false; } }
+		return true;
+	};
+	int moved_edges = 0;
+	for (int e = 0; e < mesh.GetNEdges(); ++e) {
+		mfem::Array<int> v, dofs;
+		mesh.GetEdgeVertices(e, v);
+		fes.GetEdgeInteriorDofs(e, dofs);
+		REQUIRE(dofs.Size() == 1);
+		const double* p0 = mesh.GetVertex(v[0]);
+		const double* p1 = mesh.GetVertex(v[1]);
+		const bool is_moved = (same(p0, a) && same(p1, b)) || (same(p0, b) && same(p1, a));
+		moved_edges += is_moved;
+		for (int d = 0; d < dim; ++d) {
+			const double expected = is_moved ? moved(d) : 0.5 * (p0[d] + p1[d]);
+			REQUIRE(nodes(fes.DofToVDof(dofs[0], d)) == Catch::Approx(expected).margin(1e-14));
+		}
+	}
+	REQUIRE(moved_edges == 1);
+}
+
 // One triangle whose edge from (0,0) to (1,0) has its second-order node at
 // (0.5, -0.1): a parabolic edge bulging by h = 0.1 adds 2/3 L h to the area.
 const char* kVolTrig6 = R"VOL(mesh3d
@@ -265,6 +295,8 @@ TEST_CASE("Netgen .vol second-order triangles are curved", "[mesh_loader][netgen
 	REQUIRE(mesh->GetNodes() != nullptr);
 	REQUIRE(mesh->GetNodes()->FESpace()->GetMaxElementOrder() == 2);
 	REQUIRE(mesh->GetElementVolume(0) == Catch::Approx(0.5 + 2.0 / 3.0 * 0.1).epsilon(1e-12));
+	RequireEdgeNodes(*mesh, mfem::Vector({0.0, 0.0}), mfem::Vector({1.0, 0.0}),
+					 mfem::Vector({0.5, -0.1}));
 
 	SECTION("a mesh mixing first- and second-order elements is rejected") {
 		std::string text = kVolTrig6;
@@ -287,16 +319,9 @@ TEST_CASE("Netgen .vol second-order tetrahedra are curved", "[mesh_loader][netge
 	REQUIRE(mesh->GetNV() == 4);
 	REQUIRE(mesh->GetNBE() == 4);
 	REQUIRE(mesh->CheckElementOrientation(false) == 0);
-	const mfem::GridFunction& nodes = *mesh->GetNodes();
-	const mfem::FiniteElementSpace& fes = *nodes.FESpace();
-	REQUIRE(fes.GetMaxElementOrder() == 2);
-	bool moved_node = false;
-	for (int i = 0; i < fes.GetNDofs(); ++i) {
-		const double x = nodes(fes.DofToVDof(i, 0)), y = nodes(fes.DofToVDof(i, 1)),
-					 z = nodes(fes.DofToVDof(i, 2));
-		moved_node |= std::abs(x - 0.5) < 1e-14 && std::abs(y + 0.05) < 1e-14 && std::abs(z) < 1e-14;
-	}
-	REQUIRE(moved_node);
+	REQUIRE(mesh->GetNodes()->FESpace()->GetMaxElementOrder() == 2);
+	RequireEdgeNodes(*mesh, mfem::Vector({0.0, 0.0, 0.0}), mfem::Vector({1.0, 0.0, 0.0}),
+					 mfem::Vector({0.5, -0.05, 0.0}));
 }
 
 TEST_CASE("Gmsh physical names become attribute sets", "[mesh_loader][msh][names]") {
