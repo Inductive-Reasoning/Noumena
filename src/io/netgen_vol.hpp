@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <istream>
 #include <map>
@@ -37,8 +38,17 @@
  * which also covers the prisms and hexahedra MFEM cannot reorient itself.
  *
  * Netgen's name for an unnamed entity, "default", is not reported as a name.
- * Only first-order elements are read; Netgen writes second-order (curved)
- * elements with more nodes per row, which are rejected.
+ *
+ * Elements are first-order, or second-order triangles (2D) and tetrahedra
+ * (3D) as Netgen's SecondOrder() writes them: a row lists the corners, then
+ * one node per edge placed on the geometry (Netgen's betw_trig and betw_tet
+ * tables in libsrc/meshing/secondorder.cpp give which edge each one is on).
+ * Those become VolMesh::edge_nodes, keyed by the edge's two vertices, and
+ * only corners become vertices. Netgen's second-order quadrilaterals, prisms,
+ * pyramids and hexahedra are serendipity elements, without the face and
+ * interior nodes of MFEM's, and are rejected, as is a mesh curved with
+ * Curve(order), whose "curvedelements" section is Netgen's own hierarchical
+ * basis.
  */
 namespace netgen_vol {
 
@@ -50,9 +60,13 @@ struct Cell {
 
 struct VolMesh {
 	int dimension = 0;
+	/// The vertices: the corners of the elements and boundary elements.
 	std::vector<std::array<double, 3>> points;
 	std::vector<Cell> elements;
 	std::vector<Cell> boundary;
+	/// A second-order mesh's edge nodes, keyed by the edge's two vertices
+	/// (smaller index first); empty for a first-order mesh.
+	std::map<std::pair<int, int>, std::array<double, 3>> edge_nodes;
 	/// Attribute -> name, for the domains and the boundaries.
 	std::map<int, std::string> domain_names;
 	std::map<int, std::string> boundary_names;
@@ -134,6 +148,29 @@ inline Cell ReadVertices(std::istream& in, int attribute, int np, const char* se
 	return cell;
 }
 
+// An edge node of a second-order element: the node between two corners, as
+// 0-based point indices.
+struct EdgeNode { int a, b, node; };
+
+// Split a second-order element's row into its corners and edge nodes, using
+// Netgen's tables of which corners each edge node lies between: a 6-node
+// surface element is a second-order triangle, a 10-node volume element a
+// second-order tetrahedron. (A 6-node volume element is a first-order prism.)
+inline void SplitSecondOrder(Cell& cell, bool volume, std::vector<EdgeNode>& edge_nodes) {
+	static const int trig6[3][3] = {{1, 2, 3}, {0, 2, 4}, {0, 1, 5}};
+	static const int tet10[6][3] = {{0, 1, 4}, {0, 2, 5}, {0, 3, 6},
+									{1, 2, 7}, {1, 3, 8}, {2, 3, 9}};
+	const auto& v = cell.vertices;
+	if (!volume && v.size() == 6) {
+		for (const auto& e : trig6) { edge_nodes.push_back({v[e[0]], v[e[1]], v[e[2]]}); }
+		cell.vertices.resize(3);
+	}
+	else if (volume && v.size() == 10) {
+		for (const auto& e : tet10) { edge_nodes.push_back({v[e[0]], v[e[1]], v[e[2]]}); }
+		cell.vertices.resize(4);
+	}
+}
+
 } // namespace detail
 
 /// Parse a Netgen .vol mesh. Throws std::runtime_error on malformed input.
@@ -163,10 +200,18 @@ inline VolMesh Parse(std::istream& in) {
 	std::map<int, std::string> bcnames;
 	bool have_segments_gi3 = false;
 	bool have_legacy_segments = false;
+	std::vector<EdgeNode> edge_nodes;
+	int second_order_surface = 0;
+	int second_order_volume = 0;
 
 	std::string token;
 	while (body >> token) {
 		if (token == "endmesh") { break; }
+		if (token == "curvedelements") {
+			Fail("the mesh is curved with Curve(order), whose 'curvedelements' are "
+				 "Netgen's own hierarchical basis; for a curved mesh call SecondOrder() "
+				 "instead, which writes second-order elements");
+		}
 		if (token == "dimension") {
 			mesh.dimension = Read<int>(body, "dimension");
 		}
@@ -195,15 +240,17 @@ inline VolMesh Parse(std::istream& in) {
 				row.domout = Read<int>(body, "surfaceelements");
 				int np = Read<int>(body, "surfaceelements");
 				if (np == 0) { np = 3; }
-				if (np != 3 && np != 4) {
+				if (np != 3 && np != 4 && np != 6) {
 					Fail("surface element with " + std::to_string(np) + " nodes; only "
-						 "first-order triangles and quadrilaterals are supported (a "
-						 "second-order mesh is not)");
+						 "triangles (first- or second-order) and first-order "
+						 "quadrilaterals are supported");
 				}
 				row.cell = ReadVertices(body, 0, np, "surfaceelements");
 				for (int j = 0; j < (gi ? np : uv ? 2 * np : 0); ++j) {
 					Read<double>(body, "surfaceelements");  // geometry info
 				}
+				if (np == 6) { ++second_order_surface; }
+				SplitSecondOrder(row.cell, /*volume=*/false, edge_nodes);
 				surface_rows.push_back(std::move(row));
 			}
 		}
@@ -213,12 +260,14 @@ inline VolMesh Parse(std::istream& in) {
 				int matnr = Read<int>(body, "volumeelements");
 				if (matnr == 0) { matnr = 1; }  // as Netgen reads it
 				const int np = Read<int>(body, "volumeelements");
-				if (np != 4 && np != 5 && np != 6 && np != 8) {
+				if (np != 4 && np != 5 && np != 6 && np != 8 && np != 10) {
 					Fail("volume element with " + std::to_string(np) + " nodes; only "
-						 "first-order tetrahedra, pyramids, prisms and hexahedra are "
-						 "supported (a second-order mesh is not)");
+						 "tetrahedra (first- or second-order) and first-order pyramids, "
+						 "prisms and hexahedra are supported");
 				}
 				Cell cell = ReadVertices(body, matnr, np, "volumeelements");
+				if (np == 10) { ++second_order_volume; }
+				SplitSecondOrder(cell, /*volume=*/true, edge_nodes);
 				MirrorVolumeElement(cell.vertices);
 				mesh.elements.push_back(std::move(cell));
 			}
@@ -333,17 +382,52 @@ inline VolMesh Parse(std::istream& in) {
 		if (mesh.elements.empty()) { Fail("2D mesh without 'surfaceelements'"); }
 	}
 
+	// A second-order mesh is second-order throughout: its domain elements are
+	// all second-order triangles (2D) or tetrahedra (3D).
+	const int second_order = mesh.dimension == 2 ? second_order_surface : second_order_volume;
+	if (second_order > 0 && second_order != static_cast<int>(mesh.elements.size())) {
+		Fail(std::to_string(second_order) + " of " + std::to_string(mesh.elements.size()) +
+			 " elements are second-order; a mesh must be first- or second-order throughout");
+	}
+	if (mesh.dimension == 3 && second_order == 0 && second_order_surface > 0) {
+		Fail("second-order boundary faces on first-order volume elements");
+	}
+
 	const int np = static_cast<int>(mesh.points.size());
+	auto check = [&](int v) {
+		if (v < 0 || v >= np) {
+			Fail("vertex " + std::to_string(v + 1) + " is out of range [1, " + std::to_string(np) + "]");
+		}
+	};
 	for (const auto* cells : { &mesh.elements, &mesh.boundary }) {
-		for (const Cell& cell : *cells) {
-			for (int v : cell.vertices) {
-				if (v < 0 || v >= np) {
-					Fail("vertex " + std::to_string(v + 1) + " is out of range [1, " +
-						 std::to_string(np) + "]");
+		for (const Cell& cell : *cells) { for (int v : cell.vertices) { check(v); } }
+	}
+	for (const EdgeNode& e : edge_nodes) { check(e.a); check(e.b); check(e.node); }
+
+	// Only corners are vertices: a second-order mesh's points also hold its
+	// edge nodes, which would otherwise be vertices no element uses.
+	std::vector<int> vertex_of(np, -1);
+	std::vector<std::array<double, 3>> vertices;
+	for (auto* cells : { &mesh.elements, &mesh.boundary }) {
+		for (Cell& cell : *cells) {
+			for (int& v : cell.vertices) {
+				if (vertex_of[v] < 0) {
+					vertex_of[v] = static_cast<int>(vertices.size());
+					vertices.push_back(mesh.points[v]);
 				}
+				v = vertex_of[v];
 			}
 		}
 	}
+	for (const EdgeNode& e : edge_nodes) {
+		const std::pair<int, int> key = std::minmax(vertex_of[e.a], vertex_of[e.b]);
+		const auto [entry, inserted] = mesh.edge_nodes.emplace(key, mesh.points[e.node]);
+		if (!inserted && entry->second != mesh.points[e.node]) {
+			Fail("two different nodes on the edge between points " + std::to_string(e.a + 1) +
+				 " and " + std::to_string(e.b + 1));
+		}
+	}
+	mesh.points = std::move(vertices);
 	return mesh;
 }
 
