@@ -6,15 +6,14 @@ it.
 
 ## Formats
 
-Noumena reads every format MFEM reads, plus Netgen's native `.vol`, and it
-reads names that MFEM's own Gmsh reader leaves out:
+Noumena reads every format MFEM reads, plus Netgen's native `.vol`:
 
-| Format | Written by | Names | Notes |
+| Format | Written by | Names | Curved elements |
 |---|---|---|---|
-| Gmsh `.msh` 2.2 / 4.1 | Gmsh | `$PhysicalNames` | Names are read by Noumena; MFEM's reader skips them |
-| Netgen `.vol` | Netgen `Mesh.Save()` | `materials`, `bcnames` | Read by Noumena (`src/io/netgen_vol.hpp`); 2D and 3D |
-| MFEM v1.3+ | MFEM | `attribute_sets` block | |
-| MFEM v1.0, `areamesh2`, Netgen neutral, VTK | various | none | Attributes only |
+| Gmsh `.msh` 2.2 / 4.1 | Gmsh | `$PhysicalNames` | Any order (`Mesh.ElementOrder`, `gmsh -order N`) |
+| Netgen `.vol` | Netgen `Mesh.Save()` | `materials`, `bcnames` | Order 2 (`SecondOrder()`); read by Noumena (`src/io/netgen_vol.hpp`) |
+| MFEM v1.3+ | MFEM | `attribute_sets` block | Any order (nodes) |
+| MFEM v1.0, `areamesh2`, Netgen neutral, VTK | various | none | |
 
 The format is recognized from the file's content, not its extension.
 
@@ -131,10 +130,27 @@ Measured with Netgen 6.2; none of them is a substitute for `.vol`:
   recognize it without one being added.
 - **`areamesh2`** (MFEM's 2D Netgen format) is not written by Netgen at all.
 
+### Curved Netgen meshes
+
+Call `mesh.SecondOrder()` before saving. Netgen then writes second-order
+triangles (2D) and tetrahedra (3D), with a node on each edge placed on the
+geometry, and Noumena reads them as an order-2 curved mesh. On a cylinder of
+radius 0.1 in Netgen 6.2 this brings the volume from 4.1% low (straight-sided)
+to 0.017% low.
+
+`mesh.Curve(order)` does not save curved elements Noumena can read: Netgen
+stores them as coefficients of its own hierarchical basis (the `.vol` file's
+`curvedelements` section), and the reader rejects such a file with a message
+rather than load it straight-sided. For geometry of higher order than 2, an
+application can evaluate Netgen's curved elements itself and write a Gmsh or
+MFEM v1.3 mesh of that order, both of which Noumena reads at any order.
+
 ### Not supported
 
-- Second-order (curved) Netgen elements; the reader rejects them with a
-  message. Mesh with first-order elements.
+- Second-order quadrilaterals, prisms, pyramids and hexahedra: Netgen's are
+  serendipity elements, without the face and interior nodes of MFEM's. The
+  reader rejects them with a message; first-order ones load, including prism
+  boundary layers.
 - 2D `.vol` files from Netgen older than 6.2 (`edgesegmentsgi2` boundary
   sections); save them again with 6.2 or newer.
 
